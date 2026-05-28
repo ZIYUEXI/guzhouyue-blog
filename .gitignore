@@ -1,6 +1,10 @@
 node_modules/
 dist/
 output/
+server/data/
+server/uploads/
+server/config.json
+backups/
 *.log
 *.tsbuildinfo
 vite.config.js

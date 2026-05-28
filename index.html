@@ -7,7 +7,77 @@
       name="description"
       content="孤舟月，一个写给长夜、山河与代码的现代中文博客。"
     />
+    <meta name="color-scheme" content="light dark" />
     <title>孤舟月</title>
+    <script>
+      (() => {
+        const defaultSettings = {
+          colorScheme: 'light',
+          stylePreset: 'classic',
+        };
+        const colorSchemes = new Set(['light', 'dark']);
+        const stylePresets = new Set(['classic', 'cyber']);
+        const themeColors = {
+          classic: {
+            light: { background: '#f7f1e6', color: '#1d1b18' },
+            dark: { background: '#141311', color: '#f5ead8' },
+          },
+          cyber: {
+            light: { background: '#eefcff', color: '#07161c' },
+            dark: { background: '#05080d', color: '#effcff' },
+          },
+        };
+
+        try {
+          const storedSettings = window.localStorage.getItem('guzhouyue.siteSettings');
+          const parsedSettings = storedSettings ? JSON.parse(storedSettings) : {};
+          const colorScheme = colorSchemes.has(parsedSettings.colorScheme)
+            ? parsedSettings.colorScheme
+            : defaultSettings.colorScheme;
+          const stylePreset = stylePresets.has(parsedSettings.stylePreset)
+            ? parsedSettings.stylePreset
+            : defaultSettings.stylePreset;
+          const colors = themeColors[stylePreset][colorScheme];
+
+          document.documentElement.dataset.colorScheme = colorScheme;
+          document.documentElement.dataset.stylePreset = stylePreset;
+          document.documentElement.style.colorScheme = colorScheme;
+          document.documentElement.style.backgroundColor = colors.background;
+          document.documentElement.style.color = colors.color;
+        } catch {
+          document.documentElement.dataset.colorScheme = defaultSettings.colorScheme;
+          document.documentElement.dataset.stylePreset = defaultSettings.stylePreset;
+        }
+      })();
+    </script>
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+      }
+
+      body {
+        background: #f7f1e6;
+        color: #1d1b18;
+        margin: 0;
+      }
+
+      html[data-style-preset="classic"][data-color-scheme="dark"] body {
+        background: #141311;
+        color: #f5ead8;
+      }
+
+      html[data-style-preset="cyber"][data-color-scheme="light"] body {
+        background: #eefcff;
+        color: #07161c;
+      }
+
+      html[data-style-preset="cyber"][data-color-scheme="dark"] body {
+        background: #05080d;
+        color: #effcff;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 4174,
+  "databasePath": "server/data/blog.sqlite",
+  "adminPassword": "change-this-password",
+  "sessionCookieName": "guzhouyue_admin",
+  "sessionTtlMs": 28800000,
+  "siteUrl": "http://127.0.0.1:4174",
+  "pythonCommand": "python",
+  "almanacTimeoutMs": 3000
+}

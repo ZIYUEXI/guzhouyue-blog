@@ -5,18 +5,39 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "dev:server": "tsx server/src/server.ts",
+    "seed:server": "tsx server/scripts/seed.ts",
+    "seed:test-articles": "tsx server/scripts/seed-test-articles.ts",
+    "test:server": "tsx server/scripts/smoke-test.ts",
+    "seo:generate": "node scripts/generate-seo.mjs",
+    "seo:validate": "node scripts/validate-seo.mjs",
+    "build": "npm run seo:generate && npm run seo:validate && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^9.3.0",
+    "@mdxeditor/editor": "^4.0.0",
+    "better-sqlite3": "^12.10.0",
+    "fastify": "^5.8.5",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.47",
+    "lucide-react": "^0.561.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "lucide-react": "^0.561.0"
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.1.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "tsx": "^4.22.3",
     "typescript": "^5.9.3",
     "vite": "^7.2.7"
   }

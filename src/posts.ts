@@ -3,11 +3,13 @@ export type Post = {
   title: string;
   excerpt: string;
   category: string;
+  authorName?: string;
   date: string;
-  readingTime: string;
   tone: string;
   tags: string[];
   body: string[];
+  bodyMarkdown?: string;
+  deletedAt?: string;
 };
 
 export const posts: Post[] = [
@@ -17,7 +19,6 @@ export const posts: Post[] = [
     excerpt: '不是所有表达都需要赶路，有些文字适合在夜里慢慢抵达。',
     category: '人间札记',
     date: '2026.05.15',
-    readingTime: '6 分钟读完',
     tone: 'ink',
     tags: ['写作', '生活', '夜色'],
     body: [
@@ -33,7 +34,6 @@ export const posts: Post[] = [
     excerpt: '把复杂交互折回清晰边界，像把水面上的倒影慢慢扶正。',
     category: '技术笔记',
     date: '2026.05.08',
-    readingTime: '8 分钟读完',
     tone: 'pine',
     tags: ['前端', '重构', '交互'],
     body: [
@@ -49,7 +49,6 @@ export const posts: Post[] = [
     excerpt: '读书摘录不只是保存句子，也是在保存某一刻的自己。',
     category: '读书摘录',
     date: '2026.04.26',
-    readingTime: '4 分钟读完',
     tone: 'cinnabar',
     tags: ['阅读', '摘录', '书页'],
     body: [
@@ -64,7 +63,6 @@ export const posts: Post[] = [
     excerpt: '一次短途行走，路过风、桥、旧城和突然安静下来的湖。',
     category: '山水游踪',
     date: '2026.04.12',
-    readingTime: '7 分钟读完',
     tone: 'water',
     tags: ['旅行', '旧城', '湖'],
     body: [
