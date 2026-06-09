@@ -1,4 +1,4 @@
-import { posts as defaultPosts, type Post } from './posts';
+import type { Post } from './posts';
 
 export type NoteSection = {
   category: string;
@@ -103,11 +103,34 @@ export const systemGalleryAlbumId = 'album-moonlight';
 export const systemGalleryAlbumSlug = 'system';
 
 export const defaultNoteSections: NoteSection[] = [
-  { category: '人间札记', description: '生活里照见的月色' },
-  { category: '技术笔记', description: '把复杂事写清楚' },
-  { category: '读书摘录', description: '纸页里的回声' },
-  { category: '山水游踪', description: '路过风、桥与旧城' },
-  { category: '旧文归档', description: '那些仍会发光的日子' },
+  {
+    "category": "技术笔记",
+    "description": "开发环境、语言基础与工程实践"
+  },
+  {
+    "category": "数据分析",
+    "description": "数据清洗、Pandas 与结构化处理"
+  },
+  {
+    "category": "网络安全",
+    "description": "Web 安全、网络协议与攻防记录"
+  },
+  {
+    "category": "游戏开发",
+    "description": "Unity、UE、Pygame 与玩法系统笔记"
+  },
+  {
+    "category": "人工智能",
+    "description": "模型、智能体和数据建模学习"
+  },
+  {
+    "category": "生活备考",
+    "description": "考试错题和日常整理"
+  },
+  {
+    "category": "数据库",
+    "description": "数据库系统与项目文档"
+  }
 ];
 
 export const defaultHomepageCopy: HomepageCopy = {
@@ -143,9 +166,18 @@ export const defaultFeaturedSeries: FeaturedSeries[] = [
     title: defaultHomepageCopy.seriesTitle,
     lead: defaultHomepageCopy.seriesLead,
     body: defaultHomepageCopy.seriesBody,
-    postSlugs: defaultPosts.slice(0, 3).map((post) => post.slug),
+    postSlugs: [],
   },
 ];
+
+export const emptySiteContent: SiteContent = {
+  posts: [],
+  noteSections: [],
+  featuredSeries: [],
+  galleryAlbums: [],
+  homepage: defaultHomepageCopy,
+  almanac: null,
+};
 
 export const defaultGalleryAlbums: GalleryAlbum[] = [
   {
@@ -194,7 +226,7 @@ export const defaultGalleryAlbums: GalleryAlbum[] = [
 ];
 
 export const defaultSiteContent: SiteContent = {
-  posts: defaultPosts,
+  posts: [],
   noteSections: defaultNoteSections,
   featuredSeries: defaultFeaturedSeries,
   galleryAlbums: defaultGalleryAlbums,
@@ -232,7 +264,7 @@ export function resetSiteContent() {
 }
 
 function normalizeSiteContent(content: Partial<SiteContent>): SiteContent {
-  const posts = Array.isArray(content.posts) ? content.posts.map(normalizePost).filter(isPost) : defaultPosts;
+  const posts = Array.isArray(content.posts) ? content.posts.map(normalizePost).filter(isPost) : [];
   const noteSections = Array.isArray(content.noteSections)
     ? content.noteSections.map(normalizeNoteSection).filter(isNoteSection)
     : defaultNoteSections;

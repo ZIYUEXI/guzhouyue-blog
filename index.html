@@ -29,14 +29,11 @@
         };
 
         try {
-          const storedSettings = window.localStorage.getItem('guzhouyue.siteSettings');
-          const parsedSettings = storedSettings ? JSON.parse(storedSettings) : {};
-          const colorScheme = colorSchemes.has(parsedSettings.colorScheme)
-            ? parsedSettings.colorScheme
+          const storedColorScheme = window.localStorage.getItem('guzhouyue.userColorScheme');
+          const colorScheme = colorSchemes.has(storedColorScheme)
+            ? storedColorScheme
             : defaultSettings.colorScheme;
-          const stylePreset = stylePresets.has(parsedSettings.stylePreset)
-            ? parsedSettings.stylePreset
-            : defaultSettings.stylePreset;
+          const stylePreset = defaultSettings.stylePreset;
           const colors = themeColors[stylePreset][colorScheme];
 
           document.documentElement.dataset.colorScheme = colorScheme;

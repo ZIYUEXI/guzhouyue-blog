@@ -28,67 +28,24 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Dispatch,
   DragEvent as ReactDragEvent,
-  JSX as ReactJSX,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   SetStateAction,
 } from 'react';
-import ReactMarkdown from 'react-markdown';
-import {
-  BlockTypeSelect,
-  BoldItalicUnderlineToggles,
-  ChangeCodeMirrorLanguage,
-  CodeToggle,
-  ConditionalContents,
-  CreateLink,
-  InsertCodeBlock,
-  InsertTable,
-  ListsToggle,
-  MDXEditor,
-  type MDXEditorMethods,
-  UndoRedo,
-  addExportVisitor$,
-  addImportVisitor$,
-  addLexicalNode$,
-  addMdastExtension$,
-  addSyntaxExtension$,
-  addToMarkdownExtension$,
-  codeBlockPlugin,
-  codeMirrorPlugin,
-  headingsPlugin,
-  linkDialogPlugin,
-  linkPlugin,
-  listsPlugin,
-  markdownShortcutPlugin,
-  quotePlugin,
-  realmPlugin,
-  tablePlugin,
-  toolbarPlugin,
-  type LexicalVisitor,
-  type MdastImportVisitor,
-} from '@mdxeditor/editor';
-import {
-  $getNodeByKey,
-  DecoratorNode,
-  type EditorConfig,
-  type LexicalEditor,
-  type LexicalNode,
-  type NodeKey,
-  type SerializedLexicalNode,
-} from 'lexical';
-import katex from 'katex';
-import { mathFromMarkdown, mathToMarkdown } from 'mdast-util-math';
-import { math as micromarkMath } from 'micromark-extension-math';
-import rehypeHighlight from 'rehype-highlight';
-import rehypeKatex from 'rehype-katex';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
+import { ArticleComments } from './ArticleComments';
+import { AdminDashboardPanel } from './AdminDashboardPanel';
+import { AdminPostsPanel } from './AdminPostsPanel';
+import { useArticleHead } from './articleSeo';
+import { MarkdownBody } from './MarkdownBody';
+import { PublicGalleryPage } from './PublicGalleryPage';
+import type { RichMarkdownEditorHandle } from './RichMarkdownEditor';
 import {
   defaultSiteContent,
+  emptySiteContent,
   ensureSystemGalleryAlbums,
   readSiteContent,
   resetSiteContent,
@@ -104,87 +61,117 @@ import {
   systemGalleryAlbumSlug,
 } from './contentStore';
 import { createSeasonNote } from './seasonNote';
+import { getRoute, isAdminPath } from './routing';
 import {
   clearAdminDraft,
   createAdminArticle,
   deleteAdminArticle,
   fetchAdminContent,
+  fetchAdminComments,
   fetchAdminDraft,
   fetchAdminMe,
   createAdminGalleryAlbum,
   deleteAdminGalleryAlbum,
   deleteAdminGalleryImage,
-  fetchArticleComments,
   fetchPublicArticles,
+  fetchPublicGallery,
   fetchPublicSite,
   fetchAdminDeletedArticles,
   loginAdmin,
+  logoutAdmin,
   normalizeApiFeaturedSeries,
   normalizeApiGalleryAlbum,
   normalizeApiGalleryAlbums,
   normalizeApiNoteSections,
   normalizeApiPost,
+  publishAdminArticle,
+  replaceAdminGalleryImageFile,
   restoreAdminArticle,
   saveAdminDraft,
   saveAdminFeaturedSeries,
   saveAdminHomepage,
   saveAdminNoteSections,
   saveAdminSettings,
-  submitArticleComment,
+  unpublishAdminArticle,
   updateAdminArticle,
+  updateAdminCommentStatus,
   updateAdminGalleryAlbum,
   updateAdminGalleryImage,
   uploadAdminGalleryImage,
+  ApiError,
+  type AdminCommentStatus,
+  type ApiAdminComment,
 } from './apiClient';
 import {
   applySiteSettings,
   colorSchemes,
   readSiteSettings,
+  readUserColorScheme,
   saveSiteSettings,
+  saveUserColorScheme,
   stylePresetAssets,
   stylePresets,
+  systemGalleryAssetUrls,
   type ColorScheme,
   type SiteSettings,
   type StylePreset,
   normalizeOwnerName,
   normalizeOwnerAvatarUrl,
 } from './siteSettings';
-import { postsPerPage, type Post } from './posts';
-import 'highlight.js/styles/github-dark.css';
+import { postsPerPage, type Post, type PostStatus } from './posts';
 import 'katex/dist/katex.min.css';
-import '@mdxeditor/editor/style.css';
+
+const RichMarkdownEditor = lazy(() =>
+  import('./RichMarkdownEditor').then((module) => ({ default: module.RichMarkdownEditor })),
+);
 
 const navItems = [
   { label: '首页', href: '/#首页' },
-  { label: '文章', href: '/#文章' },
-  { label: '札记', href: '/#札记' },
-  { label: '归档', href: '/#归档' },
+  { label: '文章', href: '/posts/page/1' },
+  { label: '札记', href: '/notes/page/1' },
+  { label: '归档', href: '/archive/page/1' },
+  { label: '图库', href: '/gallery' },
   { label: '关于', href: '/#关于' },
-  { label: '登录', href: '/admin' },
 ];
 
 const homepageArchivePreviewLimit = 4;
 const homepageArchiveEntriesPerMonthLimit = 6;
 const adminPostsPerPage = 8;
+const composerImageAlbumSlug = 'article-images';
+const composerImageAlbumTitle = '文章配图';
+const supportedComposerImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+function isProductionPublicRuntime() {
+  const viteEnv = (import.meta as ImportMeta & { env?: { PROD?: boolean } }).env;
+  if (!viteEnv?.PROD || typeof window === 'undefined') {
+    return false;
+  }
+
+  return !['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+}
+
+function readInitialSiteContent() {
+  return emptySiteContent;
+}
 
 function App() {
   const [settings, setSettings] = useState<SiteSettings>(() => readSiteSettings());
-  const [content, setContent] = useState<SiteContent>(() => readSiteContent());
+  const [colorScheme, setColorScheme] = useState<ColorScheme>(() => readUserColorScheme());
+  const [content, setContent] = useState<SiteContent>(() => readInitialSiteContent());
   const [adminAuthStatus, setAdminAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous'>('checking');
+  const [dataSourceNotice, setDataSourceNotice] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const pathname = window.location.pathname;
-  const category = new URLSearchParams(window.location.search).get('category');
-  const isAdminRoute =
-    pathname === '/admin' ||
-    pathname === '/admin/posts' ||
-    pathname === '/admin/posts/new' ||
-    /^\/admin\/posts\/[^/]+\/edit$/.test(pathname);
+  const searchParams = new URLSearchParams(window.location.search);
+  const category = searchParams.get('category');
+  const tag = searchParams.get('tag');
+  const isAdminRoute = isAdminPath(pathname);
 
   useEffect(() => {
-    applySiteSettings(settings);
-  }, [settings]);
+    applySiteSettings(settings, colorScheme);
+  }, [settings, colorScheme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -206,20 +193,20 @@ function App() {
           const nextContent = normalizeLoadedContent(adminContent, content);
           setContent(nextContent);
           saveSiteContent(nextContent);
+          setDataSourceNotice('');
 
-          if (adminContent.settings) {
-            const nextSettings = normalizeLoadedSettings(adminContent.settings, settings);
-            setSettings(nextSettings);
-            saveSiteSettings(nextSettings);
-          }
+          const nextSettings = normalizeLoadedSettings(adminContent.settings, settings);
+          setSettings(nextSettings);
+          saveSiteSettings(nextSettings);
           return;
         }
 
         setAdminAuthStatus('anonymous');
 
-        const [sitePayload, articleItems] = await Promise.all([
+        const [sitePayload, articleItems, galleryItems] = await Promise.all([
           fetchPublicSite(),
           fetchPublicArticles(),
+          fetchPublicGallery(),
         ]);
         if (cancelled) {
           return;
@@ -228,14 +215,15 @@ function App() {
         const posts = articleItems.map(normalizeApiPost).filter((post): post is Post => post !== null);
         const noteSections = normalizeApiNoteSections(sitePayload.noteSections);
         const featuredSeries = normalizeApiFeaturedSeries(sitePayload.featuredSeries);
+        const galleryAlbums = normalizeApiGalleryAlbums(galleryItems);
         const nextContent: SiteContent = {
-          posts: posts.length > 0 ? posts : content.posts,
-          noteSections: noteSections.length > 0 ? noteSections : content.noteSections,
-          featuredSeries: featuredSeries.length > 0 ? featuredSeries : content.featuredSeries,
-          galleryAlbums: content.galleryAlbums,
+          posts,
+          noteSections,
+          featuredSeries,
+          galleryAlbums,
           almanac: sitePayload.almanac ?? null,
           homepage: {
-            ...content.homepage,
+            ...defaultSiteContent.homepage,
             ...(sitePayload.homepage ?? {}),
           },
         };
@@ -243,13 +231,15 @@ function App() {
 
         setContent(nextContent);
         setSettings(nextSettings);
-        saveSiteContent(nextContent);
+        setDataSourceNotice('');
         saveSiteSettings(nextSettings);
       } catch {
         if (isAdminRoute && !cancelled) {
           setAdminAuthStatus('anonymous');
         }
-        // API 不可用时保留默认内容和本地缓存，保证公开站点仍可读。
+        if (!cancelled && !isAdminRoute) {
+          setDataSourceNotice('暂时无法连接数据库内容接口，文章、分类和标签未加载。');
+        }
       }
     }
 
@@ -269,40 +259,45 @@ function App() {
     }
   }
 
+  function updateColorScheme(nextColorScheme: ColorScheme) {
+    setColorScheme(nextColorScheme);
+    saveUserColorScheme(nextColorScheme);
+  }
+
   function updateContent(nextContent: SiteContent) {
     setContent(nextContent);
     saveSiteContent(nextContent);
   }
 
+  const publicPosts = useMemo(() => getPublishedPosts(content.posts), [content.posts]);
   const filteredPosts = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) {
-      return content.posts;
+      return publicPosts;
     }
 
-    return content.posts.filter((post) => {
+    return publicPosts.filter((post) => {
       const searchableText = `${post.title}${post.excerpt}${post.category}${post.tags.join('')}${getPostMarkdown(post)}`;
       return searchableText.toLowerCase().includes(keyword);
     });
-  }, [content.posts, query]);
+  }, [publicPosts, query]);
+  const activeSystemGalleryImages = useMemo(() => getSystemGalleryImageUrls(content.galleryAlbums), [content.galleryAlbums]);
+  const heroImage = activeSystemGalleryImages[settings.stylePreset] ?? stylePresetAssets[settings.stylePreset].heroImage;
+  const ownerAvatarUrl = getActiveOwnerAvatarUrl(settings.ownerAvatarUrl, activeSystemGalleryImages);
 
   if (isAdminRoute) {
     if (adminAuthStatus !== 'authenticated') {
       return (
         <AdminLoginPage
           homepage={content.homepage}
-          settings={settings}
-          status={adminAuthStatus}
+        settings={settings}
+        colorScheme={colorScheme}
+        status={adminAuthStatus}
           onLoginSuccess={() => {
             setAdminAuthStatus('authenticated');
             window.location.reload();
           }}
-          onThemeToggle={() =>
-            updateSettings({
-              ...settings,
-              colorScheme: settings.colorScheme === 'light' ? 'dark' : 'light',
-            })
-          }
+        onThemeToggle={() => updateColorScheme(colorScheme === 'light' ? 'dark' : 'light')}
         />
       );
     }
@@ -310,9 +305,12 @@ function App() {
     return (
       <AdminPage
         content={content}
+        colorScheme={colorScheme}
         settings={settings}
         onContentChange={updateContent}
+        onLogout={() => setAdminAuthStatus('anonymous')}
         onSettingsChange={updateSettings}
+        onColorSchemeChange={updateColorScheme}
       />
     );
   }
@@ -323,54 +321,53 @@ function App() {
     <div className="site-shell">
       <SiteHeader
         homepage={content.homepage}
-        colorScheme={settings.colorScheme}
+        colorScheme={colorScheme}
         menuOpen={menuOpen}
         onMenuToggle={() => setMenuOpen((value) => !value)}
-        onColorSchemeToggle={() =>
-          updateSettings({
-            ...settings,
-            colorScheme: settings.colorScheme === 'light' ? 'dark' : 'light',
-          })
-        }
+        onColorSchemeToggle={() => updateColorScheme(colorScheme === 'light' ? 'dark' : 'light')}
         onSearchOpen={() => setSearchOpen(true)}
       />
       {menuOpen && (
-        <div className="mobile-drawer" id="mobile-navigation" aria-label="移动端导航">
+        <nav className="mobile-drawer" id="mobile-navigation" aria-label="移动端导航">
           {navItems.map((item) => (
             <a href={item.href} key={item.label} onClick={() => setMenuOpen(false)}>
               {item.label}
             </a>
           ))}
-        </div>
+        </nav>
       )}
+
+      {dataSourceNotice && <p className="data-source-notice" role="status">{dataSourceNotice}</p>}
 
       <main>
         {route.name === 'home' && (
           <>
-            <HomePage content={content} heroImage={stylePresetAssets[settings.stylePreset].heroImage} />
+            <HomePage content={content} heroImage={heroImage} />
             <div className="home-content-background">
-              <HomeContent content={content} ownerAvatarUrl={settings.ownerAvatarUrl} ownerName={settings.ownerName} />
-              <SiteFooter homepage={content.homepage} ownerAvatarUrl={settings.ownerAvatarUrl} ownerName={settings.ownerName} />
+              <HomeContent content={content} ownerAvatarUrl={ownerAvatarUrl} ownerName={settings.ownerName} />
+              <SiteFooter homepage={content.homepage} ownerAvatarUrl={ownerAvatarUrl} ownerName={settings.ownerName} />
             </div>
           </>
         )}
         {route.name === 'posts' && (
-          <AllPostsPage category={category} currentPage={route.page} posts={content.posts} />
+          <AllPostsPage category={category} currentPage={route.page} posts={publicPosts} tag={tag} />
         )}
         {route.name === 'notes' && (
-          <AllNotesPage currentPage={route.page} noteSections={content.noteSections} posts={content.posts} />
+          <AllNotesPage currentPage={route.page} noteSections={content.noteSections} posts={publicPosts} />
         )}
-        {route.name === 'archive' && <AllArchivePage currentPage={route.page} posts={content.posts} />}
-        {route.name === 'post' && <PostDetailPage ownerAvatarUrl={settings.ownerAvatarUrl} posts={content.posts} slug={route.slug} />}
+        {route.name === 'archive' && <AllArchivePage currentPage={route.page} posts={publicPosts} />}
+        {route.name === 'gallery' && <PublicGalleryPage albums={content.galleryAlbums} />}
+        {route.name === 'post' && <PostDetailPage ownerAvatarUrl={ownerAvatarUrl} posts={publicPosts} slug={route.slug} />}
         {route.name === 'not-found' && <NotFoundPage />}
       </main>
 
       {route.name !== 'home' && (
-        <SiteFooter homepage={content.homepage} ownerAvatarUrl={settings.ownerAvatarUrl} ownerName={settings.ownerName} />
+        <SiteFooter homepage={content.homepage} ownerAvatarUrl={ownerAvatarUrl} ownerName={settings.ownerName} />
       )}
 
       {searchOpen && (
         <SearchCommand
+          quickLinks={buildSearchQuickLinks(publicPosts)}
           query={query}
           results={filteredPosts}
           onQueryChange={setQuery}
@@ -383,19 +380,21 @@ function App() {
 
 function AdminLoginPage({
   homepage,
+  colorScheme,
   onLoginSuccess,
   onThemeToggle,
   settings,
   status,
 }: {
   homepage: HomepageCopy;
+  colorScheme: ColorScheme;
   onLoginSuccess: () => void;
   onThemeToggle: () => void;
   settings: SiteSettings;
   status: 'checking' | 'authenticated' | 'anonymous';
 }) {
   const [password, setPassword] = useState('');
-  const [loginStatus, setLoginStatus] = useState<'idle' | 'submitting' | 'error'>('idle');
+  const [loginStatus, setLoginStatus] = useState<'idle' | 'submitting' | 'invalid-password' | 'service-error'>('idle');
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -408,8 +407,8 @@ function AdminLoginPage({
     try {
       await loginAdmin(nextPassword);
       onLoginSuccess();
-    } catch {
-      setLoginStatus('error');
+    } catch (error) {
+      setLoginStatus(error instanceof ApiError && error.status === 401 ? 'invalid-password' : 'service-error');
     }
   }
 
@@ -430,7 +429,7 @@ function AdminLoginPage({
             onClick={onThemeToggle}
             aria-label="切换明暗模式"
           >
-            {settings.colorScheme === 'light' ? <Moon size={19} /> : <Sun size={19} />}
+            {colorScheme === 'light' ? <Moon size={19} /> : <Sun size={19} />}
           </button>
         </div>
       </header>
@@ -447,7 +446,7 @@ function AdminLoginPage({
                 disabled={status === 'checking'}
                 onChange={(event) => {
                   setPassword(event.target.value);
-                  if (loginStatus === 'error') {
+                  if (loginStatus === 'invalid-password' || loginStatus === 'service-error') {
                     setLoginStatus('idle');
                   }
                 }}
@@ -456,7 +455,8 @@ function AdminLoginPage({
                 value={password}
               />
             </label>
-            {loginStatus === 'error' && <p role="alert">密码不正确，请重新输入。</p>}
+            {loginStatus === 'invalid-password' && <p role="alert">密码不正确，请重新输入。</p>}
+            {loginStatus === 'service-error' && <p role="alert">后台服务暂时无法完成登录，请确认后端已启动后再试。</p>}
             <button disabled={status === 'checking' || loginStatus === 'submitting'} type="submit">
               {loginStatus === 'submitting' ? '登录中' : '登录'}
             </button>
@@ -467,58 +467,10 @@ function AdminLoginPage({
   );
 }
 
-type Route =
-  | { name: 'home' }
-  | { name: 'posts'; page: number }
-  | { name: 'notes'; page: number }
-  | { name: 'archive'; page: number }
-  | { name: 'post'; slug: string }
-  | { name: 'not-found' };
-
 type ArchiveGroup = {
   month: string;
   entries: Post[];
 };
-
-function getRoute(pathname: string): Route {
-  if (pathname === '/') {
-    return { name: 'home' };
-  }
-
-  if (pathname === '/posts') {
-    return { name: 'posts', page: 1 };
-  }
-
-  const pagedPostsMatch = pathname.match(/^\/posts\/page\/(\d+)$/);
-  if (pagedPostsMatch) {
-    return { name: 'posts', page: Number(pagedPostsMatch[1]) };
-  }
-
-  if (pathname === '/notes') {
-    return { name: 'notes', page: 1 };
-  }
-
-  const pagedNotesMatch = pathname.match(/^\/notes\/page\/(\d+)$/);
-  if (pagedNotesMatch) {
-    return { name: 'notes', page: Number(pagedNotesMatch[1]) };
-  }
-
-  if (pathname === '/archive') {
-    return { name: 'archive', page: 1 };
-  }
-
-  const pagedArchiveMatch = pathname.match(/^\/archive\/page\/(\d+)$/);
-  if (pagedArchiveMatch) {
-    return { name: 'archive', page: Number(pagedArchiveMatch[1]) };
-  }
-
-  const postMatch = pathname.match(/^\/posts\/([^/]+)$/);
-  if (postMatch) {
-    return { name: 'post', slug: decodeURIComponent(postMatch[1]) };
-  }
-
-  return { name: 'not-found' };
-}
 
 function buildArchive(posts: Post[]): ArchiveGroup[] {
   return sortPosts(posts).reduce<ArchiveGroup[]>((months, post) => {
@@ -588,6 +540,96 @@ function formatDeletedAt(value?: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(date)}`;
+}
+
+const postStatusLabels: Record<PostStatus, string> = {
+  draft: '草稿',
+  published: '已发布',
+  archived: '已归档',
+};
+
+const commentStatusLabels: Record<AdminCommentStatus, string> = {
+  pending: '待审核',
+  approved: '已通过',
+  rejected: '已拒绝',
+};
+
+function getPostStatus(post: Post): PostStatus {
+  return post.status ?? 'published';
+}
+
+function getPostStatusLabel(post: Post) {
+  return postStatusLabels[getPostStatus(post)];
+}
+
+function getPublishedPosts(posts: Post[]) {
+  return posts.filter((post) => getPostStatus(post) === 'published');
+}
+
+function toDatetimeLocalValue(value?: string | null) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return offsetDate.toISOString().slice(0, 16);
+}
+
+function fromDatetimeLocalValue(value: string) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function getPostArchiveMonthValue(post: Post) {
+  const [year = '', month = ''] = post.date.split(/[.\s]/);
+  if (!year || !month) {
+    return '';
+  }
+
+  return `${year}-${month.padStart(2, '0')}`;
+}
+
+function getArchiveMonthLabel(monthValue: string) {
+  const [year = '', month = ''] = monthValue.split('-');
+  if (!year || !month) {
+    return '未选择月份';
+  }
+
+  return `${year} 年 ${Number(month)} 月`;
+}
+
+function movePostToArchiveMonth(post: Post, monthValue: string): Post {
+  const [targetYearText, targetMonthText] = monthValue.split('-');
+  const targetYear = Number(targetYearText);
+  const targetMonth = Number(targetMonthText);
+  if (!targetYear || !targetMonth) {
+    return post;
+  }
+
+  const [datePart = '', timePart = ''] = post.date.trim().split(/\s+/);
+  const [, , dayText = '1'] = datePart.split('.');
+  const targetDay = Math.min(Math.max(Number(dayText) || 1, 1), new Date(targetYear, targetMonth, 0).getDate());
+  const [hourText = '0', minuteText = '0'] = timePart.split(':');
+  const hour = Number(hourText) || 0;
+  const minute = Number(minuteText) || 0;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const nextDate = `${targetYear}.${pad(targetMonth)}.${pad(targetDay)}${timePart ? ` ${pad(hour)}:${pad(minute)}` : ''}`;
+  const nextPublishedAt = new Date(targetYear, targetMonth - 1, targetDay, hour, minute).toISOString();
+
+  return {
+    ...post,
+    date: nextDate,
+    publishedAt: nextPublishedAt,
+  };
 }
 
 function slugifyPostTitle(value: string) {
@@ -716,218 +758,20 @@ type ComposerMode = 'wysiwyg' | 'markdown' | 'split';
 type FormulaMode = 'block' | 'inline';
 type DraftStatus = 'clean' | 'dirty' | 'saving' | 'draft-saved' | 'local-draft-saved' | 'published';
 
-type MathMdastNode = {
-  type: 'math' | 'inlineMath';
-  value: string;
-  meta?: string | null;
-};
-
-type SerializedFormulaNode = SerializedLexicalNode & {
-  formula: string;
-  formulaMode: FormulaMode;
-};
-
-type FormulaEditorProps = {
-  formula: string;
-  mode: FormulaMode;
-  nodeKey: NodeKey;
-  parentEditor: LexicalEditor;
-};
-
-function renderFormulaHtml(formula: string, mode: FormulaMode) {
-  try {
-    return katex.renderToString(formula || ' ', {
-      displayMode: mode === 'block',
-      output: 'htmlAndMathml',
-      throwOnError: false,
-    });
-  } catch {
-    return formula;
-  }
-}
-
-function FormulaEditor({ formula, mode, nodeKey, parentEditor }: FormulaEditorProps) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(formula);
-
-  useEffect(() => {
-    setValue(formula);
-  }, [formula]);
-
-  function updateFormula(nextValue: string) {
-    const normalizedValue = nextValue.trim() || 'E = mc^2';
-    parentEditor.update(() => {
-      const lexicalNode = $getNodeByKey(nodeKey);
-      if ($isFormulaNode(lexicalNode)) {
-        lexicalNode.setFormula(normalizedValue);
-      }
-    });
-    setEditing(false);
-  }
-
-  if (editing) {
-    return (
-      <span className={`wysiwyg-formula-editor ${mode === 'block' ? 'is-block' : 'is-inline'}`}>
-        <textarea
-          autoFocus
-          onBlur={() => updateFormula(value)}
-          onChange={(event) => setValue(event.target.value)}
-          onKeyDown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-              event.preventDefault();
-              updateFormula(value);
-            }
-
-            if (event.key === 'Escape') {
-              event.preventDefault();
-              setEditing(false);
-              setValue(formula);
-            }
-          }}
-          rows={mode === 'block' ? 4 : 1}
-          spellCheck={false}
-          value={value}
-        />
-      </span>
-    );
-  }
-
-  return (
-    <button
-      className={`wysiwyg-formula-node ${mode === 'block' ? 'is-block' : 'is-inline'}`}
-      onClick={() => setEditing(true)}
-      title="点击编辑公式"
-      type="button"
-    >
-      <span dangerouslySetInnerHTML={{ __html: renderFormulaHtml(formula, mode) }} />
-    </button>
-  );
-}
-
-class FormulaNode extends DecoratorNode<ReactJSX.Element> {
-  __formula: string;
-  __formulaMode: FormulaMode;
-
-  static getType() {
-    return 'formula';
-  }
-
-  static clone(node: FormulaNode) {
-    return new FormulaNode(node.__formula, node.__formulaMode, node.__key);
-  }
-
-  static importJSON(serializedNode: SerializedFormulaNode) {
-    return $createFormulaNode(serializedNode.formula, serializedNode.formulaMode);
-  }
-
-  constructor(formula: string, formulaMode: FormulaMode, key?: NodeKey) {
-    super(key);
-    this.__formula = formula;
-    this.__formulaMode = formulaMode;
-  }
-
-  exportJSON(): SerializedFormulaNode {
-    return {
-      formula: this.__formula,
-      formulaMode: this.__formulaMode,
-      type: 'formula',
-      version: 1,
-    };
-  }
-
-  createDOM(_config: EditorConfig) {
-    return document.createElement(this.__formulaMode === 'block' ? 'div' : 'span');
-  }
-
-  updateDOM() {
-    return false;
-  }
-
-  getFormula() {
-    return this.__formula;
-  }
-
-  getFormulaMode() {
-    return this.__formulaMode;
-  }
-
-  setFormula(nextFormula: string) {
-    const writable = this.getWritable();
-    writable.__formula = nextFormula;
-  }
-
-  decorate(parentEditor: LexicalEditor) {
-    return (
-      <FormulaEditor
-        formula={this.__formula}
-        mode={this.__formulaMode}
-        nodeKey={this.getKey()}
-        parentEditor={parentEditor}
-      />
-    );
-  }
-
-  isInline() {
-    return this.__formulaMode === 'inline';
-  }
-}
-
-function $createFormulaNode(formula: string, formulaMode: FormulaMode) {
-  return new FormulaNode(formula, formulaMode);
-}
-
-function $isFormulaNode(node: LexicalNode | null | undefined): node is FormulaNode {
-  return node instanceof FormulaNode;
-}
-
-const MdastFormulaVisitor: MdastImportVisitor<MathMdastNode> = {
-  testNode: (node) => node.type === 'math' || node.type === 'inlineMath',
-  visitNode({ mdastNode, actions }) {
-    actions.addAndStepInto(
-      $createFormulaNode(mdastNode.value, mdastNode.type === 'math' ? 'block' : 'inline'),
-    );
-  },
-};
-
-const FormulaVisitor: LexicalVisitor & {
-  testLexicalNode: (node: LexicalNode | null | undefined) => node is FormulaNode;
-} = {
-  testLexicalNode: $isFormulaNode,
-  visitLexicalNode({ lexicalNode, actions }) {
-    const formulaNode = lexicalNode as FormulaNode;
-    actions.addAndStepInto(
-      formulaNode.getFormulaMode() === 'block' ? 'math' : 'inlineMath',
-      {
-        value: formulaNode.getFormula(),
-        ...(formulaNode.getFormulaMode() === 'block' ? { meta: null } : {}),
-      },
-      false,
-    );
-  },
-};
-
-const mathPlugin = realmPlugin({
-  init(realm) {
-    realm.pubIn({
-      [addSyntaxExtension$]: micromarkMath(),
-      [addMdastExtension$]: mathFromMarkdown(),
-      [addToMarkdownExtension$]: mathToMarkdown(),
-      [addLexicalNode$]: FormulaNode,
-      [addImportVisitor$]: MdastFormulaVisitor,
-      [addExportVisitor$]: FormulaVisitor,
-    });
-  },
-});
-
 type ComposerDraft = {
   title: string;
   slug: string;
   category: string;
   date: string;
+  status: PostStatus;
+  publishedAt: string | null;
   tone: string;
   excerpt: string;
   tags: string[];
   bodyMarkdown: string;
+  seoTitle: string;
+  seoDescription: string;
+  coverImage: string;
   composerMode: ComposerMode;
   savedAt: string;
 };
@@ -963,10 +807,18 @@ function readComposerDraft(key: string): ComposerDraft | null {
       slug: parsedDraft.slug || '',
       category: parsedDraft.category || '',
       date: parsedDraft.date || '',
+      status:
+        parsedDraft.status === 'draft' || parsedDraft.status === 'archived' || parsedDraft.status === 'published'
+          ? parsedDraft.status
+          : 'published',
+      publishedAt: typeof parsedDraft.publishedAt === 'string' ? parsedDraft.publishedAt : null,
       tone: parsedDraft.tone || 'ink',
       excerpt: parsedDraft.excerpt || '',
       tags: Array.isArray(parsedDraft.tags) ? normalizeTags(parsedDraft.tags) : splitTagInput(String(parsedDraft.tags || '')),
       bodyMarkdown: parsedDraft.bodyMarkdown,
+      seoTitle: parsedDraft.seoTitle || '',
+      seoDescription: parsedDraft.seoDescription || '',
+      coverImage: parsedDraft.coverImage || '',
       composerMode:
         parsedDraft.composerMode === 'markdown' || parsedDraft.composerMode === 'split'
           ? parsedDraft.composerMode
@@ -993,7 +845,12 @@ function createComposerSnapshot(data: ComposerDraftData) {
     composerMode: data.composerMode,
     date: data.date,
     excerpt: data.excerpt,
+    coverImage: data.coverImage,
+    publishedAt: data.publishedAt,
+    seoDescription: data.seoDescription,
+    seoTitle: data.seoTitle,
     slug: data.slug,
+    status: data.status,
     tags: data.tags,
     title: data.title,
     tone: data.tone,
@@ -1123,7 +980,6 @@ function normalizeLoadedContent(content: Partial<SiteContent>, fallback: SiteCon
 function normalizeLoadedSettings(settings: Partial<SiteSettings> | undefined, fallback: SiteSettings): SiteSettings {
   return {
     stylePreset: stylePresets.includes(settings?.stylePreset as StylePreset) ? settings!.stylePreset! : fallback.stylePreset,
-    colorScheme: colorSchemes.includes(settings?.colorScheme as ColorScheme) ? settings!.colorScheme! : fallback.colorScheme,
     ownerName: settings?.ownerName !== undefined ? normalizeOwnerName(settings.ownerName) : fallback.ownerName,
     ownerAvatarUrl: settings?.ownerAvatarUrl !== undefined ? normalizeOwnerAvatarUrl(settings.ownerAvatarUrl) : fallback.ownerAvatarUrl,
   };
@@ -1158,20 +1014,45 @@ function HomeContent({ content, ownerAvatarUrl, ownerName }: { content: SiteCont
   );
 }
 
+type AdminPanelId =
+  | 'overview'
+  | 'posts'
+  | 'trash'
+  | 'comments'
+  | 'notes'
+  | 'series'
+  | 'gallery'
+  | 'archive'
+  | 'homepage'
+  | 'appearance';
+
+type BatchResult = {
+  success: number;
+  failed: number;
+};
+
+function formatBatchResult(action: string, result: BatchResult) {
+  return `${action}完成：成功 ${result.success} 项，失败 ${result.failed} 项。`;
+}
+
 function AdminPage({
   content,
+  colorScheme,
+  onLogout,
   settings,
   onContentChange,
+  onColorSchemeChange,
   onSettingsChange,
 }: {
   content: SiteContent;
+  colorScheme: ColorScheme;
+  onLogout: () => void;
   settings: SiteSettings;
   onContentChange: (content: SiteContent) => void;
+  onColorSchemeChange: (colorScheme: ColorScheme) => void;
   onSettingsChange: (settings: SiteSettings) => void;
 }) {
-  const [activePanel, setActivePanel] = useState<'posts' | 'trash' | 'notes' | 'series' | 'gallery' | 'archive' | 'homepage' | 'appearance'>(
-    'posts',
-  );
+  const [activePanel, setActivePanel] = useState<AdminPanelId>('overview');
   const [deletedPosts, setDeletedPosts] = useState<Post[]>([]);
   const [trashNotice, setTrashNotice] = useState('');
   const archiveGroups = buildArchive(content.posts);
@@ -1212,10 +1093,6 @@ function AdminPage({
     onSettingsChange({ ...settings, stylePreset });
   }
 
-  function updateColorScheme(colorScheme: ColorScheme) {
-    onSettingsChange({ ...settings, colorScheme });
-  }
-
   function updateOwnerName(ownerName: string) {
     onSettingsChange({ ...settings, ownerName });
   }
@@ -1224,60 +1101,114 @@ function AdminPage({
     onSettingsChange({ ...settings, ownerAvatarUrl: normalizeOwnerAvatarUrl(ownerAvatarUrl) });
   }
 
-  async function deletePost(slug: string) {
-    const nextPosts = content.posts.filter((post) => post.slug !== slug);
-    const nextFeaturedSeries = content.featuredSeries.map((series) => ({
-      ...series,
-      postSlugs: series.postSlugs.filter((postSlug) => postSlug !== slug),
-    }));
-    onContentChange({ ...content, posts: nextPosts, featuredSeries: nextFeaturedSeries });
+  async function handleLogout() {
     try {
-      await deleteAdminArticle(slug);
-      const deletedPost = content.posts.find((post) => post.slug === slug);
-      if (deletedPost) {
-        setDeletedPosts((posts) => [{ ...deletedPost, deletedAt: new Date().toISOString() }, ...posts.filter((post) => post.slug !== slug)]);
-      }
+      await logoutAdmin();
+      onLogout();
+      window.history.pushState({}, '', '/admin');
+      window.dispatchEvent(new PopStateEvent('popstate'));
     } catch {
-      // 本地缓存已经更新，等待后端恢复后可由管理台再次保存。
+      window.alert('退出登录失败，请稍后重试。');
     }
   }
 
-  async function restorePost(slug: string) {
-    const deletedPost = deletedPosts.find((post) => post.slug === slug);
-    if (!deletedPost) {
-      return;
+  async function deletePost(slug: string) {
+    await deletePosts([slug]);
+  }
+
+  async function deletePosts(slugs: string[]): Promise<BatchResult> {
+    const deletingSlugs = new Set(slugs);
+    if (deletingSlugs.size === 0) {
+      return { success: 0, failed: 0 };
     }
 
-    setTrashNotice('');
-    try {
-      const restoredPost = normalizeApiPost(await restoreAdminArticle(slug)) ?? deletedPost;
-      const nextPosts = [restoredPost, ...content.posts.filter((post) => post.slug !== restoredPost.slug)];
-      onContentChange({ ...content, posts: sortPosts(nextPosts) });
-      setDeletedPosts((posts) => posts.filter((post) => post.slug !== slug));
-    } catch {
+    const results = await Promise.allSettled([...deletingSlugs].map((slug) => deleteAdminArticle(slug)));
+    const successfulSlugs = [...deletingSlugs].filter((_, index) => results[index]?.status === 'fulfilled');
+    const successfulSlugSet = new Set(successfulSlugs);
+    const deletedAt = new Date().toISOString();
+    const deletedPostsSnapshot = content.posts
+      .filter((post) => successfulSlugSet.has(post.slug))
+      .map((post) => ({ ...post, deletedAt }));
+    const nextPosts = content.posts.filter((post) => !successfulSlugSet.has(post.slug));
+    const nextFeaturedSeries = content.featuredSeries.map((series) => ({
+      ...series,
+      postSlugs: series.postSlugs.filter((postSlug) => !successfulSlugSet.has(postSlug)),
+    }));
+
+    if (successfulSlugs.length > 0) {
+      onContentChange({ ...content, posts: nextPosts, featuredSeries: nextFeaturedSeries });
+      setDeletedPosts((posts) => [
+        ...deletedPostsSnapshot,
+        ...posts.filter((post) => !successfulSlugSet.has(post.slug)),
+      ]);
+    }
+
+    return { success: successfulSlugs.length, failed: deletingSlugs.size - successfulSlugs.length };
+  }
+
+  async function restorePost(slug: string) {
+    const result = await restorePosts([slug]);
+    if (result.failed > 0) {
       setTrashNotice('恢复失败，请确认后台服务正在运行并且登录没有过期。');
     }
   }
 
+  async function restorePosts(slugs: string[]): Promise<BatchResult> {
+    const restoringSlugs = new Set(slugs);
+    if (restoringSlugs.size === 0) {
+      return { success: 0, failed: 0 };
+    }
+
+    setTrashNotice('');
+    const results = await Promise.allSettled([...restoringSlugs].map((slug) => restoreAdminArticle(slug)));
+    const restoredPosts = results
+      .map((result, index) => {
+        if (result.status !== 'fulfilled') {
+          return null;
+        }
+        const fallbackPost = deletedPosts.find((post) => post.slug === [...restoringSlugs][index]);
+        return normalizeApiPost(result.value) ?? fallbackPost ?? null;
+      })
+      .filter((post): post is Post => post !== null);
+    const restoredSlugs = new Set(restoredPosts.map((post) => post.slug));
+
+    if (restoredPosts.length > 0) {
+      const nextPosts = [
+        ...restoredPosts,
+        ...content.posts.filter((post) => !restoredSlugs.has(post.slug)),
+      ];
+      onContentChange({ ...content, posts: sortPosts(nextPosts) });
+      setDeletedPosts((posts) => posts.filter((post) => !restoringSlugs.has(post.slug) && !restoredSlugs.has(post.slug)));
+    }
+
+    return { success: restoredPosts.length, failed: restoringSlugs.size - restoredPosts.length };
+  }
+
   async function createPost(post: Post) {
-    let savedPost = post;
+    let savedPost: Post = { ...post, syncStatus: 'synced' };
     try {
-      savedPost = normalizeApiPost(await createAdminArticle(post)) ?? post;
+      savedPost = { ...(normalizeApiPost(await createAdminArticle(post)) ?? post), syncStatus: 'synced' };
     } catch {
-      // API 保存失败时保留本地缓存，兼容离线草稿发布。
+      const localPost: Post = { ...post, syncStatus: 'local-only' };
+      onContentChange({ ...content, posts: [localPost, ...content.posts] });
+      return false;
     }
 
     onContentChange({ ...content, posts: [savedPost, ...content.posts] });
     window.history.pushState({}, '', '/admin/posts');
     window.dispatchEvent(new PopStateEvent('popstate'));
+    return true;
   }
 
   async function updatePost(originalSlug: string, post: Post) {
-    let savedPost = post;
+    let savedPost: Post = { ...post, syncStatus: 'synced' };
     try {
-      savedPost = normalizeApiPost(await updateAdminArticle(originalSlug, post)) ?? post;
+      savedPost = { ...(normalizeApiPost(await updateAdminArticle(originalSlug, post)) ?? post), syncStatus: 'synced' };
     } catch {
-      // API 保存失败时保留本地缓存，避免编辑内容丢失。
+      const localPost: Post = { ...post, syncStatus: 'local-only' };
+      const nextLocalPosts = content.posts.map((currentPost) => (currentPost.slug === originalSlug ? localPost : currentPost));
+      onContentChange({ ...content, posts: nextLocalPosts });
+      return false;
     }
 
     const nextPosts = content.posts.map((currentPost) => (currentPost.slug === originalSlug ? savedPost : currentPost));
@@ -1288,6 +1219,144 @@ function AdminPage({
     onContentChange({ ...content, posts: nextPosts, featuredSeries: nextFeaturedSeries });
     window.history.pushState({}, '', '/admin/posts');
     window.dispatchEvent(new PopStateEvent('popstate'));
+    return true;
+  }
+
+  async function syncPost(slug: string): Promise<BatchResult> {
+    const post = content.posts.find((post) => post.slug === slug);
+    if (!post) {
+      return { success: 0, failed: 1 };
+    }
+
+    try {
+      let savedPost = normalizeApiPost(await updateAdminArticle(slug, post));
+      if (!savedPost) {
+        throw new Error('Invalid article response');
+      }
+      savedPost = { ...savedPost, syncStatus: 'synced' };
+      onContentChange({
+        ...content,
+        posts: content.posts.map((currentPost) => (currentPost.slug === slug ? savedPost : currentPost)),
+      });
+      return { success: 1, failed: 0 };
+    } catch {
+      try {
+        const createdPost = normalizeApiPost(await createAdminArticle(post));
+        if (!createdPost) {
+          throw new Error('Invalid article response');
+        }
+        onContentChange({
+          ...content,
+          posts: content.posts.map((currentPost) => (
+            currentPost.slug === slug ? { ...createdPost, syncStatus: 'synced' } : currentPost
+          )),
+        });
+        return { success: 1, failed: 0 };
+      } catch {
+        return { success: 0, failed: 1 };
+      }
+    }
+  }
+
+  async function publishPosts(slugs: string[]): Promise<BatchResult> {
+    return updatePostStatuses(slugs, publishAdminArticle);
+  }
+
+  async function unpublishPosts(slugs: string[]): Promise<BatchResult> {
+    return updatePostStatuses(slugs, unpublishAdminArticle);
+  }
+
+  async function archivePosts(slugs: string[]): Promise<BatchResult> {
+    return updatePosts(slugs, (post) => ({ ...post, status: 'archived' }));
+  }
+
+  async function updatePostStatuses(
+    slugs: string[],
+    updateStatus: (slug: string) => Promise<Post>,
+  ): Promise<BatchResult> {
+    const targetSlugs = Array.from(new Set(slugs));
+    if (targetSlugs.length === 0) {
+      return { success: 0, failed: 0 };
+    }
+
+    const results = await Promise.allSettled(targetSlugs.map((slug) => updateStatus(slug)));
+    const updatedPosts = results
+      .map((result) => (result.status === 'fulfilled' ? normalizeApiPost(result.value) : null))
+      .filter((post): post is Post => post !== null);
+    const updatedBySlug = new Map(updatedPosts.map((post) => [post.slug, post]));
+
+    if (updatedPosts.length > 0) {
+      onContentChange({
+        ...content,
+        posts: content.posts.map((post) => updatedBySlug.get(post.slug) ?? post),
+      });
+    }
+
+    return { success: updatedPosts.length, failed: targetSlugs.length - updatedPosts.length };
+  }
+
+  async function updatePosts(slugs: string[], createNextPost: (post: Post) => Post): Promise<BatchResult> {
+    const targetSlugs = Array.from(new Set(slugs));
+    if (targetSlugs.length === 0) {
+      return { success: 0, failed: 0 };
+    }
+
+    const postsBySlug = new Map(content.posts.map((post) => [post.slug, post]));
+    const results = await Promise.allSettled(
+      targetSlugs.map((slug) => {
+        const post = postsBySlug.get(slug);
+        return post ? updateAdminArticle(slug, createNextPost(post)) : Promise.reject(new Error('Post not found'));
+      }),
+    );
+    const updatedPosts = results
+      .map((result) => (result.status === 'fulfilled' ? normalizeApiPost(result.value) : null))
+      .filter((post): post is Post => post !== null);
+    const updatedBySlug = new Map(updatedPosts.map((post) => [post.slug, post]));
+
+    if (updatedPosts.length > 0) {
+      onContentChange({
+        ...content,
+        posts: sortPosts(content.posts.map((post) => updatedBySlug.get(post.slug) ?? post)),
+      });
+    }
+
+    return { success: updatedPosts.length, failed: targetSlugs.length - updatedPosts.length };
+  }
+
+  async function movePostsToArchiveMonth(slugs: string[], monthValue: string): Promise<BatchResult> {
+    if (!monthValue) {
+      return { success: 0, failed: Array.from(new Set(slugs)).length };
+    }
+
+    return updatePosts(slugs, (post) => movePostToArchiveMonth(post, monthValue));
+  }
+
+  async function movePostsToCategory(slugs: string[], category: string): Promise<BatchResult> {
+    const targetSlugs = Array.from(new Set(slugs));
+    if (targetSlugs.length === 0 || !category) {
+      return { success: 0, failed: targetSlugs.length };
+    }
+
+    const postsBySlug = new Map(content.posts.map((post) => [post.slug, post]));
+    const results = await Promise.allSettled(
+      targetSlugs.map((slug) => {
+        const post = postsBySlug.get(slug);
+        return post ? updateAdminArticle(slug, { ...post, category }) : Promise.reject(new Error('Post not found'));
+      }),
+    );
+    const updatedPosts = results
+      .map((result) => (result.status === 'fulfilled' ? normalizeApiPost(result.value) : null))
+      .filter((post): post is Post => post !== null);
+    const updatedBySlug = new Map(updatedPosts.map((post) => [post.slug, post]));
+
+    if (updatedPosts.length > 0) {
+      onContentChange({
+        ...content,
+        posts: content.posts.map((post) => updatedBySlug.get(post.slug) ?? post),
+      });
+    }
+
+    return { success: updatedPosts.length, failed: targetSlugs.length - updatedPosts.length };
   }
 
   function updateNoteSection(index: number, nextSection: NoteSection) {
@@ -1407,6 +1476,10 @@ function AdminPage({
 
   async function uploadGalleryImages(albumIndex: number, files: File[]) {
     const album = content.galleryAlbums[albumIndex];
+    if (!album || isSystemGalleryAlbum(album)) {
+      return;
+    }
+
     const uploadedImages: GalleryImage[] = [];
 
     for (const file of files) {
@@ -1431,6 +1504,78 @@ function AdminPage({
       index === albumIndex ? withGalleryAlbumImages(currentAlbum, nextImages) : currentAlbum,
     );
     onContentChange({ ...content, galleryAlbums: nextAlbums });
+  }
+
+  async function uploadComposerImages(files: File[]) {
+    const imageFiles = files.filter(isSupportedComposerImageFile);
+    if (imageFiles.length === 0) {
+      return [];
+    }
+
+    let targetAlbum =
+      content.galleryAlbums.find((album) => !isSystemGalleryAlbum(album) && album.slug === composerImageAlbumSlug) ??
+      content.galleryAlbums.find((album) => !isSystemGalleryAlbum(album));
+    let nextAlbums = content.galleryAlbums;
+
+    if (!targetAlbum) {
+      const draftAlbum: GalleryAlbum = {
+        id: `album-${Date.now()}`,
+        slug: composerImageAlbumSlug,
+        title: composerImageAlbumTitle,
+        description: '写博客时粘贴或拖入的正文图片。',
+        coverImageId: null,
+        coverImageUrl: '',
+        isPublic: true,
+        sortOrder: content.galleryAlbums.length,
+        imageCount: 0,
+        images: [],
+      };
+      targetAlbum = normalizeApiGalleryAlbum(await createAdminGalleryAlbum(draftAlbum)) ?? draftAlbum;
+      nextAlbums = [...nextAlbums, targetAlbum];
+    }
+
+    const uploadedImages: GalleryImage[] = [];
+
+    for (const file of imageFiles) {
+      const savedImage = await uploadAdminGalleryImage(targetAlbum.id || targetAlbum.slug, file, {
+        title: createComposerImageTitle(file, uploadedImages.length),
+        sortOrder: targetAlbum.images.length + uploadedImages.length,
+        isPublic: true,
+      });
+      uploadedImages.push(savedImage);
+    }
+
+    const nextImages = normalizeGalleryImageOrder([...targetAlbum.images, ...uploadedImages]);
+    const nextAlbum = withGalleryAlbumImages(targetAlbum, nextImages);
+    const updatedAlbums = nextAlbums.map((album) => (album.id === targetAlbum.id ? nextAlbum : album));
+    onContentChange({ ...content, galleryAlbums: updatedAlbums });
+
+    return uploadedImages;
+  }
+
+  async function replaceGalleryImageFile(albumIndex: number, imageIndex: number, file: File) {
+    const album = content.galleryAlbums[albumIndex];
+    const image = album?.images[imageIndex];
+    if (!album || !image || !isSystemGalleryAlbum(album)) {
+      return;
+    }
+
+    try {
+      const savedImage = await replaceAdminGalleryImageFile(image.id, file);
+      const nextAlbums = content.galleryAlbums.map((currentAlbum, currentAlbumIndex) =>
+        currentAlbumIndex === albumIndex
+          ? withGalleryAlbumImages(currentAlbum, currentAlbum.images.map((currentImage) => (
+              currentImage.id === savedImage.id ? savedImage : currentImage
+            )))
+          : currentAlbum,
+      );
+      onContentChange({ ...content, galleryAlbums: nextAlbums });
+      if (image.id === 'image-guzhouyue-avatar' && settings.ownerAvatarUrl === image.imageUrl) {
+        onSettingsChange({ ...settings, ownerAvatarUrl: savedImage.imageUrl });
+      }
+    } catch {
+      window.alert('替换图片失败，请确认后台服务正在运行并且登录没有过期。');
+    }
   }
 
   async function updateGalleryImage(albumIndex: number, imageIndex: number, nextImage: GalleryImage) {
@@ -1472,6 +1617,11 @@ function AdminPage({
     }
 
     const imagesToDelete = album.images.filter((image) => deletingIds.has(image.id));
+    if (isSystemGalleryAlbum(album)) {
+      window.alert('系统图库里的图片不能删除，只能上传新图片覆盖。');
+      return;
+    }
+
     const nextImages = normalizeGalleryImageOrder(album.images.filter((image) => !deletingIds.has(image.id)));
     const nextAlbum = withGalleryAlbumImages(album, nextImages);
     const nextAlbums = content.galleryAlbums.map((currentAlbum, currentAlbumIndex) =>
@@ -1540,10 +1690,13 @@ function AdminPage({
             <button
               className="icon-button"
               type="button"
-              onClick={() => updateColorScheme(settings.colorScheme === 'light' ? 'dark' : 'light')}
+              onClick={() => onColorSchemeChange(colorScheme === 'light' ? 'dark' : 'light')}
               aria-label="切换明暗模式"
             >
-              {settings.colorScheme === 'light' ? <Moon size={19} /> : <Sun size={19} />}
+              {colorScheme === 'light' ? <Moon size={19} /> : <Sun size={19} />}
+            </button>
+            <button className="secondary-action admin-logout-action" type="button" onClick={handleLogout}>
+              退出登录
             </button>
           </div>
         </header>
@@ -1557,7 +1710,9 @@ function AdminPage({
             noteSections={content.noteSections}
             onCreatePost={createPost}
             onUpdatePost={updatePost}
-            onThemeToggle={() => updateColorScheme(settings.colorScheme === 'light' ? 'dark' : 'light')}
+            onUploadImages={uploadComposerImages}
+            onThemeToggle={() => onColorSchemeChange(colorScheme === 'light' ? 'dark' : 'light')}
+            colorScheme={colorScheme}
             posts={content.posts}
             settings={settings}
             siteName={content.homepage.siteName}
@@ -1565,42 +1720,71 @@ function AdminPage({
         ) : (
           <>
             <section className="admin-hero">
-              <SectionHeading eyebrow="Admin" title="站点管理台" />
-              <p>管理文章、归档、札记与首页文案。当前原型保存到本机浏览器，刷新后仍会保留。</p>
+              <div>
+                <SectionHeading eyebrow="Admin" title="站点管理台" />
+                <p>集中管理文章、专题、图库、首页文案和外观。常用入口与内容状态放在总览里，减少来回切换。</p>
+              </div>
+              <div className="admin-hero-actions">
+                <a className="primary-action" href="/admin/posts/new">
+                  <Plus size={17} />
+                  写新文章
+                </a>
+                <a className="secondary-action" href="/">
+                  <Eye size={17} />
+                  查看首页
+                </a>
+              </div>
             </section>
 
             <section className="admin-workspace">
               <aside className="admin-sidebar" aria-label="管理菜单">
                 {[
-                  ['posts', '文章管理', FileText],
-                  ['trash', '回收站', Trash2],
-                  ['notes', '札记分类', Feather],
-                  ['series', '专题管理', ListOrdered],
-                  ['gallery', '图库管理', ImageIcon],
-                  ['archive', '归档管理', CalendarDays],
-                  ['homepage', '主页词汇', Settings],
-                  ['appearance', '外观设置', Sun],
-                ].map(([panel, label, Icon]) => (
+                  { panel: 'overview', label: '总览', Icon: Columns2, meta: `${content.posts.length} 篇内容` },
+                  { panel: 'posts', label: '文章管理', Icon: FileText, meta: `${content.posts.length} 篇` },
+                  { panel: 'trash', label: '回收站', Icon: Trash2, meta: `${deletedPosts.length} 篇` },
+                  { panel: 'comments', label: '评论审核', Icon: MessageCircle, meta: '待处理' },
+                  { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
+                  { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
+                  { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
+                  { panel: 'archive', label: '归档管理', Icon: CalendarDays, meta: `${archiveGroups.length} 个月` },
+                  { panel: 'homepage', label: '主页词汇', Icon: Settings, meta: '首页内容' },
+                  { panel: 'appearance', label: '外观设置', Icon: Sun, meta: colorScheme === 'light' ? '亮色' : '暗色' },
+                ].map(({ panel, label, Icon, meta }) => (
                   <button
                     aria-pressed={activePanel === panel}
-                    key={panel as string}
-                    onClick={() => setActivePanel(panel as typeof activePanel)}
+                    key={panel}
+                    onClick={() => setActivePanel(panel as AdminPanelId)}
                     type="button"
                   >
                     <Icon size={18} />
-                    {label as string}
+                    <span>
+                      <strong>{label}</strong>
+                      <small>{meta}</small>
+                    </span>
                   </button>
                 ))}
-                <button className="danger-action" onClick={restoreDefaults} type="button">
-                  <Trash2 size={18} />
-                  重置内容
-                </button>
               </aside>
 
               <div className="admin-content">
+                {activePanel === 'overview' && (
+                  <AdminDashboardPanel
+                    archiveGroups={archiveGroups}
+                    colorScheme={colorScheme}
+                    content={content}
+                    deletedPosts={deletedPosts}
+                    onSelectPanel={setActivePanel}
+                  />
+                )}
+
                 {activePanel === 'posts' && (
                   <AdminPostsPanel
-                    onDeletePost={deletePost}
+                    noteSections={content.noteSections}
+                    onDeletePosts={deletePosts}
+                    onArchivePosts={archivePosts}
+                    onMovePostsToCategory={movePostsToCategory}
+                    onPublishPosts={publishPosts}
+                    onSyncPost={syncPost}
+                    onUnpublishPosts={unpublishPosts}
                     posts={content.posts}
                   />
                 )}
@@ -1608,10 +1792,12 @@ function AdminPage({
                 {activePanel === 'trash' && (
                   <AdminTrashPanel
                     notice={trashNotice}
-                    onRestorePost={restorePost}
+                    onRestorePosts={restorePosts}
                     posts={deletedPosts}
                   />
                 )}
+
+                {activePanel === 'comments' && <AdminCommentsPanel />}
 
                 {activePanel === 'notes' && (
                   <AdminNotesPanel
@@ -1643,11 +1829,21 @@ function AdminPage({
                     onDeleteImages={deleteGalleryImagesAt}
                     onImageChange={updateGalleryImage}
                     onMoveImage={moveGalleryImage}
+                    onReplaceImageFile={replaceGalleryImageFile}
                     onUploadImages={uploadGalleryImages}
                   />
                 )}
 
-                {activePanel === 'archive' && <AdminArchivePanel archiveGroups={archiveGroups} posts={content.posts} />}
+                {activePanel === 'archive' && (
+                  <AdminArchivePanel
+                    archiveGroups={archiveGroups}
+                    onArchivePosts={archivePosts}
+                    onMovePostsToArchiveMonth={movePostsToArchiveMonth}
+                    onPublishPosts={publishPosts}
+                    onUnpublishPosts={unpublishPosts}
+                    posts={content.posts}
+                  />
+                )}
 
                 {activePanel === 'homepage' && (
                   <AdminHomepagePanel homepage={content.homepage} onHomepageChange={updateHomepage} />
@@ -1656,10 +1852,12 @@ function AdminPage({
                 {activePanel === 'appearance' && (
                   <AdminAppearancePanel
                     albums={content.galleryAlbums}
-                    colorScheme={settings.colorScheme}
-                    onColorSchemeChange={updateColorScheme}
+                    colorScheme={colorScheme}
+                    homepage={content.homepage}
+                    onColorSchemeChange={onColorSchemeChange}
                     onOwnerAvatarUrlChange={updateOwnerAvatarUrl}
                     onOwnerNameChange={updateOwnerName}
+                    onResetContent={restoreDefaults}
                     onStylePresetChange={updateStylePreset}
                     ownerAvatarUrl={settings.ownerAvatarUrl}
                     ownerName={settings.ownerName}
@@ -1675,132 +1873,66 @@ function AdminPage({
   );
 }
 
-function AdminPostsPanel({
-  onDeletePost,
-  posts,
-}: {
-  onDeletePost: (slug: string) => void;
-  posts: Post[];
-}) {
-  const [currentPage, setCurrentPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(posts.length / adminPostsPerPage));
-  const safeCurrentPage = Math.min(currentPage, totalPages);
-  const pagedPosts = posts.slice((safeCurrentPage - 1) * adminPostsPerPage, safeCurrentPage * adminPostsPerPage);
-  const firstItemIndex = posts.length === 0 ? 0 : (safeCurrentPage - 1) * adminPostsPerPage + 1;
-  const lastItemIndex = Math.min(posts.length, safeCurrentPage * adminPostsPerPage);
-
-  useEffect(() => {
-    setCurrentPage((page) => Math.min(page, totalPages));
-  }, [totalPages]);
-
-  return (
-    <section className="admin-panel" aria-label="文章管理">
-      <PanelHeader
-        action={
-          <a className="primary-action" href="/admin/posts/new">
-            <Plus size={17} />
-            创建文章
-          </a>
-        }
-        title="文章管理"
-      />
-      <div className="admin-posts-overview">
-        <div className="archive-summary">
-          <strong>{posts.length}</strong>
-          <span>篇文章</span>
-          <strong>{new Set(posts.map((post) => post.category)).size}</strong>
-          <span>个分类</span>
-        </div>
-
-        {posts.length > 0 ? (
-          <>
-            <div className="admin-post-list" aria-label="文章列表">
-              {pagedPosts.map((post) => (
-                <article className="admin-post-row" key={post.slug}>
-                  <div className="admin-post-main">
-                    <div className="admin-post-titleline">
-                      <h3>{post.title}</h3>
-                      <span>{post.date}</span>
-                    </div>
-                    <p>{post.excerpt}</p>
-                    <div className="admin-post-meta">
-                      <span>{post.category}</span>
-                      <span>{post.tags.join('，')}</span>
-                    </div>
-                  </div>
-                  <div className="admin-post-actions">
-                    <a className="secondary-action" href={`/posts/${post.slug}`}>
-                      预览
-                    </a>
-                    <a className="secondary-action" href={`/admin/posts/${post.slug}/edit`}>
-                      <Pencil size={16} />
-                      编辑
-                    </a>
-                    <button className="danger-action" type="button" onClick={() => onDeletePost(post.slug)}>
-                      <Trash2 size={17} />
-                      删除
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-
-            <nav className="admin-pagination" aria-label="文章分页">
-              <span>
-                第 {firstItemIndex}-{lastItemIndex} 篇，共 {posts.length} 篇
-              </span>
-              <div>
-                <button
-                  className="secondary-action"
-                  disabled={safeCurrentPage === 1}
-                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                  type="button"
-                >
-                  上一页
-                </button>
-                <strong>
-                  {safeCurrentPage} / {totalPages}
-                </strong>
-                <button
-                  className="secondary-action"
-                  disabled={safeCurrentPage === totalPages}
-                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-                  type="button"
-                >
-                  下一页
-                </button>
-              </div>
-            </nav>
-          </>
-        ) : (
-          <div className="empty-state">
-            <p>暂无文章。</p>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
 function AdminTrashPanel({
   notice,
-  onRestorePost,
+  onRestorePosts,
   posts,
 }: {
   notice: string;
-  onRestorePost: (slug: string) => void;
+  onRestorePosts: (slugs: string[]) => Promise<BatchResult>;
   posts: Post[];
 }) {
   const [currentPage, setCurrentPage] = useState(1);
+  const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
+  const [batchNotice, setBatchNotice] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
   const totalPages = Math.max(1, Math.ceil(posts.length / adminPostsPerPage));
   const safeCurrentPage = Math.min(currentPage, totalPages);
   const pagedPosts = posts.slice((safeCurrentPage - 1) * adminPostsPerPage, safeCurrentPage * adminPostsPerPage);
   const firstItemIndex = posts.length === 0 ? 0 : (safeCurrentPage - 1) * adminPostsPerPage + 1;
   const lastItemIndex = Math.min(posts.length, safeCurrentPage * adminPostsPerPage);
+  const visibleSlugs = pagedPosts.map((post) => post.slug);
+  const allVisibleSelected = visibleSlugs.length > 0 && visibleSlugs.every((slug) => selectedSlugs.includes(slug));
 
   useEffect(() => {
     setCurrentPage((page) => Math.min(page, totalPages));
   }, [totalPages]);
+
+  useEffect(() => {
+    setSelectedSlugs((slugs) => slugs.filter((slug) => posts.some((post) => post.slug === slug)));
+  }, [posts]);
+
+  function togglePost(slug: string) {
+    setSelectedSlugs((slugs) => (slugs.includes(slug) ? slugs.filter((item) => item !== slug) : [...slugs, slug]));
+  }
+
+  function toggleVisiblePosts() {
+    setSelectedSlugs((slugs) => {
+      if (allVisibleSelected) {
+        return slugs.filter((slug) => !visibleSlugs.includes(slug));
+      }
+
+      return Array.from(new Set([...slugs, ...visibleSlugs]));
+    });
+  }
+
+  async function runRestore(slugs: string[]) {
+    if (slugs.length === 0 || batchBusy) {
+      return;
+    }
+
+    setBatchBusy(true);
+    setBatchNotice('');
+    try {
+      const result = await onRestorePosts(slugs);
+      setBatchNotice(formatBatchResult('恢复', result));
+      if (result.success > 0) {
+        setSelectedSlugs((currentSlugs) => currentSlugs.filter((slug) => !slugs.includes(slug)));
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  }
 
   return (
     <section className="admin-panel" aria-label="回收站">
@@ -1811,12 +1943,37 @@ function AdminTrashPanel({
           <span>篇已删除文章</span>
         </div>
         {notice && <p className="admin-trash-notice">{notice}</p>}
+        {posts.length > 0 && (
+          <div className="admin-bulk-toolbar" aria-label="回收站批量操作">
+            <label className="admin-select-all">
+              <input checked={allVisibleSelected} type="checkbox" onChange={toggleVisiblePosts} />
+              选中本页
+            </label>
+            <span>{selectedSlugs.length} 篇已选</span>
+            <button
+              className="secondary-action"
+              disabled={selectedSlugs.length === 0 || batchBusy}
+              type="button"
+              onClick={() => void runRestore(selectedSlugs)}
+            >
+              批量恢复
+            </button>
+          </div>
+        )}
+        {batchNotice && <p className="admin-batch-notice">{batchNotice}</p>}
 
         {posts.length > 0 ? (
           <>
             <div className="admin-post-list" aria-label="已删除文章列表">
               {pagedPosts.map((post) => (
                 <article className="admin-post-row" key={post.slug}>
+                  <label className="admin-row-select" aria-label={`选择${post.title}`}>
+                    <input
+                      checked={selectedSlugs.includes(post.slug)}
+                      type="checkbox"
+                      onChange={() => togglePost(post.slug)}
+                    />
+                  </label>
                   <div className="admin-post-main">
                     <div className="admin-post-titleline">
                       <h3>{post.title}</h3>
@@ -1829,7 +1986,12 @@ function AdminTrashPanel({
                     </div>
                   </div>
                   <div className="admin-post-actions">
-                    <button className="secondary-action" type="button" onClick={() => onRestorePost(post.slug)}>
+                    <button
+                      className="secondary-action"
+                      disabled={batchBusy}
+                      type="button"
+                      onClick={() => void runRestore([post.slug])}
+                    >
                       恢复文章
                     </button>
                   </div>
@@ -1874,23 +2036,169 @@ function AdminTrashPanel({
   );
 }
 
+function AdminCommentsPanel() {
+  const commentStatuses: AdminCommentStatus[] = ['pending', 'approved', 'rejected'];
+  const [activeStatus, setActiveStatus] = useState<AdminCommentStatus>('pending');
+  const [comments, setComments] = useState<ApiAdminComment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState('');
+  const [busyCommentId, setBusyCommentId] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadComments() {
+      setLoading(true);
+      setNotice('');
+      try {
+        const items = await fetchAdminComments(activeStatus);
+        if (!cancelled) {
+          setComments(items);
+        }
+      } catch {
+        if (!cancelled) {
+          setComments([]);
+          setNotice('评论接口暂时不可用，请确认后台服务和登录状态。');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadComments();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStatus]);
+
+  async function changeCommentStatus(comment: ApiAdminComment, nextStatus: AdminCommentStatus) {
+    if (busyCommentId) {
+      return;
+    }
+
+    setBusyCommentId(comment.id);
+    setNotice('');
+    try {
+      await updateAdminCommentStatus(comment.id, nextStatus);
+      setComments((items) => items.filter((item) => item.id !== comment.id));
+      setNotice(`已将「${comment.articleTitle}」下的评论标记为${commentStatusLabels[nextStatus]}。`);
+    } catch {
+      setNotice('评论状态更新失败，请稍后重试。');
+    } finally {
+      setBusyCommentId('');
+    }
+  }
+
+  return (
+    <section className="admin-panel" aria-label="评论审核">
+      <PanelHeader title="评论审核" />
+      <div className="comments-moderation">
+        <div className="archive-summary">
+          <strong>{comments.length}</strong>
+          <span>{commentStatusLabels[activeStatus]}评论</span>
+        </div>
+
+        <div className="admin-filter-tabs admin-status-tabs comments-status-tabs" role="group" aria-label="按评论状态筛选">
+          {commentStatuses.map((status) => (
+            <button
+              aria-pressed={activeStatus === status}
+              key={status}
+              onClick={() => setActiveStatus(status)}
+              type="button"
+            >
+              {commentStatusLabels[status]}
+            </button>
+          ))}
+        </div>
+        {notice && <p className="admin-batch-notice">{notice}</p>}
+
+        {loading ? (
+          <div className="empty-state">
+            <p>正在加载评论。</p>
+          </div>
+        ) : comments.length > 0 ? (
+          <div className="comments-moderation-list">
+            {comments.map((comment) => (
+              <article className="comment-moderation-card" key={comment.id}>
+                <header>
+                  <div>
+                    <span className={`admin-status-pill status-comment-${comment.status}`}>{commentStatusLabels[comment.status]}</span>
+                    <a href={`/posts/${comment.articleSlug}`}>{comment.articleTitle}</a>
+                  </div>
+                  <time dateTime={comment.createdAt}>{formatCommentTime(comment.createdAt)}</time>
+                </header>
+                <div className="comment-moderation-body">
+                  <strong>{comment.author}</strong>
+                  <p>{comment.content}</p>
+                </div>
+                <div className="comment-moderation-actions">
+                  {activeStatus !== 'approved' && (
+                    <button
+                      className="secondary-action"
+                      disabled={busyCommentId === comment.id}
+                      type="button"
+                      onClick={() => void changeCommentStatus(comment, 'approved')}
+                    >
+                      通过
+                    </button>
+                  )}
+                  {activeStatus !== 'rejected' && (
+                    <button
+                      className="danger-action"
+                      disabled={busyCommentId === comment.id}
+                      type="button"
+                      onClick={() => void changeCommentStatus(comment, 'rejected')}
+                    >
+                      拒绝
+                    </button>
+                  )}
+                  {activeStatus !== 'pending' && (
+                    <button
+                      className="secondary-action"
+                      disabled={busyCommentId === comment.id}
+                      type="button"
+                      onClick={() => void changeCommentStatus(comment, 'pending')}
+                    >
+                      退回待审
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <p>当前没有{commentStatusLabels[activeStatus]}评论。</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function AdminPostComposer({
+  colorScheme,
   editingPost,
   galleryAlbums,
   noteSections,
   onCreatePost,
   onThemeToggle,
   onUpdatePost,
+  onUploadImages,
   posts,
   settings,
   siteName,
 }: {
+  colorScheme: ColorScheme;
   editingPost?: Post;
   galleryAlbums: GalleryAlbum[];
   noteSections: NoteSection[];
-  onCreatePost: (post: Post) => void;
+  onCreatePost: (post: Post) => Promise<boolean>;
   onThemeToggle: () => void;
-  onUpdatePost: (originalSlug: string, post: Post) => void;
+  onUpdatePost: (originalSlug: string, post: Post) => Promise<boolean>;
+  onUploadImages: (files: File[]) => Promise<GalleryImage[]>;
   posts: Post[];
   settings: SiteSettings;
   siteName: string;
@@ -1902,16 +2210,22 @@ function AdminPostComposer({
   const [slugTouched, setSlugTouched] = useState(Boolean(editingPost));
   const [category, setCategory] = useState(editingPost?.category ?? defaultCategory);
   const [date, setDate] = useState(editingPost?.date ?? formatToday());
+  const [postStatus, setPostStatus] = useState<PostStatus>(editingPost ? getPostStatus(editingPost) : 'published');
+  const [publishedAt, setPublishedAt] = useState<string | null>(editingPost?.publishedAt ?? null);
   const [tone, setTone] = useState(editingPost?.tone ?? 'ink');
   const [excerpt, setExcerpt] = useState(editingPost?.excerpt ?? '');
   const [tags, setTags] = useState<string[]>(editingPost?.tags ?? []);
   const [tagInput, setTagInput] = useState('');
   const [bodyMarkdown, setBodyMarkdown] = useState(editingPost ? getPostMarkdown(editingPost) : '');
+  const [seoTitle, setSeoTitle] = useState(editingPost?.seoTitle ?? '');
+  const [seoDescription, setSeoDescription] = useState(editingPost?.seoDescription ?? '');
+  const [coverImage, setCoverImage] = useState(editingPost?.coverImage ?? '');
   const authorName = normalizeOwnerName(settings.ownerName);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<ComposerMode>('wysiwyg');
   const [draftStatus, setDraftStatus] = useState<DraftStatus>('clean');
+  const [publishNotice, setPublishNotice] = useState('');
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
   const [pendingDraft, setPendingDraft] = useState<ComposerDraft | null>(null);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
@@ -1925,17 +2239,25 @@ function AdminPostComposer({
   const [focusMode, setFocusMode] = useState(false);
   const [activeHeadingId, setActiveHeadingId] = useState('');
   const [draggingHeadingId, setDraggingHeadingId] = useState('');
+  const [isComposerImageDragging, setIsComposerImageDragging] = useState(false);
+  const [composerImageUploadCount, setComposerImageUploadCount] = useState(0);
+  const [composerImageNotice, setComposerImageNotice] = useState('');
   const markdownInputRef = useRef<HTMLTextAreaElement>(null);
-  const mdxEditorRef = useRef<MDXEditorMethods>(null);
+  const mdxEditorRef = useRef<RichMarkdownEditorHandle>(null);
   const paperRef = useRef<HTMLElement>(null);
   const savedSnapshotRef = useRef('');
   const latestDraftRef = useRef<ComposerDraftData>({
     bodyMarkdown,
     category,
     composerMode,
+    coverImage,
     date,
     excerpt,
+    publishedAt,
+    seoDescription,
+    seoTitle,
     slug,
+    status: postStatus,
     tags,
     title,
     tone,
@@ -1958,95 +2280,39 @@ function AdminPostComposer({
       ),
     [galleryAlbums],
   );
+  const coverImageOptions = useMemo(
+    () =>
+      sortGalleryAlbums(galleryAlbums).flatMap((album) =>
+        sortGalleryImages(album.images).map((image) => ({
+          ...image,
+          albumTitle: album.title,
+        })),
+      ),
+    [galleryAlbums],
+  );
   function openFormulaDialog(nextMode: FormulaMode = 'block') {
     setFormulaMode(nextMode);
     setShowFormulaDialog(true);
   }
-
-  const mdxPlugins = useMemo(
-    () => [
-      headingsPlugin(),
-      listsPlugin(),
-      quotePlugin(),
-      linkPlugin(),
-      linkDialogPlugin(),
-      tablePlugin(),
-      mathPlugin(),
-      codeBlockPlugin({ defaultCodeBlockLanguage: 'ts' }),
-      codeMirrorPlugin({
-        codeBlockLanguages: {
-          css: 'CSS',
-          html: 'HTML',
-          js: 'JavaScript',
-          json: 'JSON',
-          jsx: 'JSX',
-          markdown: 'Markdown',
-          python: 'Python',
-          sh: 'Shell',
-          ts: 'TypeScript',
-          tsx: 'TSX',
-        },
-      }),
-      markdownShortcutPlugin(),
-      toolbarPlugin({
-        toolbarClassName: 'mdx-rich-toolbar',
-        toolbarContents: () => (
-          <ConditionalContents
-            options={[
-              { when: (editor) => editor?.editorType === 'codeblock', contents: () => <ChangeCodeMirrorLanguage /> },
-              {
-                fallback: () => (
-                  <>
-                    <UndoRedo />
-                    <BlockTypeSelect />
-                    <BoldItalicUnderlineToggles />
-                    <CodeToggle />
-                    <CreateLink />
-                    <ListsToggle />
-                    <InsertCodeBlock />
-                    <InsertTable />
-                    <button
-                      className="mdx-formula-button"
-                      data-toolbar-item="true"
-                      onClick={() => setShowGalleryPicker(true)}
-                      title="插入图库图片"
-                      type="button"
-                    >
-                      <ImageIcon size={18} />
-                    </button>
-                    <button
-                      className="mdx-formula-button"
-                      data-toolbar-item="true"
-                      onClick={() => openFormulaDialog('block')}
-                      title="插入数学公式"
-                      type="button"
-                    >
-                      <Sigma size={18} />
-                    </button>
-                  </>
-                ),
-              },
-            ]}
-          />
-        ),
-      }),
-    ],
-    [],
-  );
 
   const currentDraftData = useMemo<ComposerDraftData>(
     () => ({
       bodyMarkdown,
       category,
       composerMode,
+      coverImage,
       date,
       excerpt,
+      publishedAt,
+      seoDescription,
+      seoTitle,
       slug,
+      status: postStatus,
       tags,
       title,
       tone,
     }),
-    [bodyMarkdown, category, composerMode, date, excerpt, slug, tags, title, tone],
+    [bodyMarkdown, category, composerMode, coverImage, date, excerpt, postStatus, publishedAt, seoDescription, seoTitle, slug, tags, title, tone],
   );
   const currentSnapshot = useMemo(() => createComposerSnapshot(currentDraftData), [currentDraftData]);
 
@@ -2059,10 +2325,15 @@ function AdminPostComposer({
       bodyMarkdown: data.bodyMarkdown,
       category: data.category,
       composerMode: data.composerMode,
+      coverImage: data.coverImage,
       date: data.date,
       excerpt: data.excerpt,
+      publishedAt: data.publishedAt,
       savedAt,
+      seoDescription: data.seoDescription,
+      seoTitle: data.seoTitle,
       slug: data.slug,
+      status: data.status,
       tags: data.tags,
       title: data.title,
       tone: data.tone,
@@ -2126,7 +2397,7 @@ function AdminPostComposer({
     updateDraftField({ [key]: value } as Pick<ComposerDraftData, K>, { persistImmediately: true });
   }
 
-  function savePost() {
+  async function savePost() {
     const trimmedTitle = title.trim();
     const normalizedBodyMarkdown = normalizeMarkdown(bodyMarkdown);
 
@@ -2141,18 +2412,36 @@ function AdminPostComposer({
       category: category || defaultCategory,
       authorName,
       date: date.trim() || formatToday(),
+      status: postStatus,
+      publishedAt: postStatus === 'published' ? publishedAt || new Date().toISOString() : publishedAt || null,
       tone,
       tags: normalizeTags(tags),
       body: [normalizedBodyMarkdown],
       bodyMarkdown: normalizedBodyMarkdown,
+      seoTitle: seoTitle.trim(),
+      seoDescription: seoDescription.trim(),
+      coverImage: coverImage.trim(),
     };
 
     if (editingPost) {
-      onUpdatePost(editingPost.slug, nextPost);
+      const saved = await onUpdatePost(editingPost.slug, nextPost);
+      if (!saved) {
+        setPublishNotice('服务器保存失败。内容已保留为本地未同步草稿，尚未同步到服务器或公开发布。请确认后台服务后重试保存。');
+        setDraftStatus('local-draft-saved');
+        await saveDraftSnapshot(currentDraftData);
+        return false;
+      }
     } else {
-      onCreatePost(nextPost);
+      const saved = await onCreatePost(nextPost);
+      if (!saved) {
+        setPublishNotice('服务器保存失败。内容已保留为本地未同步草稿，尚未同步到服务器或公开发布。请确认后台服务后重试保存。');
+        setDraftStatus('local-draft-saved');
+        await saveDraftSnapshot(currentDraftData);
+        return false;
+      }
     }
 
+    setPublishNotice('');
     clearComposerDraft(draftKey);
     void clearAdminDraft(draftKey).catch(() => undefined);
     savedSnapshotRef.current = currentSnapshot;
@@ -2162,7 +2451,7 @@ function AdminPostComposer({
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    savePost();
+    void savePost();
   }
 
   function insertMarkdown(snippet: string, selectionOffset = 0) {
@@ -2222,14 +2511,21 @@ function AdminPostComposer({
     }, 0);
   }
 
-  function insertGalleryImageMarkdown(image: GalleryImage) {
-    const altText = image.title || '图片';
-    const snippet = `\n![${altText}](${image.imageUrl})\n`;
+  function createImageMarkdown(image: GalleryImage) {
+    return `![${escapeMarkdownAltText(image.title || '图片')}](${image.imageUrl})`;
+  }
+
+  function insertImageMarkdownBlock(snippet: string, options: { closeGalleryPicker?: boolean } = {}) {
+    const normalizedSnippet = snippet.trim();
+    if (!normalizedSnippet) {
+      return;
+    }
+
     const textarea = markdownInputRef.current;
     const selectionStart = textarea?.selectionStart ?? bodyMarkdown.length;
     const selectionEnd = textarea?.selectionEnd ?? bodyMarkdown.length;
     const needsLeadingBreak = selectionStart > 0 && !bodyMarkdown.slice(0, selectionStart).endsWith('\n');
-    const nextSnippet = `${needsLeadingBreak ? '\n' : ''}${snippet}`;
+    const nextSnippet = `${needsLeadingBreak ? '\n' : ''}\n${normalizedSnippet}\n`;
     const nextMarkdown = `${bodyMarkdown.slice(0, selectionStart)}${nextSnippet}${bodyMarkdown.slice(selectionEnd)}`;
     const nextCursorPosition = selectionStart + nextSnippet.length;
 
@@ -2239,12 +2535,96 @@ function AdminPostComposer({
     } else {
       updateBodyMarkdown(nextMarkdown);
     }
-    setShowGalleryPicker(false);
+    if (options.closeGalleryPicker ?? true) {
+      setShowGalleryPicker(false);
+    }
 
     window.setTimeout(() => {
       textarea?.focus();
       textarea?.setSelectionRange(nextCursorPosition, nextCursorPosition);
     }, 0);
+  }
+
+  function insertGalleryImageMarkdown(image: GalleryImage) {
+    insertImageMarkdownBlock(createImageMarkdown(image));
+  }
+
+  async function uploadAndInsertComposerImages(files: File[], source: 'paste' | 'drop') {
+    const imageFiles = files.filter(isSupportedComposerImageFile);
+    if (imageFiles.length === 0) {
+      const hasUnsupportedImage = files.some((file) => file.type.startsWith('image/'));
+      if (hasUnsupportedImage) {
+        setComposerImageNotice('仅支持 JPG、PNG、WebP 和 GIF 图片。');
+      }
+      return;
+    }
+
+    setIsComposerImageDragging(false);
+    setComposerImageUploadCount(imageFiles.length);
+    setComposerImageNotice(`正在上传 ${imageFiles.length} 张图片...`);
+
+    try {
+      const uploadedImages = await onUploadImages(imageFiles);
+      if (uploadedImages.length === 0) {
+        setComposerImageNotice('图片上传失败，请确认后台服务和登录状态。');
+        return;
+      }
+
+      insertImageMarkdownBlock(uploadedImages.map(createImageMarkdown).join('\n\n'), { closeGalleryPicker: false });
+      setComposerImageNotice(`${source === 'paste' ? '已粘贴' : '已拖入'} ${uploadedImages.length} 张图片。`);
+    } catch {
+      setComposerImageNotice('图片上传失败，请确认后台服务和登录状态。');
+    } finally {
+      setComposerImageUploadCount(0);
+    }
+  }
+
+  function handleComposerPaste(event: React.ClipboardEvent<HTMLElement>) {
+    const imageFiles = getImageFilesFromTransfer(event.clipboardData);
+    if (imageFiles.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void uploadAndInsertComposerImages(imageFiles, 'paste');
+  }
+
+  function handleComposerDragEnter(event: ReactDragEvent<HTMLElement>) {
+    if (!hasImageFileInTransfer(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsComposerImageDragging(true);
+  }
+
+  function handleComposerDragOver(event: ReactDragEvent<HTMLElement>) {
+    if (!hasImageFileInTransfer(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsComposerImageDragging(true);
+  }
+
+  function handleComposerDragLeave(event: ReactDragEvent<HTMLElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+
+    setIsComposerImageDragging(false);
+  }
+
+  function handleComposerDrop(event: ReactDragEvent<HTMLElement>) {
+    const imageFiles = getImageFilesFromTransfer(event.dataTransfer);
+    if (imageFiles.length === 0) {
+      setIsComposerImageDragging(false);
+      return;
+    }
+
+    event.preventDefault();
+    void uploadAndInsertComposerImages(imageFiles, 'drop');
   }
 
   function wrapSelection(before: string, after = before, fallback = '内容') {
@@ -2312,9 +2692,14 @@ function AdminPostComposer({
       bodyMarkdown: draft.bodyMarkdown,
       category: draft.category || defaultCategory,
       composerMode: draft.composerMode,
+      coverImage: draft.coverImage || '',
       date: draft.date || formatToday(),
       excerpt: draft.excerpt,
+      publishedAt: draft.publishedAt ?? null,
+      seoDescription: draft.seoDescription || '',
+      seoTitle: draft.seoTitle || '',
       slug: draft.slug,
+      status: draft.status || 'published',
       tags: draft.tags,
       title: draft.title,
       tone: draft.tone || 'ink',
@@ -2326,10 +2711,15 @@ function AdminPostComposer({
     setSlug(draft.slug);
     setCategory(draft.category || defaultCategory);
     setDate(draft.date || formatToday());
+    setPostStatus(draft.status || 'published');
+    setPublishedAt(draft.publishedAt ?? null);
     setTone(draft.tone || 'ink');
     setExcerpt(draft.excerpt);
     setTags(draft.tags);
     setBodyMarkdown(draft.bodyMarkdown);
+    setSeoTitle(draft.seoTitle || '');
+    setSeoDescription(draft.seoDescription || '');
+    setCoverImage(draft.coverImage || '');
     setComposerMode(draft.composerMode);
     setLastDraftSavedAt(draft.savedAt);
     setDraftStatus('draft-saved');
@@ -2611,11 +3001,16 @@ function AdminPostComposer({
     bodyMarkdown,
     category,
     composerMode,
+    coverImage,
     currentSnapshot,
     date,
     draftKey,
     draftStatus,
     excerpt,
+    postStatus,
+    publishedAt,
+    seoDescription,
+    seoTitle,
     slug,
     tags,
     title,
@@ -2657,11 +3052,16 @@ function AdminPostComposer({
     bodyMarkdown,
     category,
     composerMode,
+    coverImage,
     currentSnapshot,
     date,
     draftKey,
     draftStatus,
     excerpt,
+    postStatus,
+    publishedAt,
+    seoDescription,
+    seoTitle,
     slug,
     tags,
     title,
@@ -2761,7 +3161,7 @@ function AdminPostComposer({
               title="切换明暗模式"
               aria-label="切换明暗模式"
             >
-              {settings.colorScheme === 'light' ? <Moon size={17} /> : <Sun size={17} />}
+              {colorScheme === 'light' ? <Moon size={17} /> : <Sun size={17} />}
             </button>
             <button
               className="typora-icon-action"
@@ -2827,6 +3227,8 @@ function AdminPostComposer({
           </div>
         )}
 
+        {publishNotice && <p className="composer-sync-warning" role="alert">{publishNotice}</p>}
+
         <div className="typora-layout">
           {outlineOpen && (
             <aside className="writer-outline" aria-label="文章大纲">
@@ -2860,7 +3262,16 @@ function AdminPostComposer({
             </aside>
           )}
 
-          <main className="typora-paper" aria-label="正文写作区" ref={paperRef}>
+          <main
+            className={`typora-paper ${isComposerImageDragging ? 'is-image-dragging' : ''}`}
+            aria-label="正文写作区"
+            onDragEnter={handleComposerDragEnter}
+            onDragLeave={handleComposerDragLeave}
+            onDragOver={handleComposerDragOver}
+            onDrop={handleComposerDrop}
+            onPaste={handleComposerPaste}
+            ref={paperRef}
+          >
             <input
               className="typora-title-input"
               value={title}
@@ -2875,6 +3286,20 @@ function AdminPostComposer({
               <span>{authorName}</span>
               <span>{date || formatToday()}</span>
             </div>
+
+            {(isComposerImageDragging || composerImageUploadCount > 0) && (
+              <div className="composer-drop-layer" aria-live="polite">
+                <ImageIcon size={28} />
+                <strong>{composerImageUploadCount > 0 ? '正在上传图片' : '松开上传图片'}</strong>
+                {composerImageUploadCount > 0 && <span>{composerImageUploadCount} 张</span>}
+              </div>
+            )}
+
+            {composerImageNotice && (
+              <div className="composer-image-notice" role="status">
+                {composerImageNotice}
+              </div>
+            )}
 
             <div className="typora-toolbar" aria-label="Markdown 工具栏">
               <button type="button" onClick={() => insertMarkdown('## {{selection}}', -2)} title="二级标题">
@@ -2924,23 +3349,23 @@ function AdminPostComposer({
             </div>
 
             {composerMode === 'wysiwyg' && (
-              <MDXEditor
-                className="typora-rich-editor"
-                contentEditableClassName="typora-rich-content"
-                markdown={bodyMarkdown}
-                onChange={(nextMarkdown, initialNormalize) => {
-                  if (!initialNormalize) {
-                    const normalizedMarkdown = normalizeLooseCodeFences(nextMarkdown);
-                    if (normalizedMarkdown !== nextMarkdown) {
-                      mdxEditorRef.current?.setMarkdown(normalizedMarkdown);
+              <Suspense fallback={<div className="typora-editor-loading">正在加载富文本编辑器...</div>}>
+                <RichMarkdownEditor
+                  markdown={bodyMarkdown}
+                  onChange={(nextMarkdown, initialNormalize) => {
+                    if (!initialNormalize) {
+                      const normalizedMarkdown = normalizeLooseCodeFences(nextMarkdown);
+                      if (normalizedMarkdown !== nextMarkdown) {
+                        mdxEditorRef.current?.setMarkdown(normalizedMarkdown);
+                      }
+                      updateBodyMarkdown(normalizedMarkdown);
                     }
-                    updateBodyMarkdown(normalizedMarkdown);
-                  }
-                }}
-                plugins={mdxPlugins}
-                ref={mdxEditorRef}
-                spellCheck={false}
-              />
+                  }}
+                  onInsertFormula={() => openFormulaDialog('block')}
+                  onInsertGalleryImage={() => setShowGalleryPicker(true)}
+                  ref={mdxEditorRef}
+                />
+              </Suspense>
             )}
 
             {composerMode === 'markdown' && (
@@ -3025,6 +3450,25 @@ function AdminPostComposer({
                 <input value={date} onChange={(event) => updateMetaField('date', event.target.value, setDate)} />
               </label>
               <label>
+                发布状态
+                <select
+                  value={postStatus}
+                  onChange={(event) => updateMetaField('status', event.target.value as PostStatus, setPostStatus)}
+                >
+                  <option value="published">已发布</option>
+                  <option value="draft">草稿</option>
+                  <option value="archived">已归档</option>
+                </select>
+              </label>
+              <label>
+                发布时间
+                <input
+                  type="datetime-local"
+                  value={toDatetimeLocalValue(publishedAt)}
+                  onChange={(event) => updateMetaField('publishedAt', fromDatetimeLocalValue(event.target.value), setPublishedAt)}
+                />
+              </label>
+              <label>
                 色调
                 <select value={tone} onChange={(event) => updateMetaField('tone', event.target.value, setTone)}>
                   {['ink', 'pine', 'cinnabar', 'water'].map((nextTone) => (
@@ -3043,6 +3487,54 @@ function AdminPostComposer({
                   placeholder="给文章写一句简短摘要"
                 />
               </label>
+              <label>
+                SEO 标题
+                <input
+                  maxLength={80}
+                  value={seoTitle}
+                  onChange={(event) => updateMetaField('seoTitle', event.target.value, setSeoTitle)}
+                  placeholder="留空则使用文章标题"
+                />
+              </label>
+              <label>
+                SEO 描述
+                <textarea
+                  maxLength={180}
+                  rows={3}
+                  value={seoDescription}
+                  onChange={(event) => updateMetaField('seoDescription', event.target.value, setSeoDescription)}
+                  placeholder="留空则使用文章摘要"
+                />
+              </label>
+              <div className="composer-cover-field">
+                <label>
+                  封面图 URL
+                  <input
+                    value={coverImage}
+                    onChange={(event) => updateMetaField('coverImage', event.target.value, setCoverImage)}
+                    placeholder="/uploads/gallery/example.webp"
+                  />
+                </label>
+                <label>
+                  从图库选择封面
+                  <select
+                    value={coverImageOptions.some((image) => image.imageUrl === coverImage) ? coverImage : ''}
+                    onChange={(event) => updateMetaField('coverImage', event.target.value, setCoverImage)}
+                  >
+                    <option value="">不使用图库封面</option>
+                    {coverImageOptions.map((image) => (
+                      <option key={image.id} value={image.imageUrl}>
+                        {image.title} · {image.albumTitle}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {coverImage && (
+                  <div className="composer-cover-preview">
+                    <img alt="" src={coverImage} />
+                  </div>
+                )}
+              </div>
               <div className="tag-editor" aria-label="文章标签">
                 <span>标签</span>
                 <div className="tag-chip-input">
@@ -3503,6 +3995,7 @@ function AdminGalleryPanel({
   onDeleteImages,
   onImageChange,
   onMoveImage,
+  onReplaceImageFile,
   onUploadImages,
 }: {
   albums: GalleryAlbum[];
@@ -3513,19 +4006,34 @@ function AdminGalleryPanel({
   onDeleteImages: (albumIndex: number, imageIds: string[]) => void;
   onImageChange: (albumIndex: number, imageIndex: number, image: GalleryImage) => void;
   onMoveImage: (albumIndex: number, imageId: string, direction: -1 | 1) => void;
+  onReplaceImageFile: (albumIndex: number, imageIndex: number, file: File) => void;
   onUploadImages: (albumIndex: number, files: File[]) => void;
 }) {
   const [selectedImageIdsByAlbum, setSelectedImageIdsByAlbum] = useState<Record<string, string[]>>({});
   const [activeAlbumId, setActiveAlbumId] = useState<string | null>(null);
   const [expandedImageId, setExpandedImageId] = useState<string | null>(null);
+  const [imageQuery, setImageQuery] = useState('');
+  const [imageVisibilityFilter, setImageVisibilityFilter] = useState<'all' | 'public' | 'private'>('all');
   const sortedAlbums = sortGalleryAlbums(albums);
   const activeAlbum = sortedAlbums.find((album) => album.id === activeAlbumId) ?? sortedAlbums[0] ?? null;
   const activeAlbumIndex = activeAlbum ? albums.findIndex((album) => album.id === activeAlbum.id) : -1;
   const sortedImages = activeAlbum ? sortGalleryImages(activeAlbum.images) : [];
+  const visibleImages = useMemo(() => {
+    const keyword = imageQuery.trim().toLowerCase();
+
+    return sortedImages.filter((image) => {
+      const matchesVisibility =
+        imageVisibilityFilter === 'all' ||
+        (imageVisibilityFilter === 'public' ? image.isPublic : !image.isPublic);
+      const searchableText = `${image.title}${image.description}${image.capturedAt ?? ''}${image.fileName}`.toLowerCase();
+      return matchesVisibility && (!keyword || searchableText.includes(keyword));
+    });
+  }, [imageQuery, imageVisibilityFilter, sortedImages]);
   const selectedImageIds = activeAlbum
     ? getSelectedImageIds(activeAlbum.id).filter((imageId) => activeAlbum.images.some((image) => image.id === imageId))
     : [];
-  const allImagesSelected = sortedImages.length > 0 && selectedImageIds.length === sortedImages.length;
+  const selectedVisibleImageIds = selectedImageIds.filter((imageId) => visibleImages.some((image) => image.id === imageId));
+  const allImagesSelected = visibleImages.length > 0 && visibleImages.every((image) => selectedImageIds.includes(image.id));
 
   useEffect(() => {
     if (activeAlbumId && albums.some((album) => album.id === activeAlbumId)) {
@@ -3554,8 +4062,12 @@ function AdminGalleryPanel({
   }
 
   function deleteSelectedImages(albumIndex: number, album: GalleryAlbum) {
-    const selectedIds = getSelectedImageIds(album.id);
+    const selectedIds = getSelectedImageIds(album.id).filter((imageId) => visibleImages.some((image) => image.id === imageId));
     if (selectedIds.length === 0) {
+      return;
+    }
+    if (isSystemGalleryAlbum(album)) {
+      window.alert('系统图库里的图片不能删除，只能上传新图片覆盖。');
       return;
     }
 
@@ -3612,42 +4124,51 @@ function AdminGalleryPanel({
                 </p>
               </div>
               <div className="gallery-toolbar-actions">
-                <label className="secondary-action gallery-upload-button">
-                  <Plus size={16} />
-                  上传图片
-                  <input
-                    accept="image/jpeg,image/png,image/webp,image/gif"
-                    multiple
-                    type="file"
-                    onChange={(event) => {
-                      const files = Array.from(event.target.files ?? []);
-                      if (files.length > 0) {
-                        onUploadImages(activeAlbumIndex, files);
-                        event.currentTarget.value = '';
-                      }
-                    }}
-                  />
-                </label>
-                {sortedImages.length > 0 && (
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    onClick={() =>
-                      setAlbumSelectedImageIds(activeAlbum.id, allImagesSelected ? [] : sortedImages.map((image) => image.id))
-                    }
-                  >
-                    {allImagesSelected ? '取消全选' : '全选'}
-                  </button>
+                {!activeAlbumIsSystem && (
+                  <>
+                    <label className="secondary-action gallery-upload-button">
+                      <Plus size={16} />
+                      上传图片
+                      <input
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        multiple
+                        type="file"
+                        onChange={(event) => {
+                          const files = Array.from(event.target.files ?? []);
+                          if (files.length > 0) {
+                            onUploadImages(activeAlbumIndex, files);
+                            event.currentTarget.value = '';
+                          }
+                        }}
+                      />
+                    </label>
+                    {visibleImages.length > 0 && (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        onClick={() =>
+                          setAlbumSelectedImageIds(
+                            activeAlbum.id,
+                            allImagesSelected
+                              ? selectedImageIds.filter((imageId) => !visibleImages.some((image) => image.id === imageId))
+                              : Array.from(new Set([...selectedImageIds, ...visibleImages.map((image) => image.id)])),
+                          )
+                        }
+                      >
+                        {allImagesSelected ? '取消全选' : '全选'}
+                      </button>
+                    )}
+                    <button
+                      className="danger-action"
+                      disabled={selectedVisibleImageIds.length === 0}
+                      type="button"
+                      onClick={() => deleteSelectedImages(activeAlbumIndex, activeAlbum)}
+                    >
+                      <Trash2 size={16} />
+                      删除选中
+                    </button>
+                  </>
                 )}
-                <button
-                  className="danger-action"
-                  disabled={selectedImageIds.length === 0}
-                  type="button"
-                  onClick={() => deleteSelectedImages(activeAlbumIndex, activeAlbum)}
-                >
-                  <Trash2 size={16} />
-                  删除选中
-                </button>
                 {!activeAlbumIsSystem && (
                   <button className="danger-action gallery-delete-album-action" type="button" onClick={() => onDeleteAlbum(activeAlbumIndex)}>
                     <Trash2 size={16} />
@@ -3655,6 +4176,35 @@ function AdminGalleryPanel({
                   </button>
                 )}
               </div>
+            </div>
+
+            <div className="gallery-filter-toolbar" aria-label="图片搜索和筛选">
+              <label className="admin-search-field">
+                <Search size={17} />
+                <input
+                  aria-label="搜索图片"
+                  value={imageQuery}
+                  onChange={(event) => setImageQuery(event.target.value)}
+                  placeholder="搜索标题、说明、日期或文件名"
+                />
+              </label>
+              <div className="admin-filter-tabs admin-status-tabs" role="group" aria-label="按公开状态筛选图片">
+                {[
+                  ['all', '全部'],
+                  ['public', '公开'],
+                  ['private', '私有'],
+                ].map(([value, label]) => (
+                  <button
+                    aria-pressed={imageVisibilityFilter === value}
+                    key={value}
+                    onClick={() => setImageVisibilityFilter(value as 'all' | 'public' | 'private')}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span>{visibleImages.length} 张匹配</span>
             </div>
 
             <details className="gallery-album-settings">
@@ -3728,9 +4278,10 @@ function AdminGalleryPanel({
             </details>
 
             <div className="gallery-image-editor-grid">
-              {sortedImages.length > 0 ? (
-                sortedImages.map((image, sortedImageIndex) => {
+              {visibleImages.length > 0 ? (
+                visibleImages.map((image) => {
                   const imageIndex = activeAlbum.images.findIndex((item) => item.id === image.id);
+                  const sortedImageIndex = sortedImages.findIndex((item) => item.id === image.id);
                   const isSelected = selectedImageIds.includes(image.id);
                   const isExpanded = expandedImageId === image.id;
                   return (
@@ -3739,6 +4290,7 @@ function AdminGalleryPanel({
                         <label className="gallery-image-select" aria-label="选择图片">
                           <input
                             checked={isSelected}
+                            disabled={activeAlbumIsSystem}
                             type="checkbox"
                             onChange={() => toggleImageSelection(activeAlbum.id, image.id)}
                           />
@@ -3775,9 +4327,28 @@ function AdminGalleryPanel({
                         >
                           下移
                         </button>
-                        <button className="danger-action" type="button" onClick={() => onDeleteImage(activeAlbumIndex, imageIndex)}>
-                          <Trash2 size={15} />
-                        </button>
+                        {activeAlbumIsSystem ? (
+                          <label className="secondary-action gallery-upload-button">
+                            <ImageIcon size={15} />
+                            替换
+                            <input
+                              accept="image/jpeg,image/png,image/webp,image/gif"
+                              type="file"
+                              onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                if (file) {
+                                  onReplaceImageFile(activeAlbumIndex, imageIndex, file);
+                                  event.currentTarget.value = '';
+                                }
+                              }}
+                            />
+                          </label>
+                        ) : (
+                          <button className="danger-action" type="button" onClick={() => onDeleteImage(activeAlbumIndex, imageIndex)}>
+                            <Trash2 size={15} />
+                            删除
+                          </button>
+                        )}
                       </div>
                       {isExpanded && (
                         <div className="gallery-image-fields">
@@ -3835,7 +4406,7 @@ function AdminGalleryPanel({
                 })
               ) : (
                 <div className="empty-state">
-                  <p>这个相册还没有图片。</p>
+                  <p>{sortedImages.length > 0 ? '没有匹配的图片。' : '这个相册还没有图片。'}</p>
                 </div>
               )}
             </div>
@@ -3851,32 +4422,307 @@ function AdminGalleryPanel({
   );
 }
 
-function AdminArchivePanel({ archiveGroups, posts }: { archiveGroups: ArchiveGroup[]; posts: Post[] }) {
+function AdminArchivePanel({
+  archiveGroups,
+  onArchivePosts,
+  onMovePostsToArchiveMonth,
+  onPublishPosts,
+  onUnpublishPosts,
+  posts,
+}: {
+  archiveGroups: ArchiveGroup[];
+  onArchivePosts: (slugs: string[]) => Promise<BatchResult>;
+  onMovePostsToArchiveMonth: (slugs: string[], monthValue: string) => Promise<BatchResult>;
+  onPublishPosts: (slugs: string[]) => Promise<BatchResult>;
+  onUnpublishPosts: (slugs: string[]) => Promise<BatchResult>;
+  posts: Post[];
+}) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeMonth, setActiveMonth] = useState('all');
+  const [activeStatus, setActiveStatus] = useState<'all' | PostStatus>('all');
+  const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
+  const [targetMonth, setTargetMonth] = useState(() => getPostArchiveMonthValue(posts[0]) || '');
+  const [batchNotice, setBatchNotice] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
+  const monthOptions = useMemo(() => archiveGroups.map((group) => group.month), [archiveGroups]);
+  const filteredPosts = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
+
+    return sortPosts(posts).filter((post) => {
+      const matchesMonth = activeMonth === 'all' || getArchiveMonthLabel(getPostArchiveMonthValue(post)) === activeMonth;
+      const matchesStatus = activeStatus === 'all' || getPostStatus(post) === activeStatus;
+      const searchableText = `${post.title}${post.excerpt}${post.category}${post.tags.join('')}${post.date}${getPostStatusLabel(post)}`.toLowerCase();
+      return matchesMonth && matchesStatus && (!keyword || searchableText.includes(keyword));
+    });
+  }, [activeMonth, activeStatus, posts, searchQuery]);
+  const filteredArchiveGroups = useMemo(() => buildArchive(filteredPosts), [filteredPosts]);
+  const filteredSlugs = filteredPosts.map((post) => post.slug);
+  const allFilteredSelected = filteredSlugs.length > 0 && filteredSlugs.every((slug) => selectedSlugs.includes(slug));
+  const selectedCount = selectedSlugs.length;
+  const publishedCount = posts.filter((post) => getPostStatus(post) === 'published').length;
+  const draftCount = posts.filter((post) => getPostStatus(post) === 'draft').length;
+  const archivedCount = posts.filter((post) => getPostStatus(post) === 'archived').length;
+
+  useEffect(() => {
+    setSelectedSlugs((slugs) => slugs.filter((slug) => posts.some((post) => post.slug === slug)));
+  }, [posts]);
+
+  useEffect(() => {
+    if (!targetMonth) {
+      setTargetMonth(getPostArchiveMonthValue(posts[0]) || '');
+    }
+  }, [posts, targetMonth]);
+
+  function togglePost(slug: string) {
+    setSelectedSlugs((slugs) => (slugs.includes(slug) ? slugs.filter((item) => item !== slug) : [...slugs, slug]));
+  }
+
+  function toggleFilteredPosts() {
+    setSelectedSlugs((slugs) => {
+      if (allFilteredSelected) {
+        return slugs.filter((slug) => !filteredSlugs.includes(slug));
+      }
+
+      return Array.from(new Set([...slugs, ...filteredSlugs]));
+    });
+  }
+
+  async function runBatch(action: string, slugs: string[], operation: (targetSlugs: string[]) => Promise<BatchResult>) {
+    if (slugs.length === 0 || batchBusy) {
+      return;
+    }
+
+    setBatchBusy(true);
+    setBatchNotice('');
+    try {
+      const result = await operation(slugs);
+      setBatchNotice(formatBatchResult(action, result));
+      if (result.success > 0) {
+        setSelectedSlugs((currentSlugs) => currentSlugs.filter((slug) => !slugs.includes(slug)));
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   return (
     <section className="admin-panel" aria-label="归档管理">
-      <PanelHeader title="归档管理" />
+      <PanelHeader
+        action={
+          <a className="secondary-action" href="/archive/page/1">
+            查看归档页
+          </a>
+        }
+        title="归档管理"
+      />
       <div className="archive-summary">
         <strong>{archiveGroups.length}</strong>
         <span>个月份</span>
-        <strong>{posts.length}</strong>
-        <span>篇文章</span>
+        <strong>{publishedCount}</strong>
+        <span>公开文章</span>
+        <strong>{draftCount}</strong>
+        <span>草稿</span>
+        <strong>{archivedCount}</strong>
+        <span>已归档</span>
       </div>
-      <div className="admin-archive-list">
-        {archiveGroups.map((group) => (
-          <div className="timeline-month" key={group.month}>
-            <button type="button">
-              <span />
-              {group.month}
-            </button>
-            <ul>
-              {group.entries.map((post) => (
-                <li key={post.slug}>
-                  <a href={`/posts/${post.slug}`}>{post.date}  {post.title}</a>
-                </li>
+
+      <div className="admin-posts-overview">
+        <div className="admin-toolbar archive-admin-toolbar" aria-label="归档筛选">
+          <label className="admin-search-field">
+            <Search size={17} />
+            <input
+              aria-label="搜索归档文章"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="搜索标题、摘要、分类或标签"
+              value={searchQuery}
+            />
+          </label>
+          <div className="archive-filter-controls">
+            <select aria-label="按月份筛选归档" value={activeMonth} onChange={(event) => setActiveMonth(event.target.value)}>
+              <option value="all">全部月份</option>
+              {monthOptions.map((month) => (
+                <option key={month} value={month}>
+                  {month}
+                </option>
               ))}
-            </ul>
+            </select>
+            <div className="admin-filter-tabs admin-status-tabs" role="group" aria-label="按状态筛选归档文章">
+              {[
+                ['all', '全部状态'],
+                ['published', '已发布'],
+                ['draft', '草稿'],
+                ['archived', '已归档'],
+              ].map(([status, label]) => (
+                <button
+                  aria-pressed={activeStatus === status}
+                  key={status}
+                  onClick={() => setActiveStatus(status as 'all' | PostStatus)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
-        ))}
+        </div>
+      </div>
+
+      <div className="admin-bulk-toolbar" aria-label="归档批量操作">
+        <label className="admin-select-all">
+          <input checked={allFilteredSelected} type="checkbox" onChange={toggleFilteredPosts} />
+          选中当前结果
+        </label>
+        <span>{selectedCount} 篇已选</span>
+        <button
+          className="secondary-action"
+          disabled={selectedCount === 0 || batchBusy}
+          type="button"
+          onClick={() => runBatch('批量发布', selectedSlugs, onPublishPosts)}
+        >
+          批量发布
+        </button>
+        <button
+          className="secondary-action"
+          disabled={selectedCount === 0 || batchBusy}
+          type="button"
+          onClick={() => runBatch('批量下架', selectedSlugs, onUnpublishPosts)}
+        >
+          批量下架
+        </button>
+        <button
+          className="secondary-action"
+          disabled={selectedCount === 0 || batchBusy}
+          type="button"
+          onClick={() => runBatch('批量归档', selectedSlugs, onArchivePosts)}
+        >
+          批量归档
+        </button>
+        <input
+          aria-label="目标归档月份"
+          disabled={selectedCount === 0 || batchBusy}
+          type="month"
+          value={targetMonth}
+          onChange={(event) => setTargetMonth(event.target.value)}
+        />
+        <button
+          className="secondary-action"
+          disabled={selectedCount === 0 || !targetMonth || batchBusy}
+          type="button"
+          onClick={() =>
+            runBatch(`迁移到 ${getArchiveMonthLabel(targetMonth)}`, selectedSlugs, (slugs) =>
+              onMovePostsToArchiveMonth(slugs, targetMonth),
+            )
+          }
+        >
+          迁移月份
+        </button>
+      </div>
+      {batchNotice && <p className="admin-batch-notice">{batchNotice}</p>}
+
+      <div className="admin-archive-list">
+        {filteredArchiveGroups.length > 0 ? (
+          filteredArchiveGroups.map((group) => (
+            <div className="admin-archive-month" key={group.month}>
+              <header>
+                <div>
+                  <span />
+                  <h3>{group.month}</h3>
+                </div>
+                <small>{group.entries.length} 篇</small>
+              </header>
+              <div className="admin-archive-entries">
+                {group.entries.map((post) => {
+                  const postMonth = getPostArchiveMonthValue(post);
+
+                  return (
+                    <article className="admin-archive-entry" key={post.slug}>
+                      <label className="admin-row-select" aria-label={`选择${post.title}`}>
+                        <input
+                          checked={selectedSlugs.includes(post.slug)}
+                          type="checkbox"
+                          onChange={() => togglePost(post.slug)}
+                        />
+                      </label>
+                      <div className="admin-post-main">
+                        <div className="admin-post-titleline">
+                          <h3>{post.title}</h3>
+                          <span>{post.date}</span>
+                        </div>
+                        <div className="admin-post-meta">
+                          <span className={`admin-status-pill status-${getPostStatus(post)}`}>{getPostStatusLabel(post)}</span>
+                          <span>{post.category}</span>
+                          <span>{post.tags.join('，') || '无标签'}</span>
+                        </div>
+                      </div>
+                      <div className="admin-archive-entry-controls">
+                        <input
+                          aria-label={`调整${post.title}的归档月份`}
+                          disabled={batchBusy}
+                          type="month"
+                          value={postMonth}
+                          onChange={(event) => {
+                            const nextMonth = event.target.value;
+                            if (nextMonth && nextMonth !== postMonth) {
+                              void runBatch(`迁移「${post.title}」`, [post.slug], (slugs) =>
+                                onMovePostsToArchiveMonth(slugs, nextMonth),
+                              );
+                            }
+                          }}
+                        />
+                        {getPostStatus(post) === 'published' ? (
+                          <a className="secondary-action" href={`/posts/${post.slug}`}>
+                            预览
+                          </a>
+                        ) : (
+                          <button className="secondary-action" disabled type="button" title="草稿和已归档文章不在公开归档页展示">
+                            预览
+                          </button>
+                        )}
+                        <a className="secondary-action" href={`/admin/posts/${post.slug}/edit`}>
+                          <Pencil size={16} />
+                          编辑
+                        </a>
+                        {getPostStatus(post) === 'published' ? (
+                          <button
+                            className="secondary-action"
+                            disabled={batchBusy}
+                            type="button"
+                            onClick={() => runBatch('下架', [post.slug], onUnpublishPosts)}
+                          >
+                            下架
+                          </button>
+                        ) : (
+                          <button
+                            className="secondary-action"
+                            disabled={batchBusy}
+                            type="button"
+                            onClick={() => runBatch('发布', [post.slug], onPublishPosts)}
+                          >
+                            发布
+                          </button>
+                        )}
+                        {getPostStatus(post) !== 'archived' && (
+                          <button
+                            className="secondary-action"
+                            disabled={batchBusy}
+                            type="button"
+                            onClick={() => runBatch('归档', [post.slug], onArchivePosts)}
+                          >
+                            归档
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="empty-state">
+            <p>{posts.length > 0 ? '没有匹配的归档文章。' : '暂无文章可归档。'}</p>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -3961,9 +4807,11 @@ function AdminHomepagePanel({
 function AdminAppearancePanel({
   albums,
   colorScheme,
+  homepage,
   onOwnerAvatarUrlChange,
   onColorSchemeChange,
   onOwnerNameChange,
+  onResetContent,
   onStylePresetChange,
   ownerAvatarUrl,
   ownerName,
@@ -3971,9 +4819,11 @@ function AdminAppearancePanel({
 }: {
   albums: GalleryAlbum[];
   colorScheme: ColorScheme;
+  homepage: HomepageCopy;
   onOwnerAvatarUrlChange: (ownerAvatarUrl: string) => void;
   onColorSchemeChange: (colorScheme: ColorScheme) => void;
   onOwnerNameChange: (ownerName: string) => void;
+  onResetContent: () => void;
   onStylePresetChange: (stylePreset: StylePreset) => void;
   ownerAvatarUrl: string;
   ownerName: string;
@@ -3981,10 +4831,13 @@ function AdminAppearancePanel({
 }) {
   const [ownerNameDraft, setOwnerNameDraft] = useState(ownerName);
   const [ownerAvatarDraft, setOwnerAvatarDraft] = useState(ownerAvatarUrl);
+  const [resetConfirmation, setResetConfirmation] = useState('');
   const systemGalleryImages = useMemo(
     () => sortGalleryImages(albums.find((album) => isSystemGalleryAlbum(album))?.images ?? []),
     [albums],
   );
+  const activeSystemGalleryImages = useMemo(() => getSystemGalleryImageUrls(albums), [albums]);
+  const previewImage = activeSystemGalleryImages[stylePreset] ?? stylePresetAssets[stylePreset].heroImage;
 
   useEffect(() => {
     setOwnerNameDraft(ownerName);
@@ -4093,8 +4946,8 @@ function AdminAppearancePanel({
 
         <div className="setting-group">
           <div>
-            <h3>明暗模式</h3>
-            <p>每个视觉风格都有独立的亮色和暗色表现。</p>
+            <h3>当前浏览器明暗模式</h3>
+            <p>这里只影响你当前浏览器的显示，公开用户可以在前台自己切换。</p>
           </div>
           <div className="segmented-control" role="group" aria-label="明暗模式">
             {colorSchemes.map((nextColorScheme) => (
@@ -4109,16 +4962,45 @@ function AdminAppearancePanel({
             ))}
           </div>
         </div>
+
+        <div className="setting-group danger-setting-group">
+          <div>
+            <h3>危险区</h3>
+            <p>重置会恢复默认内容。请输入站点名称「{homepage.siteName}」后才能执行。</p>
+          </div>
+          <div className="danger-confirm-control">
+            <input
+              className="setting-input"
+              value={resetConfirmation}
+              onChange={(event) => setResetConfirmation(event.target.value)}
+              placeholder={homepage.siteName}
+            />
+            <button
+              className="danger-action"
+              disabled={resetConfirmation !== homepage.siteName}
+              type="button"
+              onClick={() => {
+                if (window.confirm('确定重置站点内容吗？此操作会覆盖当前本地内容。')) {
+                  onResetContent();
+                  setResetConfirmation('');
+                }
+              }}
+            >
+              <Trash2 size={17} />
+              重置内容
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="admin-preview" aria-label="当前外观预览">
         <div className="preview-visual">
-          <img src={stylePresetAssets[stylePreset].heroImage} alt="" />
+          <img src={previewImage} alt="" />
         </div>
         <div>
           <span>当前预设</span>
           <h2>{stylePreset === 'classic' ? '中国古风' : '赛博科技'}</h2>
-          <p>{colorScheme === 'light' ? '亮色模式' : '暗色模式'} · 刷新首页后保持生效</p>
+          <p>{colorScheme === 'light' ? '亮色模式' : '暗色模式'} · 仅作为当前浏览器偏好保存</p>
           <a className="primary-action" href="/">
             查看首页
             <ChevronRight size={18} />
@@ -4283,12 +5165,19 @@ function LatestPosts({ homepage, posts }: { homepage: HomepageCopy; posts: Post[
       />
       <div className="post-grid">
         <a className={`featured-card tone-${lead.tone}`} href={`/posts/${lead.slug}`}>
-          <span>{lead.category}</span>
-          <h3 className={`featured-title-${featuredTitleDensity}`}>{lead.title}</h3>
-          <p>{lead.excerpt}</p>
-          <footer>
-            <small>{lead.date}</small>
-          </footer>
+          {lead.coverImage && (
+            <div className="featured-card-cover">
+              <img alt="" loading="lazy" src={lead.coverImage} />
+            </div>
+          )}
+          <div className="featured-card-body">
+            <span>{lead.category}</span>
+            <h3 className={`featured-title-${featuredTitleDensity}`}>{lead.title}</h3>
+            <p>{lead.excerpt}</p>
+            <footer>
+              <small>{lead.date}</small>
+            </footer>
+          </div>
         </a>
 
         <div className="post-list">
@@ -4327,13 +5216,20 @@ function getFeaturedTitleDensity(title: string) {
 function PostCard({ post }: { post: Post }) {
   return (
     <a className={`post-card tone-${post.tone}`} href={`/posts/${post.slug}`}>
-      <div className="post-card-meta">
-        <span>{post.category}</span>
-        <small>{post.date}</small>
+      {post.coverImage && (
+        <div className="post-card-cover">
+          <img alt="" loading="lazy" src={post.coverImage} />
+        </div>
+      )}
+      <div className="post-card-body">
+        <div className="post-card-meta">
+          <span>{post.category}</span>
+          <small>{post.date}</small>
+        </div>
+        <h3>{post.title}</h3>
+        <p>{post.excerpt}</p>
+        <footer>{post.date}</footer>
       </div>
-      <h3>{post.title}</h3>
-      <p>{post.excerpt}</p>
-      <footer>{post.date}</footer>
     </a>
   );
 }
@@ -4560,7 +5456,8 @@ function FeaturedEssay({
 }
 
 function ArchivePreview({ homepage, posts }: { homepage: HomepageCopy; posts: Post[] }) {
-  const archiveGroups = useMemo(() => buildArchive(posts), [posts]);
+  const publishedPosts = useMemo(() => getPublishedPosts(posts), [posts]);
+  const archiveGroups = useMemo(() => buildArchive(publishedPosts), [publishedPosts]);
   const previewGroups = useMemo(() => archiveGroups.slice(0, homepageArchivePreviewLimit), [archiveGroups]);
   const hasOverflowingArchivePreview =
     archiveGroups.length > homepageArchivePreviewLimit ||
@@ -4665,17 +5562,22 @@ function AboutBlock({
 }
 
 function SearchCommand({
+  quickLinks,
   query,
   results,
   onQueryChange,
   onClose,
 }: {
+  quickLinks: string[];
   query: string;
   results: Post[];
   onQueryChange: (value: string) => void;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLElement>(null);
+
   useEffect(() => {
+    const previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         onClose();
@@ -4683,16 +5585,42 @@ function SearchCommand({
     }
 
     window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      previouslyFocusedElement?.focus();
+    };
   }, [onClose]);
+
+  function trapFocus(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key !== 'Tab') {
+      return;
+    }
+
+    const focusableElements = getFocusableElements(panelRef.current);
+    if (focusableElements.length === 0) {
+      return;
+    }
+
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+    if (event.shiftKey && document.activeElement === firstElement) {
+      event.preventDefault();
+      lastElement.focus();
+    } else if (!event.shiftKey && document.activeElement === lastElement) {
+      event.preventDefault();
+      firstElement.focus();
+    }
+  }
 
   return (
     <div className="search-layer" role="presentation" onMouseDown={onClose}>
       <section
         className="search-panel"
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="站内搜索"
+        onKeyDown={trapFocus}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="search-input-row">
@@ -4710,7 +5638,7 @@ function SearchCommand({
         </div>
 
         <div className="quick-links">
-          {['写作', '技术笔记', '读书摘录', '山水游踪'].map((item) => (
+          {quickLinks.map((item) => (
             <button type="button" key={item} onClick={() => onQueryChange(item)}>
               {item}
             </button>
@@ -4735,6 +5663,23 @@ function SearchCommand({
   );
 }
 
+function buildSearchQuickLinks(posts: Post[]) {
+  const values = posts.flatMap((post) => [post.category, ...post.tags]).filter(Boolean);
+  return Array.from(new Set(values)).slice(0, 8);
+}
+
+function getFocusableElements(container: HTMLElement | null) {
+  if (!container) {
+    return [];
+  }
+
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute('aria-hidden'));
+}
+
 function SiteFooter({ homepage, ownerAvatarUrl, ownerName }: { homepage: HomepageCopy; ownerAvatarUrl: string; ownerName: string }) {
   return (
     <footer className="site-footer">
@@ -4747,8 +5692,9 @@ function SiteFooter({ homepage, ownerAvatarUrl, ownerName }: { homepage: Homepag
       </div>
       <nav aria-label="页脚导航">
         <a href="/posts/page/1">全部文章</a>
-        <a href="/#归档">归档</a>
-        <a href="/admin">站点设置</a>
+        <a href="/notes/page/1">札记</a>
+        <a href="/archive/page/1">归档</a>
+        <a href="/gallery">图库</a>
       </nav>
     </footer>
   );
@@ -4758,36 +5704,93 @@ function AllPostsPage({
   category,
   currentPage,
   posts,
+  tag,
 }: {
   category: string | null;
   currentPage: number;
   posts: Post[];
+  tag: string | null;
 }) {
   const allPostsPerPage = 5;
-  const visiblePosts = category ? posts.filter((post) => post.category === category) : posts;
+  const categories = Array.from(new Set(posts.map((post) => post.category))).filter(Boolean);
+  const tags = Array.from(new Set(posts.flatMap((post) => post.tags))).filter(Boolean);
+  const visiblePosts = posts.filter((post) => {
+    const categoryMatches = category ? post.category === category : true;
+    const tagMatches = tag ? post.tags.includes(tag) : true;
+    return categoryMatches && tagMatches;
+  });
   const pageCount = Math.max(1, Math.ceil(visiblePosts.length / allPostsPerPage));
   const normalizedPage = Math.min(Math.max(currentPage, 1), pageCount);
   const startIndex = (normalizedPage - 1) * allPostsPerPage;
   const pagedPosts = visiblePosts.slice(startIndex, startIndex + allPostsPerPage);
-  const pageTitle = category ? `${category}文章` : '全部文章';
+  const pageTitle = category && tag ? `${category} · ${tag}` : category ? `${category}文章` : tag ? `标签：${tag}` : '全部文章';
+  const filterHref = (nextCategory: string | null, nextTag: string | null) => {
+    const params = new URLSearchParams();
+    if (nextCategory) {
+      params.set('category', nextCategory);
+    }
+    if (nextTag) {
+      params.set('tag', nextTag);
+    }
+    const queryString = params.toString();
+    return `/posts/page/1${queryString ? `?${queryString}` : ''}`;
+  };
 
   return (
     <section className="content-section listing-page">
       <SectionHeading eyebrow="All Posts" title={pageTitle} />
       <div className="listing-intro">
         <p>
-          按发布时间逐页浏览{category ? `“${category}”分类下的` : '所有'}博客内容。当前第 {normalizedPage}{' '}
+          按发布时间逐页浏览{category ? `“${category}”分类下` : '所有'}{tag ? `、带有“${tag}”标签的` : ''}博客内容。当前第 {normalizedPage}{' '}
           页，共 {pageCount} 页。
         </p>
+        {(category || tag) && (
+          <a className="section-link" href="/posts/page/1">
+            清除筛选
+            <X size={16} />
+          </a>
+        )}
       </div>
 
-      <div className="listing-grid">
-        {pagedPosts.map((post) => (
-          <PostListItem key={post.slug} post={post} />
-        ))}
+      <div className="post-filter-bar" aria-label="文章筛选">
+        <div className="post-filter-group" role="group" aria-label="分类筛选">
+          <a aria-current={!category && !tag ? 'page' : undefined} href="/posts/page/1">全部</a>
+          {categories.map((categoryName) => (
+            <a
+              aria-current={category === categoryName ? 'page' : undefined}
+              href={filterHref(categoryName, tag)}
+              key={categoryName}
+            >
+              {categoryName}
+            </a>
+          ))}
+        </div>
+        {tags.length > 0 && (
+          <div className="post-filter-group tag-filter-group" role="group" aria-label="标签筛选">
+            {tags.slice(0, 16).map((tagName) => (
+            <a
+              aria-current={tag === tagName ? 'page' : undefined}
+              href={filterHref(category, tagName)}
+              key={tagName}
+            >
+                {tagName}
+              </a>
+            ))}
+          </div>
+        )}
       </div>
 
-      <Pagination category={category} currentPage={normalizedPage} pageCount={pageCount} />
+      {pagedPosts.length > 0 ? (
+        <div className="listing-grid">
+          {pagedPosts.map((post) => (
+            <PostListItem key={post.slug} post={post} />
+          ))}
+        </div>
+      ) : (
+        <p className="empty-state">没有匹配的文章，可以清除筛选后重新浏览。</p>
+      )}
+
+      <Pagination category={category} currentPage={normalizedPage} pageCount={pageCount} tag={tag} />
     </section>
   );
 }
@@ -4891,6 +5894,20 @@ function isSystemGalleryAlbum(album: GalleryAlbum) {
   return album.id === systemGalleryAlbumId || album.slug === systemGalleryAlbumSlug;
 }
 
+function getSystemGalleryImageUrls(albums: GalleryAlbum[]) {
+  const systemImages = albums.find((album) => isSystemGalleryAlbum(album))?.images ?? [];
+
+  return {
+    avatar: systemImages.find((image) => image.id === 'image-guzhouyue-avatar')?.imageUrl,
+    classic: systemImages.find((image) => image.id === 'image-guzhouyue-hero')?.imageUrl,
+    cyber: systemImages.find((image) => image.id === 'image-guzhouyue-cyber')?.imageUrl,
+  };
+}
+
+function getActiveOwnerAvatarUrl(ownerAvatarUrl: string, systemGalleryImages: ReturnType<typeof getSystemGalleryImageUrls>) {
+  return ownerAvatarUrl === systemGalleryAssetUrls.avatarImage ? systemGalleryImages.avatar ?? ownerAvatarUrl : ownerAvatarUrl;
+}
+
 function normalizeGalleryImageOrder(images: GalleryImage[]) {
   return images.map((image, index) => ({
     ...image,
@@ -4908,6 +5925,51 @@ function withGalleryAlbumImages(album: GalleryAlbum, images: GalleryImage[]) {
     imageCount: images.length,
     images,
   };
+}
+
+function isSupportedComposerImageFile(file: File) {
+  return supportedComposerImageMimeTypes.has(file.type);
+}
+
+function hasImageFileInTransfer(dataTransfer: DataTransfer) {
+  if (Array.from(dataTransfer.files ?? []).some((file) => file.type.startsWith('image/'))) {
+    return true;
+  }
+
+  return Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file' && item.type.startsWith('image/'));
+}
+
+function getImageFilesFromTransfer(dataTransfer: DataTransfer) {
+  const files = Array.from(dataTransfer.files ?? []);
+  if (files.length > 0) {
+    return files.filter((file) => file.type.startsWith('image/'));
+  }
+
+  return Array.from(dataTransfer.items ?? [])
+    .map((item) => (item.kind === 'file' && item.type.startsWith('image/') ? item.getAsFile() : null))
+    .filter((file): file is File => file !== null);
+}
+
+function escapeMarkdownAltText(value: string) {
+  return value.replace(/[\r\n[\]]/g, ' ').trim() || '图片';
+}
+
+function createComposerImageTitle(file: File, index: number) {
+  const baseName = file.name.replace(/\.[^.]+$/, '').trim();
+  if (baseName && !/^image$/i.test(baseName)) {
+    return baseName.slice(0, 80);
+  }
+
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
+  return `截图-${timestamp}${index > 0 ? `-${index + 1}` : ''}`;
 }
 
 function AuthorAvatar({
@@ -4931,6 +5993,11 @@ function AuthorAvatar({
 function PostListItem({ post }: { post: Post }) {
   return (
     <a className={`list-post tone-${post.tone}`} href={`/posts/${post.slug}`}>
+      {post.coverImage && (
+        <div className="list-post-cover">
+          <img alt="" loading="lazy" src={post.coverImage} />
+        </div>
+      )}
       <div>
         <span>{post.category}</span>
         <h3>{post.title}</h3>
@@ -4947,14 +6014,25 @@ function Pagination({
   category,
   currentPage,
   pageCount,
+  tag,
 }: {
   category: string | null;
   currentPage: number;
   pageCount: number;
+  tag: string | null;
 }) {
   const pageNumbers = Array.from({ length: pageCount }, (_, index) => index + 1);
-  const pageHref = (page: number) =>
-    `/posts/page/${page}${category ? `?category=${encodeURIComponent(category)}` : ''}`;
+  const pageHref = (page: number) => {
+    const params = new URLSearchParams();
+    if (category) {
+      params.set('category', category);
+    }
+    if (tag) {
+      params.set('tag', tag);
+    }
+    const queryString = params.toString();
+    return `/posts/page/${page}${queryString ? `?${queryString}` : ''}`;
+  };
 
   return (
     <nav className="pagination" aria-label="文章分页">
@@ -5006,226 +6084,83 @@ function SimplePagination({
   );
 }
 
-function MarkdownBody({ markdown }: { markdown: string }) {
-  return (
-    <div className="article-body">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex, rehypeHighlight]}
-      >
-        {markdown}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-type CommentItem = {
-  id: string;
-  author: string;
-  content: string;
-  createdAt: string;
-};
-
-function getCommentsStorageKey(slug: string) {
-  return `guzhouyue-comments:${slug}`;
-}
-
-function readPostComments(slug: string): CommentItem[] {
-  try {
-    const storedComments = window.localStorage.getItem(getCommentsStorageKey(slug));
-    const parsedComments = storedComments ? JSON.parse(storedComments) : [];
-
-    if (!Array.isArray(parsedComments)) {
-      return [];
-    }
-
-    return parsedComments.filter((comment): comment is CommentItem => {
-      return (
-        typeof comment?.id === 'string' &&
-        typeof comment.author === 'string' &&
-        typeof comment.content === 'string' &&
-        typeof comment.createdAt === 'string'
-      );
-    });
-  } catch {
-    return [];
-  }
-}
-
-function savePostComments(slug: string, comments: CommentItem[]) {
-  window.localStorage.setItem(getCommentsStorageKey(slug), JSON.stringify(comments));
-}
-
 function formatCommentTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '时间未知';
+  }
+
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
     timeStyle: 'short',
-  }).format(new Date(value));
+  }).format(date);
 }
 
-function ArticleComments({ slug }: { slug: string }) {
-  const [comments, setComments] = useState<CommentItem[]>(() => readPostComments(slug));
-  const [author, setAuthor] = useState('');
-  const [content, setContent] = useState('');
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [notice, setNotice] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadComments() {
-      try {
-        const apiComments = await fetchArticleComments(slug);
-        if (!cancelled) {
-          setComments(apiComments);
-          savePostComments(slug, apiComments);
-        }
-      } catch {
-        if (!cancelled) {
-          setComments(readPostComments(slug));
-        }
-      }
-    }
-
-    loadComments();
-    setIsExpanded(false);
-    setNotice('');
-    return () => {
-      cancelled = true;
-    };
-  }, [slug]);
-
-  async function submitComment(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const trimmedContent = content.trim();
-    if (!trimmedContent) {
-      return;
-    }
-
-    try {
-      const savedComment = await submitArticleComment(slug, {
-        authorName: author.trim() || '过路读者',
-        content: trimmedContent,
-      });
-
-      if (savedComment) {
-        const nextComments = [savedComment, ...comments];
-        setComments(nextComments);
-        savePostComments(slug, nextComments);
-        setNotice('');
-      } else {
-        setNotice('评论已提交，审核后展示。');
-      }
-      setAuthor('');
-      setContent('');
-    } catch {
-      const nextComment: CommentItem = {
-        id: `${Date.now()}`,
-        author: author.trim() || '过路读者',
-        content: trimmedContent,
-        createdAt: new Date().toISOString(),
-      };
-      const nextComments = [nextComment, ...comments];
-
-      setComments(nextComments);
-      savePostComments(slug, nextComments);
-      setAuthor('');
-      setContent('');
-      setNotice('评论接口暂不可用，已临时保存到本机。');
-    }
-  }
-
-  return (
-    <section className="article-comments" aria-label="评论">
-      <div className="article-comments-header">
-        <span>
-          <MessageCircle size={18} />
-          评论
-        </span>
-        <button
-          aria-expanded={isExpanded}
-          aria-controls="article-comments-panel"
-          onClick={() => setIsExpanded((expanded) => !expanded)}
-          type="button"
-        >
-          <strong>{comments.length}</strong>
-          {isExpanded ? '收起评论' : '展开评论'}
-        </button>
-      </div>
-
-      {isExpanded && (
-        <div className="article-comments-panel" id="article-comments-panel">
-          <form className="comment-form" onSubmit={submitComment}>
-            <input
-              aria-label="评论昵称"
-              onChange={(event) => setAuthor(event.target.value)}
-              placeholder="昵称"
-              value={author}
-            />
-            <textarea
-              aria-label="评论内容"
-              onChange={(event) => setContent(event.target.value)}
-              placeholder="写下你的想法"
-              rows={4}
-              value={content}
-            />
-            <button type="submit">
-              <Send size={17} />
-              发表评论
-            </button>
-          </form>
-          {notice && <p className="comment-empty">{notice}</p>}
-
-          {comments.length > 0 ? (
-            <div className="comment-list">
-              {comments.map((comment) => (
-                <article className="comment-item" key={comment.id}>
-                  <header>
-                    <strong>{comment.author}</strong>
-                    <time dateTime={comment.createdAt}>{formatCommentTime(comment.createdAt)}</time>
-                  </header>
-                  <p>{comment.content}</p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="comment-empty">还没有评论，来写第一条。</p>
-          )}
-        </div>
-      )}
-    </section>
-  );
+function calculateReadingMinutes(markdown: string) {
+  const chineseCharacters = (markdown.match(/[\u4e00-\u9fa5]/g) ?? []).length;
+  const latinWords = markdown.replace(/[\u4e00-\u9fa5]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil((chineseCharacters + latinWords) / 420));
 }
 
 function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: string; posts: Post[]; slug: string }) {
   const post = getPostBySlug(posts, slug);
+  useArticleHead(post ?? null);
+  const markdown = post ? getPostMarkdown(post) : '';
+  const outlineItems = useMemo(() => getMarkdownOutline(markdown), [markdown]);
 
   if (!post) {
     return <NotFoundPage />;
   }
 
   const { previousPost, nextPost } = getAdjacentPosts(posts, slug);
+  const readingMinutes = calculateReadingMinutes(markdown);
+  const relatedPosts = posts.filter((item) => item.slug !== post.slug && item.category === post.category).slice(0, 3);
 
   return (
     <article className="article-page">
       <header className={`article-hero tone-${post.tone}`}>
-        <a className="breadcrumb" href="/posts/page/1">
-          全部文章
-        </a>
-        <span>{post.category}</span>
-        <h1>{post.title}</h1>
-        <p>{post.excerpt}</p>
-        <div className="article-meta">
-          <span className="article-author-meta">
-            <AuthorAvatar ownerAvatarUrl={ownerAvatarUrl} ownerName={post.authorName || '孤舟月'} size="small" />
-            <small>作者：{post.authorName || '孤舟月'}</small>
-          </span>
-          <small>{post.date}</small>
+        {post.coverImage && (
+          <div className="article-hero-cover">
+            <img alt="" src={post.coverImage} />
+          </div>
+        )}
+        <div className="article-hero-content">
+          <a className="breadcrumb" href="/posts/page/1">
+            全部文章
+          </a>
+          <span>{post.category}</span>
+          <h1>{post.title}</h1>
+          <p>{post.excerpt}</p>
+          <div className="article-meta">
+            <span className="article-author-meta">
+              <AuthorAvatar ownerAvatarUrl={ownerAvatarUrl} ownerName={post.authorName || '孤舟月'} size="small" />
+              <small>作者：{post.authorName || '孤舟月'}</small>
+            </span>
+            <small>{post.date}</small>
+            <small>{readingMinutes} 分钟阅读</small>
+          </div>
+          {post.tags.length > 0 && (
+            <div className="article-tags" aria-label="文章标签">
+              {post.tags.map((tag) => (
+                <a href={`/posts/page/1?category=${encodeURIComponent(post.category)}&tag=${encodeURIComponent(tag)}`} key={tag}>
+                  {tag}
+                </a>
+              ))}
+            </div>
+          )}
         </div>
       </header>
 
-      <MarkdownBody markdown={getPostMarkdown(post)} />
+      {outlineItems.length > 0 && (
+        <nav className="article-toc" aria-label="文章目录">
+          <strong>目录</strong>
+          {outlineItems.map((item) => (
+            <span className={`toc-level-${item.level}`} key={item.id}>{item.title}</span>
+          ))}
+        </nav>
+      )}
+
+      <MarkdownBody markdown={markdown} />
 
       <nav className="article-neighbors" aria-label="相邻文章">
         {previousPost ? (
@@ -5245,6 +6180,17 @@ function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: strin
           <span />
         )}
       </nav>
+
+      {relatedPosts.length > 0 && (
+        <section className="related-posts" aria-label="相关文章">
+          <SectionHeading eyebrow="Related" title="相关文章" />
+          <div className="listing-grid listing-grid-compact">
+            {relatedPosts.map((relatedPost) => (
+              <PostListItem key={relatedPost.slug} post={relatedPost} />
+            ))}
+          </div>
+        </section>
+      )}
 
       <ArticleComments slug={post.slug} />
     </article>
@@ -5290,3 +6236,4 @@ function SectionHeading({
 }
 
 export default App;
+

@@ -9,9 +9,7 @@
     "seed:server": "tsx server/scripts/seed.ts",
     "seed:test-articles": "tsx server/scripts/seed-test-articles.ts",
     "test:server": "tsx server/scripts/smoke-test.ts",
-    "seo:generate": "node scripts/generate-seo.mjs",
-    "seo:validate": "node scripts/validate-seo.mjs",
-    "build": "npm run seo:generate && npm run seo:validate && tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

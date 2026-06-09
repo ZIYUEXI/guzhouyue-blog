@@ -35,9 +35,12 @@ import {
   updateArticle,
   updateGalleryAlbum,
   updateGalleryImage,
+  updateGalleryImageFile,
 } from './content.js';
 
 const sessions = new Map<string, number>();
+const csrfTokens = new Map<string, string>();
+const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const allowedGalleryMimeTypes = new Map([
   ['image/jpeg', 'jpg'],
   ['image/png', 'png'],
@@ -57,7 +60,16 @@ export function buildApp() {
     return payload;
   });
 
-  app.register(cors, { origin: true, credentials: true });
+  app.register(cors, {
+    origin(origin, callback) {
+      if (!origin || config.corsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('CORS origin not allowed'), false);
+    },
+    credentials: true,
+  });
   app.register(cookie);
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => {
     if (body.trim() === '') {
@@ -69,6 +81,32 @@ export function buildApp() {
       done(null, JSON.parse(body));
     } catch (error) {
       done(error as Error);
+    }
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    if (!request.url.startsWith('/api/admin') || request.method === 'GET' || reply.statusCode >= 400) {
+      return;
+    }
+    if (request.url === '/api/admin/login') {
+      return;
+    }
+
+    try {
+      db.prepare(
+        `
+          INSERT INTO admin_audit_log (id, action, target, ip_hash, user_agent, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        `audit_${Date.now().toString(36)}_${crypto.randomBytes(6).toString('hex')}`,
+        request.method,
+        request.url.slice(0, 240),
+        crypto.createHash('sha256').update(request.ip || '').digest('hex'),
+        String(request.headers['user-agent'] ?? '').slice(0, 240),
+        nowIso(),
+      );
+    } catch (error) {
+      request.log.warn({ error }, 'Failed to write admin audit log');
     }
   });
   app.register(multipart, {
@@ -99,6 +137,12 @@ export function buildApp() {
       q: query.q,
     });
   });
+
+  app.get('/api/gallery', async () => ({
+    items: listGalleryAlbums()
+      .filter((album) => album.id !== systemGalleryAlbumId && album.slug !== systemGalleryAlbumSlug)
+      .map((album) => getGalleryAlbum(album.id, false) ?? album),
+  }));
 
   app.get('/api/articles/:slug', async (request, reply) => {
     const { slug } = request.params as { slug: string };
@@ -188,6 +232,10 @@ export function buildApp() {
   });
 
   app.post('/api/articles/:slug/comments', async (request, reply) => {
+    if (!checkRateLimit(`comment:${request.ip}`, 5, 60 * 1000)) {
+      return reply.code(429).send({ error: 'Too many comments, please try again later' });
+    }
+
     const { slug } = request.params as { slug: string };
     const article = getArticleBySlug(slug);
     if (!article) {
@@ -216,17 +264,31 @@ export function buildApp() {
   });
 
   app.post('/api/admin/login', async (request, reply) => {
+    if (!checkRateLimit(`login:${request.ip}`, 8, 5 * 60 * 1000)) {
+      return reply.code(429).send({ error: 'Too many login attempts, please try again later' });
+    }
+
     const body = request.body as { password?: string };
     if (body.password !== config.adminPassword) {
       return reply.code(401).send({ error: 'Invalid password' });
     }
 
     const token = crypto.randomBytes(32).toString('hex');
+    const csrfToken = crypto.randomBytes(32).toString('hex');
     sessions.set(token, Date.now() + config.sessionTtlMs);
+    csrfTokens.set(token, csrfToken);
     reply.setCookie(config.sessionCookieName, token, {
       path: '/',
       httpOnly: true,
       sameSite: 'lax',
+      secure: config.cookieSecure,
+      maxAge: Math.floor(config.sessionTtlMs / 1000),
+    });
+    reply.setCookie(config.csrfCookieName, csrfToken, {
+      path: '/',
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: config.cookieSecure,
       maxAge: Math.floor(config.sessionTtlMs / 1000),
     });
     return { ok: true };
@@ -236,8 +298,10 @@ export function buildApp() {
     const token = request.cookies[config.sessionCookieName];
     if (token) {
       sessions.delete(token);
+      csrfTokens.delete(token);
     }
     reply.clearCookie(config.sessionCookieName, { path: '/' });
+    reply.clearCookie(config.csrfCookieName, { path: '/' });
     return { ok: true };
   });
 
@@ -250,6 +314,30 @@ export function buildApp() {
     featuredSeries: listFeaturedSeries(),
     galleryAlbums: listGalleryAlbums({ includePrivate: true }).map((album) => getGalleryAlbum(album.id, true) ?? album),
     posts: listArticles({ page: 1, pageSize: 1000, includeDrafts: true }).items,
+  }));
+
+  app.get('/api/admin/ops', { preHandler: requireAdmin }, async () => {
+    const databaseStatus = readDatabaseStatus();
+    const pendingComments = (
+      db.prepare("SELECT COUNT(*) AS count FROM comments WHERE status = 'pending'").get() as { count: number }
+    ).count;
+    const latestPublished = listArticles({ page: 1, pageSize: 5 }).items;
+    const recentAudit = readAuditLog(8);
+
+    return {
+      api: {
+        ok: true,
+        timestamp: nowIso(),
+      },
+      database: databaseStatus,
+      pendingComments,
+      latestPublished,
+      recentAudit,
+    };
+  });
+
+  app.get('/api/admin/audit', { preHandler: requireAdmin }, async () => ({
+    items: readAuditLog(50),
   }));
 
   app.get('/api/admin/gallery', { preHandler: requireAdmin }, async () => ({
@@ -297,6 +385,9 @@ export function buildApp() {
     if (!albumId) {
       return reply.code(404).send({ error: 'Gallery album not found' });
     }
+    if (albumId === systemGalleryAlbumId) {
+      return reply.code(400).send({ error: 'System gallery images must be replaced instead of added' });
+    }
 
     const file = await request.file();
     if (!file) {
@@ -336,6 +427,56 @@ export function buildApp() {
     return reply.code(201).send(image);
   });
 
+  app.post('/api/admin/gallery/images/:id/file', { preHandler: requireAdmin }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const existing = getGalleryImage(id);
+    if (!existing) {
+      return reply.code(404).send({ error: 'Gallery image not found' });
+    }
+    if (existing.albumId !== systemGalleryAlbumId) {
+      return reply.code(400).send({ error: 'Only system gallery images can be replaced' });
+    }
+
+    const file = await request.file();
+    if (!file) {
+      return reply.code(400).send({ error: 'Image file is required' });
+    }
+
+    const extension = allowedGalleryMimeTypes.get(file.mimetype);
+    if (!extension) {
+      file.file.resume();
+      return reply.code(400).send({ error: 'Unsupported image type' });
+    }
+
+    const fileName = `system-${id}-${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}.${extension}`;
+    const filePath = path.join(config.galleryUploadDir, fileName);
+
+    try {
+      fs.mkdirSync(config.galleryUploadDir, { recursive: true });
+      await pipeline(file.file, fs.createWriteStream(filePath));
+    } catch {
+      return reply.code(413).send({ error: 'Failed to save image file' });
+    }
+
+    const image = updateGalleryImageFile(id, {
+      imageUrl: `/api/uploads/gallery/${fileName}`,
+      fileName,
+      mimeType: file.mimetype,
+      sizeBytes: fs.statSync(filePath).size,
+    });
+    if (!image) {
+      return reply.code(404).send({ error: 'Gallery image not found' });
+    }
+
+    try {
+      await deleteGalleryFiles([existing]);
+    } catch (error) {
+      request.log.warn({ error }, 'Failed to delete old system gallery file after replacing image');
+    }
+
+    return image;
+  });
+
   app.put('/api/admin/gallery/images/:id', { preHandler: requireAdmin }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const image = updateGalleryImage(id, request.body as Record<string, unknown>);
@@ -347,6 +488,9 @@ export function buildApp() {
     const image = getGalleryImage(id);
     if (!image) {
       return reply.code(404).send({ error: 'Gallery image not found' });
+    }
+    if (image.albumId === systemGalleryAlbumId) {
+      return reply.code(400).send({ error: 'System gallery images cannot be deleted' });
     }
 
     const deleted = deleteGalleryImage(id);
@@ -364,7 +508,7 @@ export function buildApp() {
   });
 
   app.put('/api/admin/settings', { preHandler: requireAdmin }, async (request) => {
-    const body = request.body as { stylePreset?: string; colorScheme?: string; ownerName?: string; ownerAvatarUrl?: string };
+    const body = request.body as { stylePreset?: string; ownerName?: string; ownerAvatarUrl?: string };
     const now = nowIso();
     const ownerName = String(body.ownerName ?? '').trim().slice(0, 40) || '孤舟月';
     const ownerAvatarUrl = String(body.ownerAvatarUrl ?? '').trim().slice(0, 500);
@@ -377,7 +521,7 @@ export function buildApp() {
           owner_avatar_url = excluded.owner_avatar_url,
           updated_at = excluded.updated_at
       `,
-    ).run(body.stylePreset ?? 'classic', body.colorScheme ?? 'light', ownerName, ownerAvatarUrl, now);
+    ).run(body.stylePreset ?? 'classic', 'light', ownerName, ownerAvatarUrl, now);
     return getSiteSettings();
   });
 
@@ -556,7 +700,7 @@ export function buildApp() {
     const items = articles
       .map(
         (article) =>
-          `<item><title><![CDATA[${article.title}]]></title><link>${config.siteUrl}/articles/${article.slug}</link><guid>${config.siteUrl}/articles/${article.slug}</guid><description><![CDATA[${article.excerpt}]]></description><pubDate>${new Date(article.publishedAt ?? article.createdAt).toUTCString()}</pubDate></item>`,
+          `<item><title><![CDATA[${article.title}]]></title><link>${config.siteUrl}/posts/${encodeURIComponent(article.slug)}</link><guid isPermaLink="true">${config.siteUrl}/posts/${encodeURIComponent(article.slug)}</guid><description><![CDATA[${article.excerpt}]]></description><pubDate>${new Date(article.publishedAt ?? article.createdAt).toUTCString()}</pubDate></item>`,
       )
       .join('');
     return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title><![CDATA[${site.homepage.siteName ?? '孤舟月'}]]></title><link>${config.siteUrl}</link><description><![CDATA[${site.homepage.siteTagline ?? ''}]]></description>${items}</channel></rss>`;
@@ -567,7 +711,11 @@ export function buildApp() {
     const articles = listArticles({ page: 1, pageSize: 1000 }).items;
     const urls = [
       `<url><loc>${config.siteUrl}/</loc></url>`,
-      ...articles.map((article) => `<url><loc>${config.siteUrl}/articles/${article.slug}</loc><lastmod>${article.updatedAt}</lastmod></url>`),
+      `<url><loc>${config.siteUrl}/posts/page/1</loc></url>`,
+      `<url><loc>${config.siteUrl}/notes/page/1</loc></url>`,
+      `<url><loc>${config.siteUrl}/gallery</loc></url>`,
+      `<url><loc>${config.siteUrl}/archive/page/1</loc></url>`,
+      ...articles.map((article) => `<url><loc>${config.siteUrl}/posts/${encodeURIComponent(article.slug)}</loc><lastmod>${article.updatedAt}</lastmod></url>`),
     ];
     return `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`;
   });
@@ -586,7 +734,34 @@ export function buildApp() {
       }
       return reply.code(401).send({ error: 'Admin login required' });
     }
+    if (!isReadOnlyRequest(request)) {
+      const csrfToken = csrfTokens.get(token);
+      const submittedToken = request.headers['x-csrf-token'];
+      if (!csrfToken || submittedToken !== csrfToken) {
+        return reply.code(403).send({ error: 'Invalid CSRF token' });
+      }
+    }
     sessions.set(token, Date.now() + config.sessionTtlMs);
+  }
+
+  function isReadOnlyRequest(request: FastifyRequest) {
+    return request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS';
+  }
+
+  function checkRateLimit(key: string, maxCount: number, windowMs: number) {
+    const now = Date.now();
+    const existing = rateLimits.get(key);
+    if (!existing || existing.resetAt <= now) {
+      rateLimits.set(key, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+
+    if (existing.count >= maxCount) {
+      return false;
+    }
+
+    existing.count += 1;
+    return true;
   }
 
   async function readTodayAlmanac() {
@@ -625,6 +800,36 @@ export function buildApp() {
       return 'image/gif';
     }
     return 'application/octet-stream';
+  }
+
+  function readDatabaseStatus() {
+    const quickCheck = db.pragma('quick_check', { simple: true }) as string;
+    let sizeBytes = 0;
+    try {
+      sizeBytes = fs.existsSync(config.databasePath) ? fs.statSync(config.databasePath).size : 0;
+    } catch {
+      sizeBytes = 0;
+    }
+
+    return {
+      ok: quickCheck === 'ok',
+      quickCheck,
+      path: config.databasePath,
+      sizeBytes,
+    };
+  }
+
+  function readAuditLog(limit: number) {
+    return db
+      .prepare(
+        `
+          SELECT id, action, target, user_agent AS userAgent, created_at AS createdAt
+          FROM admin_audit_log
+          ORDER BY created_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(limit);
   }
 
   async function deleteGalleryFiles(images: Array<{ fileName?: string }>) {

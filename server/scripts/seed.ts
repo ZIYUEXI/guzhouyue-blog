@@ -58,7 +58,7 @@ const seed = db.transaction(() => {
       post.bodyMarkdown ?? post.body.join('\n\n'),
       post.title,
       post.excerpt,
-      '',
+      post.coverImage ?? '',
     );
   });
 
@@ -66,7 +66,7 @@ const seed = db.transaction(() => {
     INSERT INTO site_settings (id, style_preset, color_scheme, owner_name, owner_avatar_url, updated_at)
     VALUES ('site', ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
-  `).run(siteSettings.stylePreset, siteSettings.colorScheme, siteSettings.ownerName, defaultOwnerAvatarUrl, now);
+  `).run(siteSettings.stylePreset, 'light', siteSettings.ownerName, defaultOwnerAvatarUrl, now);
   db.prepare(`
     UPDATE site_settings
     SET owner_avatar_url = ?, updated_at = ?

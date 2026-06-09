@@ -6,7 +6,8 @@ const app = buildApp();
 const health = await app.inject({ method: 'GET', url: '/api/health' });
 const site = await app.inject({ method: 'GET', url: '/api/site' });
 const articles = await app.inject({ method: 'GET', url: '/api/articles' });
-const detail = await app.inject({ method: 'GET', url: '/api/articles/slow-writing-under-moon' });
+const firstArticleSlug = articles.json().items?.[0]?.slug;
+const detail = await app.inject({ method: 'GET', url: `/api/articles/${encodeURIComponent(firstArticleSlug ?? '')}` });
 const publicGallery = await app.inject({ method: 'GET', url: '/api/gallery' });
 const adminGalleryAnonymous = await app.inject({ method: 'GET', url: '/api/admin/gallery' });
 const login = await app.inject({
@@ -15,20 +16,30 @@ const login = await app.inject({
   payload: { password: config.adminPassword },
 });
 const cookie = login.headers['set-cookie'];
+const cookieHeader = Array.isArray(cookie) ? cookie.join('; ') : cookie ?? '';
+const csrfToken = (Array.isArray(cookie) ? cookie : [cookie ?? ''])
+  .find((value) => value.includes(`${config.csrfCookieName}=`))
+  ?.match(new RegExp(`${config.csrfCookieName}=([^;]+)`))?.[1] ?? '';
+const adminWriteHeaders = { cookie: cookieHeader, 'x-csrf-token': csrfToken };
 const admin = await app.inject({
   method: 'GET',
   url: '/api/admin/content',
-  headers: { cookie: Array.isArray(cookie) ? cookie[0] : cookie ?? '' },
+  headers: { cookie: cookieHeader },
 });
 const adminGallery = await app.inject({
   method: 'GET',
   url: '/api/admin/gallery',
-  headers: { cookie: Array.isArray(cookie) ? cookie[0] : cookie ?? '' },
+  headers: { cookie: cookieHeader },
+});
+const adminOps = await app.inject({
+  method: 'GET',
+  url: '/api/admin/ops',
+  headers: { cookie: cookieHeader },
 });
 const hiddenAlbum = await app.inject({
   method: 'POST',
   url: '/api/admin/gallery/albums',
-  headers: { cookie: Array.isArray(cookie) ? cookie[0] : cookie ?? '' },
+  headers: adminWriteHeaders,
   payload: {
     slug: 'hidden-smoke-gallery',
     title: '隐藏测试相册',
@@ -50,18 +61,35 @@ const invalidUpload = await app.inject({
   method: 'POST',
   url: '/api/admin/gallery/albums/moonlight/images',
   headers: {
-    cookie: Array.isArray(cookie) ? cookie[0] : cookie ?? '',
+    ...adminWriteHeaders,
     'content-type': `multipart/form-data; boundary=${invalidUploadBoundary}`,
   },
   payload: invalidUploadPayload,
+});
+const systemAlbumDelete = await app.inject({
+  method: 'DELETE',
+  url: '/api/admin/gallery/albums/album-moonlight',
+  headers: adminWriteHeaders,
+});
+const systemImageDelete = await app.inject({
+  method: 'DELETE',
+  url: '/api/admin/gallery/images/image-guzhouyue-avatar',
+  headers: adminWriteHeaders,
 });
 if (hiddenAlbum.statusCode === 201) {
   await app.inject({
     method: 'DELETE',
     url: '/api/admin/gallery/albums/hidden-smoke-gallery',
-    headers: { cookie: Array.isArray(cookie) ? cookie[0] : cookie ?? '' },
+    headers: adminWriteHeaders,
   });
 }
+const adminAudit = await app.inject({
+  method: 'GET',
+  url: '/api/admin/audit',
+  headers: { cookie: cookieHeader },
+});
+const rss = await app.inject({ method: 'GET', url: '/rss.xml' });
+const sitemap = await app.inject({ method: 'GET', url: '/sitemap.xml' });
 
 await app.close();
 
@@ -75,9 +103,17 @@ const result = {
   login: login.statusCode,
   admin: admin.statusCode,
   adminGallery: adminGallery.statusCode,
+  adminOps: adminOps.statusCode,
   hiddenAlbum: hiddenAlbum.statusCode,
   invalidUpload: invalidUpload.statusCode,
+  systemAlbumDelete: systemAlbumDelete.statusCode,
+  systemImageDelete: systemImageDelete.statusCode,
+  rssUsesPostsRoute: rss.body.includes('/posts/') && !rss.body.includes('/articles/'),
+  sitemapUsesPostsRoute: sitemap.body.includes('/posts/') && !sitemap.body.includes('/articles/'),
+  auditEntries: adminAudit.json().items.length,
+  databaseOk: adminOps.json().database.ok,
   articleTotal: articles.json().total,
+  detailSlug: firstArticleSlug,
   adminPosts: admin.json().posts.length,
   adminGalleryTotal: adminGallery.json().items.length,
 };

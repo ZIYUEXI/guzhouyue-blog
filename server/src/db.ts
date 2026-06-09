@@ -129,6 +129,15 @@ db.exec(`
     updated_at TEXT NOT NULL,
     FOREIGN KEY (album_id) REFERENCES gallery_albums(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL,
+    ip_hash TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
 `);
 
 const siteSettingsColumns = db.prepare('PRAGMA table_info(site_settings)').all() as Array<{ name: string }>;

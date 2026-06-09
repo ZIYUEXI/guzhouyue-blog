@@ -1,8 +1,20 @@
 import type { SiteContent, HomepageCopy, NoteSection, FeaturedSeries, AlmanacInfo, GalleryAlbum, GalleryImage } from './contentStore';
-import type { Post } from './posts';
+import type { Post, PostStatus } from './posts';
 import type { SiteSettings } from './siteSettings';
 
 type JsonRecord = Record<string, unknown>;
+
+export class ApiError extends Error {
+  status: number;
+  path: string;
+
+  constructor(status: number, path: string) {
+    super(`API ${status}: ${path}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.path = path;
+  }
+}
 
 export type ApiSitePayload = {
   settings?: Partial<SiteSettings>;
@@ -24,15 +36,55 @@ export type ApiComment = {
   createdAt: string;
 };
 
+export type AdminCommentStatus = 'pending' | 'approved' | 'rejected';
+
+export type ApiAdminComment = {
+  id: string;
+  author: string;
+  content: string;
+  status: AdminCommentStatus;
+  createdAt: string;
+  updatedAt: string;
+  articleSlug: string;
+  articleTitle: string;
+};
+
+export type ApiAdminOps = {
+  api?: {
+    ok?: boolean;
+    timestamp?: string;
+  };
+  database?: {
+    ok?: boolean;
+    quickCheck?: string;
+    path?: string;
+    sizeBytes?: number;
+  };
+  pendingComments?: number;
+  latestPublished?: unknown[];
+  recentAudit?: Array<{
+    id?: string;
+    action?: string;
+    target?: string;
+    userAgent?: string;
+    createdAt?: string;
+  }>;
+};
+
 export type ApiComposerDraft = {
   title: string;
   slug: string;
   category: string;
   date: string;
+  status: PostStatus;
+  publishedAt: string | null;
   tone: string;
   excerpt: string;
   tags: string[];
   bodyMarkdown: string;
+  seoTitle: string;
+  seoDescription: string;
+  coverImage: string;
   composerMode: 'wysiwyg' | 'markdown' | 'split';
   savedAt: string;
 };
@@ -48,17 +100,20 @@ const jsonHeaders = {
 
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
+  const headers = new Headers(isFormData ? { Accept: 'application/json' } : jsonHeaders);
+  const csrfHeader = csrfHeaderForRequest(init.method);
+  if (csrfHeader) {
+    headers.set('X-CSRF-Token', csrfHeader);
+  }
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   const response = await fetch(path, {
     credentials: 'include',
     ...init,
-    headers: {
-      ...(isFormData ? { Accept: 'application/json' } : jsonHeaders),
-      ...init.headers,
-    },
+    headers,
   });
 
   if (!response.ok) {
-    throw new Error(`API ${response.status}: ${path}`);
+    throw new ApiError(response.status, path);
   }
 
   if (response.status === 204) {
@@ -74,6 +129,11 @@ export async function fetchPublicSite() {
 
 export async function fetchPublicArticles() {
   const payload = await requestJson<ApiArticlesPayload | unknown[]>('/api/articles?pageSize=1000');
+  return Array.isArray(payload) ? payload : payload.items ?? [];
+}
+
+export async function fetchPublicGallery() {
+  const payload = await requestJson<unknown[] | { items?: unknown[] }>('/api/gallery');
   return Array.isArray(payload) ? payload : payload.items ?? [];
 }
 
@@ -98,6 +158,12 @@ export async function loginAdmin(password: string) {
   return requestJson<{ ok?: boolean }>('/api/admin/login', {
     method: 'POST',
     body: JSON.stringify({ password }),
+  });
+}
+
+export async function logoutAdmin() {
+  return requestJson<{ ok?: boolean }>('/api/admin/logout', {
+    method: 'POST',
   });
 }
 
@@ -126,6 +192,18 @@ export async function updateAdminArticle(originalSlug: string, post: Post) {
   return requestJson<Post>(`/api/admin/articles/${encodeURIComponent(originalSlug)}`, {
     method: 'PUT',
     body: JSON.stringify(postToApiArticle(post)),
+  });
+}
+
+export async function publishAdminArticle(slug: string) {
+  return requestJson<Post>(`/api/admin/articles/${encodeURIComponent(slug)}/publish`, {
+    method: 'POST',
+  });
+}
+
+export async function unpublishAdminArticle(slug: string) {
+  return requestJson<Post>(`/api/admin/articles/${encodeURIComponent(slug)}/unpublish`, {
+    method: 'POST',
   });
 }
 
@@ -203,6 +281,19 @@ export async function uploadAdminGalleryImage(albumIdOrSlug: string, file: File,
   });
 }
 
+export async function replaceAdminGalleryImageFile(id: string, file: File) {
+  const formData = new FormData();
+  formData.append('image', file);
+
+  return requestJson<GalleryImage>(`/api/admin/gallery/images/${encodeURIComponent(id)}/file`, {
+    method: 'POST',
+    body: formData,
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+}
+
 export async function updateAdminGalleryImage(id: string, image: GalleryImage) {
   return requestJson<GalleryImage>(`/api/admin/gallery/images/${encodeURIComponent(id)}`, {
     method: 'PUT',
@@ -231,15 +322,32 @@ export async function submitArticleComment(slug: string, payload: { authorName: 
   );
 }
 
+export async function fetchAdminComments(status: AdminCommentStatus) {
+  const payload = await requestJson<unknown[] | { items?: unknown[] }>(`/api/admin/comments?status=${encodeURIComponent(status)}`);
+  const comments = Array.isArray(payload) ? payload : payload.items ?? [];
+  return comments.map(normalizeAdminComment).filter((comment): comment is ApiAdminComment => comment !== null);
+}
+
+export async function fetchAdminOps() {
+  return requestJson<ApiAdminOps>('/api/admin/ops');
+}
+
+export async function updateAdminCommentStatus(id: string, status: AdminCommentStatus) {
+  return requestJson<{ ok?: boolean }>(`/api/admin/comments/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ status }),
+  });
+}
+
 export async function fetchAdminDraft(draftKey: string) {
-  return requestJson<ApiComposerDraft>(`/api/admin/drafts/${encodeURIComponent(draftKey)}`);
+  return normalizeComposerDraftResponse(await requestJson<unknown>(`/api/admin/drafts/${encodeURIComponent(draftKey)}`));
 }
 
 export async function saveAdminDraft(draftKey: string, draft: ApiComposerDraft) {
-  return requestJson<ApiComposerDraft>(`/api/admin/drafts/${encodeURIComponent(draftKey)}`, {
+  return normalizeComposerDraftResponse(await requestJson<unknown>(`/api/admin/drafts/${encodeURIComponent(draftKey)}`, {
     method: 'PUT',
     body: JSON.stringify(draft),
-  });
+  }));
 }
 
 export async function clearAdminDraft(draftKey: string) {
@@ -268,10 +376,15 @@ export function normalizeApiPost(value: unknown): Post | null {
     category: asText(value.category) || asText(value.categoryName) || '人间札记',
     authorName: asText(value.authorName) || asText(value.author),
     date: asText(value.date) || asText(value.dateLabel) || formatApiDate(asText(value.publishedAt)) || '2026.05.18 00:00',
+    status: normalizePostStatus(asText(value.status)),
+    publishedAt: asText(value.publishedAt) || null,
     tone: asText(value.tone) || 'ink',
     tags,
     body: [bodyMarkdown],
     bodyMarkdown,
+    seoTitle: asText(value.seoTitle),
+    seoDescription: asText(value.seoDescription),
+    coverImage: asText(value.coverImage),
     deletedAt: asText(value.deletedAt),
   };
 }
@@ -397,6 +510,11 @@ function postToApiArticle(post: Post) {
   return {
     ...post,
     bodyMarkdown: post.bodyMarkdown || post.body.join('\n\n'),
+    status: post.status ?? 'published',
+    publishedAt: post.publishedAt ?? null,
+    seoTitle: post.seoTitle ?? '',
+    seoDescription: post.seoDescription ?? '',
+    coverImage: post.coverImage ?? '',
   };
 }
 
@@ -439,6 +557,63 @@ function normalizeComment(value: unknown): ApiComment | null {
   };
 }
 
+function normalizeAdminComment(value: unknown): ApiAdminComment | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const content = asText(value.content);
+  if (!content) {
+    return null;
+  }
+
+  return {
+    id: asText(value.id) || `${Date.now()}`,
+    author: asText(value.author) || asText(value.authorName) || '过路读者',
+    content,
+    status: normalizeCommentStatus(asText(value.status)),
+    createdAt: asText(value.createdAt) || new Date().toISOString(),
+    updatedAt: asText(value.updatedAt) || asText(value.createdAt) || new Date().toISOString(),
+    articleSlug: asText(value.articleSlug),
+    articleTitle: asText(value.articleTitle) || '未知文章',
+  };
+}
+
+function normalizeComposerDraftResponse(value: unknown): ApiComposerDraft {
+  const record = isRecord(value) ? value : {};
+  const draft = isRecord(record.draft) ? record.draft : record;
+  const savedAt = asText(record.savedAt) || asText(draft.savedAt) || new Date().toISOString();
+
+  return {
+    title: asText(draft.title),
+    slug: asText(draft.slug),
+    category: asText(draft.category),
+    date: asText(draft.date),
+    status: normalizePostStatus(asText(draft.status)),
+    publishedAt: asText(draft.publishedAt) || null,
+    tone: asText(draft.tone) || 'ink',
+    excerpt: asText(draft.excerpt),
+    tags: Array.isArray(draft.tags) ? draft.tags.map(asText).filter(Boolean) : [],
+    bodyMarkdown: asText(draft.bodyMarkdown),
+    seoTitle: asText(draft.seoTitle),
+    seoDescription: asText(draft.seoDescription),
+    coverImage: asText(draft.coverImage),
+    composerMode:
+      draft.composerMode === 'markdown' || draft.composerMode === 'split' || draft.composerMode === 'wysiwyg'
+        ? draft.composerMode
+        : 'wysiwyg',
+    savedAt,
+  };
+}
+
+function normalizePostStatus(value: string): PostStatus {
+  return value === 'draft' || value === 'archived' || value === 'published' ? value : 'published';
+}
+
+function normalizeCommentStatus(value: string): AdminCommentStatus {
+  return value === 'approved' || value === 'rejected' || value === 'pending' ? value : 'pending';
+}
+
 function formatApiDate(value: string) {
   if (!value) {
     return '';
@@ -471,6 +646,28 @@ function asBoolean(value: unknown, fallback: boolean) {
 
 function asNumber(value: unknown, fallback: number) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function csrfHeaderForRequest(method = 'GET') {
+  const normalizedMethod = method.toUpperCase();
+  if (normalizedMethod === 'GET' || normalizedMethod === 'HEAD' || normalizedMethod === 'OPTIONS') {
+    return '';
+  }
+
+  const token = readCookie('guzhouyue_csrf');
+  return token;
+}
+
+function readCookie(name: string) {
+  if (typeof document === 'undefined') {
+    return '';
+  }
+
+  return document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`))
+    ?.slice(name.length + 1) ?? '';
 }
 
 function slugify(value: string) {

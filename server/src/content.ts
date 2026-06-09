@@ -362,7 +362,6 @@ export function getSiteSettings() {
 
   return {
     stylePreset: row?.style_preset ?? 'classic',
-    colorScheme: row?.color_scheme ?? 'light',
     ownerName: row?.owner_name ?? '孤舟月',
     ownerAvatarUrl: row?.owner_avatar_url ?? '',
     updatedAt: row?.updated_at ?? nowIso(),
@@ -675,6 +674,7 @@ export function updateGalleryImage(id: string, input: GalleryImageInput) {
   if (!existing) {
     return null;
   }
+  const isSystemGalleryImage = existing.album_id === systemGalleryAlbumId;
 
   db.prepare(
     `
@@ -686,8 +686,32 @@ export function updateGalleryImage(id: string, input: GalleryImageInput) {
     input.title !== undefined ? String(input.title).trim() || existing.title : existing.title,
     input.description ?? existing.description,
     input.capturedAt !== undefined ? input.capturedAt : existing.captured_at,
-    asPublicFlag(input.isPublic, existing.is_public),
+    isSystemGalleryImage ? 1 : asPublicFlag(input.isPublic, existing.is_public),
     normalizeSortOrder(input.sortOrder, existing.sort_order),
+    nowIso(),
+    id,
+  );
+
+  return getGalleryImage(id);
+}
+
+export function updateGalleryImageFile(id: string, input: Pick<GalleryImageInput, 'imageUrl' | 'fileName' | 'mimeType' | 'sizeBytes'>) {
+  const existing = db.prepare('SELECT * FROM gallery_images WHERE id = ?').get(id) as GalleryImageRow | undefined;
+  if (!existing) {
+    return null;
+  }
+
+  db.prepare(
+    `
+      UPDATE gallery_images
+      SET image_url = ?, file_name = ?, mime_type = ?, size_bytes = ?, updated_at = ?
+      WHERE id = ?
+    `,
+  ).run(
+    String(input.imageUrl ?? existing.image_url),
+    String(input.fileName ?? existing.file_name),
+    String(input.mimeType ?? existing.mime_type),
+    Number(input.sizeBytes ?? existing.size_bytes),
     nowIso(),
     id,
   );
@@ -698,6 +722,9 @@ export function updateGalleryImage(id: string, input: GalleryImageInput) {
 export function deleteGalleryImage(id: string) {
   const existing = getGalleryImage(id);
   if (!existing) {
+    return null;
+  }
+  if (existing.albumId === systemGalleryAlbumId) {
     return null;
   }
 
