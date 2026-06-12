@@ -6,6 +6,14 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import {
+  createDefaultAdminCommandRegistry,
+  getAdminCommandGuide,
+  type AdminCommandInvocation,
+  type AdminCommandRegistry,
+  parseAdminCommand,
+  runAdminCommand,
+} from './adminCommands.js';
 import { getTodayAlmanac } from './almanac.js';
 import { config } from './config.js';
 import { db, nowIso } from './db.js';
@@ -25,13 +33,16 @@ import {
   listDeletedArticles,
   listFeaturedSeries,
   listGalleryAlbums,
+  listGalleryImagesPage,
   listNoteSections,
+  normalizeSiteStylePreset,
   parseDateLabel,
   resolveArticleId,
   resolveGalleryAlbumId,
   restoreArticle,
   slugify,
   systemGalleryAlbumId,
+  systemGalleryAlbumSlug,
   updateArticle,
   updateGalleryAlbum,
   updateGalleryImage,
@@ -51,6 +62,8 @@ const maxGalleryImageBytes = 8 * 1024 * 1024;
 
 export function buildApp() {
   const app = Fastify({ logger: true });
+  const adminCommandRegistry = createDefaultAdminCommandRegistry();
+  registerAdminBusinessCommands(adminCommandRegistry);
 
   app.addHook('onSend', async (_request, reply, payload) => {
     const contentType = reply.getHeader('content-type');
@@ -141,8 +154,22 @@ export function buildApp() {
   app.get('/api/gallery', async () => ({
     items: listGalleryAlbums()
       .filter((album) => album.id !== systemGalleryAlbumId && album.slug !== systemGalleryAlbumSlug)
-      .map((album) => getGalleryAlbum(album.id, false) ?? album),
+      .map((album) => ({ ...album, images: [] })),
   }));
+
+  app.get('/api/gallery/albums/:idOrSlug/images', async (request, reply) => {
+    const { idOrSlug } = request.params as { idOrSlug: string };
+    const query = request.query as Record<string, string | undefined>;
+    const album = getGalleryAlbum(idOrSlug, false);
+    if (!album || album.id === systemGalleryAlbumId || album.slug === systemGalleryAlbumSlug) {
+      return reply.code(404).send({ error: 'Gallery album not found' });
+    }
+
+    return listGalleryImagesPage(album.id, {
+      page: Number(query.page ?? 1),
+      pageSize: Number(query.pageSize ?? 24),
+    });
+  });
 
   app.get('/api/articles/:slug', async (request, reply) => {
     const { slug } = request.params as { slug: string };
@@ -340,6 +367,20 @@ export function buildApp() {
     items: readAuditLog(50),
   }));
 
+  app.get('/api/admin/commands', { preHandler: requireAdmin }, async () => getAdminCommandGuide(adminCommandRegistry));
+
+  app.post('/api/admin/commands/parse', { preHandler: requireAdmin }, async (request) => ({
+    ...parseAdminCommand((request.body as { input?: unknown })?.input),
+    guide: getAdminCommandGuide(adminCommandRegistry),
+  }));
+
+  app.post('/api/admin/commands/run', { preHandler: requireAdmin }, async (request) => {
+    return runAdminCommand(adminCommandRegistry, request.body as Record<string, unknown>, {
+      requestedAt: nowIso(),
+      requestId: request.id,
+    });
+  });
+
   app.get('/api/admin/gallery', { preHandler: requireAdmin }, async () => ({
     items: listGalleryAlbums({ includePrivate: true }).map((album) => getGalleryAlbum(album.id, true) ?? album),
   }));
@@ -509,9 +550,17 @@ export function buildApp() {
 
   app.put('/api/admin/settings', { preHandler: requireAdmin }, async (request) => {
     const body = request.body as { stylePreset?: string; ownerName?: string; ownerAvatarUrl?: string };
+    const existingSettings = getSiteSettings();
     const now = nowIso();
-    const ownerName = String(body.ownerName ?? '').trim().slice(0, 40) || '孤舟月';
-    const ownerAvatarUrl = String(body.ownerAvatarUrl ?? '').trim().slice(0, 500);
+    const stylePreset = normalizeSiteStylePreset(body.stylePreset ?? existingSettings.stylePreset);
+    const ownerName =
+      body.ownerName !== undefined
+        ? String(body.ownerName).trim().slice(0, 40) || '孤舟月'
+        : existingSettings.ownerName;
+    const ownerAvatarUrl =
+      body.ownerAvatarUrl !== undefined
+        ? String(body.ownerAvatarUrl).trim().slice(0, 500)
+        : existingSettings.ownerAvatarUrl;
     db.prepare(
       `
         INSERT INTO site_settings (id, style_preset, color_scheme, owner_name, owner_avatar_url, updated_at)
@@ -521,7 +570,7 @@ export function buildApp() {
           owner_avatar_url = excluded.owner_avatar_url,
           updated_at = excluded.updated_at
       `,
-    ).run(body.stylePreset ?? 'classic', 'light', ownerName, ownerAvatarUrl, now);
+    ).run(stylePreset, 'light', ownerName, ownerAvatarUrl, now);
     return getSiteSettings();
   });
 
@@ -589,6 +638,45 @@ export function buildApp() {
     const sections = Array.isArray(request.body) ? request.body : (request.body as { items?: unknown[] })?.items ?? [];
     const now = nowIso();
     const save = db.transaction((items: Array<Record<string, unknown>>) => {
+      const normalizedSections = items
+        .map((item, index) => {
+          const name = String(item.name ?? item.category ?? '').trim();
+          if (!name) {
+            return null;
+          }
+
+          const id = String(item.id ?? '').trim() || `section_${slugify(name)}`;
+          const slugBase = slugify(String(item.slug ?? name));
+
+          return {
+            id,
+            name,
+            slugBase,
+            description: String(item.description ?? ''),
+            sortOrder: index,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
+      const sectionIds = normalizedSections.map((item) => item.id);
+
+      if (sectionIds.length > 0) {
+        const placeholders = sectionIds.map(() => '?').join(', ');
+        db.prepare(
+          `
+            DELETE FROM note_sections
+            WHERE id NOT IN (${placeholders})
+              AND NOT EXISTS (SELECT 1 FROM articles WHERE articles.category_id = note_sections.id)
+          `,
+        ).run(...sectionIds);
+      } else {
+        db.prepare(
+          `
+            DELETE FROM note_sections
+            WHERE NOT EXISTS (SELECT 1 FROM articles WHERE articles.category_id = note_sections.id)
+          `,
+        ).run();
+      }
+
       const statement = db.prepare(
         `
           INSERT INTO note_sections (id, name, slug, description, sort_order, created_at, updated_at)
@@ -597,12 +685,19 @@ export function buildApp() {
             description = excluded.description, sort_order = excluded.sort_order, updated_at = excluded.updated_at
         `,
       );
-      items.forEach((item, index) => {
-        const name = String(item.name ?? item.category ?? '').trim();
-        if (!name) {
-          return;
+      const findSectionBySlug = db.prepare('SELECT id FROM note_sections WHERE slug = ? AND id <> ?');
+      const usedSlugs = new Set<string>();
+
+      normalizedSections.forEach((item) => {
+        let slug = item.slugBase;
+        let suffix = 2;
+        while (usedSlugs.has(slug) || findSectionBySlug.get(slug, item.id)) {
+          slug = `${item.slugBase}-${suffix}`;
+          suffix += 1;
         }
-        statement.run(String(item.id ?? `section_${slugify(name)}`), name, slugify(String(item.slug ?? name)), String(item.description ?? ''), index, now, now);
+        usedSlugs.add(slug);
+
+        statement.run(item.id, item.name, slug, item.description, item.sortOrder, now, now);
       });
     });
     save(sections as Array<Record<string, unknown>>);
@@ -851,4 +946,231 @@ export function buildApp() {
   }
 
   return app;
+}
+
+function registerAdminBusinessCommands(registry: AdminCommandRegistry) {
+  registry.register({
+    name: 'article:list-ids',
+    summary: '获取当前全部文章的 ID 列表。',
+    scope: 'articles',
+    risk: 'low',
+    execute() {
+      const rows = db
+        .prepare(
+          `
+            SELECT id, slug, title, status, published_at AS publishedAt, updated_at AS updatedAt
+            FROM articles
+            WHERE deleted_at IS NULL
+            ORDER BY COALESCE(published_at, updated_at) DESC
+          `,
+        )
+        .all() as Array<{
+        id: string;
+        slug: string;
+        title: string;
+        status: string;
+        publishedAt: string | null;
+        updatedAt: string;
+      }>;
+
+      return {
+        count: rows.length,
+        items: rows,
+      };
+    },
+  });
+
+  registry.register({
+    name: 'article:get-content',
+    summary: '获取指定 ID 文章的内容。',
+    scope: 'articles',
+    risk: 'low',
+    arguments: [
+      {
+        name: 'id',
+        description: '文章 ID，作为第一个位置参数，也可用 --id 指定。',
+        required: true,
+        type: 'string',
+      },
+    ],
+    execute(invocation) {
+      const articleId = readArticleId(invocation);
+      const article = readAdminCommandArticle(articleId);
+      if (!article) {
+        throw new Error(`没有找到文章 ID：${articleId}`);
+      }
+
+      return { article };
+    },
+  });
+
+  registry.register({
+    name: 'article:set-title',
+    summary: '修改指定 ID 文章的标题。',
+    scope: 'articles',
+    risk: 'medium',
+    arguments: [
+      {
+        name: 'id',
+        description: '文章 ID，作为第一个位置参数，也可用 --id 指定。',
+        required: true,
+        type: 'string',
+      },
+      {
+        name: 'title',
+        description: '新的文章标题，建议使用 --title="新标题" 指定。',
+        required: true,
+        type: 'string',
+      },
+    ],
+    execute(invocation) {
+      const articleId = readArticleId(invocation);
+      const title = readCommandOptionText(invocation, 'title') || invocation.positional.slice(1).join(' ').trim();
+      if (!title) {
+        throw new Error('缺少新标题，请使用 article:set-title <id> --title="新标题"。');
+      }
+      if (title.length > 120) {
+        throw new Error('文章标题不能超过 120 个字符。');
+      }
+
+      const article = updateArticle(articleId, { title });
+      if (!article) {
+        throw new Error(`没有找到文章 ID：${articleId}`);
+      }
+
+      return {
+        ok: true,
+        article: {
+          id: article.id,
+          slug: article.slug,
+          title: article.title,
+          updatedAt: article.updatedAt,
+        },
+      };
+    },
+  });
+
+  registry.register({
+    name: 'article:set-date',
+    summary: '修改指定文章的发布日期。',
+    scope: 'articles',
+    risk: 'medium',
+    arguments: [
+      {
+        name: 'target',
+        description: '文章 slug 或 id，作为第一个位置参数，也可用 --article 指定。',
+        required: true,
+        type: 'string',
+      },
+      {
+        name: 'date',
+        description: '目标日期，未带时区时按北京时间解析，支持 2026.06.09、2026.06.09 18:30 或 ISO 日期。',
+        required: true,
+        type: 'string',
+      },
+    ],
+    execute(invocation) {
+      const target = readCommandOptionText(invocation, 'article') || readCommandOptionText(invocation, 'slug') || invocation.positional[0]?.trim();
+      if (!target) {
+        throw new Error('缺少文章标识，请使用 article:set-date <slug-or-id> --date="2026.06.09 18:30"。');
+      }
+
+      const dateText = readCommandOptionText(invocation, 'date') || invocation.positional.slice(1).join(' ').trim();
+      if (!dateText) {
+        throw new Error('缺少目标日期，请使用 --date="2026.06.09 18:30"。');
+      }
+
+      const publishedAt = parseStrictCommandDate(dateText);
+      const article = updateArticle(target, { publishedAt });
+      if (!article) {
+        throw new Error(`没有找到文章：${target}`);
+      }
+
+      return {
+        ok: true,
+        article: {
+          id: article.id,
+          slug: article.slug,
+          title: article.title,
+          date: article.date,
+          publishedAt: article.publishedAt,
+          updatedAt: article.updatedAt,
+        },
+      };
+    },
+  });
+}
+
+function readArticleId(invocation: AdminCommandInvocation) {
+  const articleId = readCommandOptionText(invocation, 'id') || invocation.positional[0]?.trim();
+  if (!articleId) {
+    throw new Error('缺少文章 ID。');
+  }
+
+  return articleId;
+}
+
+function readAdminCommandArticle(articleId: string) {
+  return db
+    .prepare(
+      `
+        SELECT a.id, a.slug, a.title, a.excerpt, a.status, a.published_at AS publishedAt,
+          a.updated_at AS updatedAt, a.body_markdown AS bodyMarkdown, ns.name AS category
+        FROM articles a
+        LEFT JOIN note_sections ns ON ns.id = a.category_id
+        WHERE a.id = ? AND a.deleted_at IS NULL
+      `,
+    )
+    .get(articleId) as
+    | {
+        id: string;
+        slug: string;
+        title: string;
+        excerpt: string;
+        status: string;
+        publishedAt: string | null;
+        updatedAt: string;
+        bodyMarkdown: string;
+        category: string | null;
+      }
+    | undefined;
+}
+
+function readCommandOptionText(invocation: AdminCommandInvocation, key: string) {
+  const value = invocation.options[key];
+  const normalizedValue = Array.isArray(value) ? value[value.length - 1] : value;
+  return typeof normalizedValue === 'string' ? normalizedValue.trim() : '';
+}
+
+function parseStrictCommandDate(value: string) {
+  const trimmedValue = value.trim();
+  const labelMatch = trimmedValue.match(/^(\d{4})[.-](\d{1,2})[.-](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?$/);
+  if (labelMatch) {
+    const [, yearText, monthText, dayText, hourText = '0', minuteText = '0'] = labelMatch;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const date = new Date(Date.UTC(year, month - 1, day, hour - 8, minute, 0, 0));
+    const beijingDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    if (
+      beijingDate.getUTCFullYear() !== year ||
+      beijingDate.getUTCMonth() !== month - 1 ||
+      beijingDate.getUTCDate() !== day ||
+      beijingDate.getUTCHours() !== hour ||
+      beijingDate.getUTCMinutes() !== minute
+    ) {
+      throw new Error(`日期无效：${value}`);
+    }
+
+    return date.toISOString();
+  }
+
+  const date = new Date(trimmedValue);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`日期无效：${value}`);
+  }
+
+  return date.toISOString();
 }

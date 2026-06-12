@@ -23,6 +23,7 @@ import {
   Send,
   Save,
   Image as ImageIcon,
+  SquareTerminal,
   Sun,
   Table2,
   Trash2,
@@ -37,6 +38,7 @@ import type {
   SetStateAction,
 } from 'react';
 import { ArticleComments } from './ArticleComments';
+import { AdminCommandPanel } from './AdminCommandPanel';
 import { AdminDashboardPanel } from './AdminDashboardPanel';
 import { AdminPostsPanel } from './AdminPostsPanel';
 import { useArticleHead } from './articleSeo';
@@ -137,9 +139,14 @@ const navItems = [
 const homepageArchivePreviewLimit = 4;
 const homepageArchiveEntriesPerMonthLimit = 6;
 const adminPostsPerPage = 8;
+const adminSeriesPerPage = 1;
 const composerImageAlbumSlug = 'article-images';
 const composerImageAlbumTitle = '文章配图';
 const supportedComposerImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+function makeClientId(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function isProductionPublicRuntime() {
   const viteEnv = (import.meta as ImportMeta & { env?: { PROD?: boolean } }).env;
@@ -1023,6 +1030,7 @@ type AdminPanelId =
   | 'series'
   | 'gallery'
   | 'archive'
+  | 'commands'
   | 'homepage'
   | 'appearance';
 
@@ -1059,6 +1067,7 @@ function AdminPage({
   const editPostSlug = getAdminEditPostSlug(window.location.pathname);
   const editingPost = editPostSlug ? getPostBySlug(content.posts, editPostSlug) : undefined;
   const isPostComposerRoute = window.location.pathname === '/admin/posts/new' || Boolean(editPostSlug);
+  const noteSectionsSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (isPostComposerRoute) {
@@ -1088,6 +1097,34 @@ function AdminPage({
       cancelled = true;
     };
   }, [isPostComposerRoute]);
+
+  useEffect(() => {
+    return () => {
+      if (noteSectionsSaveTimerRef.current !== null) {
+        window.clearTimeout(noteSectionsSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  function clearPendingNoteSectionsSave() {
+    if (noteSectionsSaveTimerRef.current !== null) {
+      window.clearTimeout(noteSectionsSaveTimerRef.current);
+      noteSectionsSaveTimerRef.current = null;
+    }
+  }
+
+  function saveNoteSectionsSoon(nextSections: NoteSection[]) {
+    clearPendingNoteSectionsSave();
+    noteSectionsSaveTimerRef.current = window.setTimeout(() => {
+      noteSectionsSaveTimerRef.current = null;
+      void saveAdminNoteSections(nextSections).catch(() => undefined);
+    }, 450);
+  }
+
+  function saveNoteSectionsNow(nextSections: NoteSection[]) {
+    clearPendingNoteSectionsSave();
+    void saveAdminNoteSections(nextSections).catch(() => undefined);
+  }
 
   function updateStylePreset(stylePreset: StylePreset) {
     onSettingsChange({ ...settings, stylePreset });
@@ -1364,19 +1401,22 @@ function AdminPage({
       sectionIndex === index ? nextSection : section,
     );
     onContentChange({ ...content, noteSections: nextSections });
-    void saveAdminNoteSections(nextSections).catch(() => undefined);
+    saveNoteSectionsSoon(nextSections);
   }
 
   function addNoteSection() {
-    const nextSections = [...content.noteSections, { category: '新札记', description: '给这个札记分类写一句说明' }];
+    const nextSections = [
+      ...content.noteSections,
+      { id: makeClientId('section'), category: '新札记', description: '给这个札记分类写一句说明' },
+    ];
     onContentChange({ ...content, noteSections: nextSections });
-    void saveAdminNoteSections(nextSections).catch(() => undefined);
+    saveNoteSectionsNow(nextSections);
   }
 
   function deleteNoteSection(index: number) {
     const nextSections = content.noteSections.filter((_, sectionIndex) => sectionIndex !== index);
     onContentChange({ ...content, noteSections: nextSections });
-    void saveAdminNoteSections(nextSections).catch(() => undefined);
+    saveNoteSectionsNow(nextSections);
   }
 
   function updateSeries(index: number, nextSeries: FeaturedSeries) {
@@ -1705,6 +1745,7 @@ function AdminPage({
       <main className={isPostComposerRoute ? 'admin-main admin-main-composer' : 'admin-main'}>
         {isPostComposerRoute ? (
           <AdminPostComposer
+            key={editingPost?.slug ?? (editPostSlug ? `loading:${editPostSlug}` : 'new')}
             editingPost={editingPost}
             galleryAlbums={content.galleryAlbums}
             noteSections={content.noteSections}
@@ -1747,6 +1788,7 @@ function AdminPage({
                   { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
                   { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
                   { panel: 'archive', label: '归档管理', Icon: CalendarDays, meta: `${archiveGroups.length} 个月` },
+                  { panel: 'commands', label: '快速指令', Icon: SquareTerminal, meta: '指令通道' },
                   { panel: 'homepage', label: '主页词汇', Icon: Settings, meta: '首页内容' },
                   { panel: 'appearance', label: '外观设置', Icon: Sun, meta: colorScheme === 'light' ? '亮色' : '暗色' },
                 ].map(({ panel, label, Icon, meta }) => (
@@ -1844,6 +1886,8 @@ function AdminPage({
                     posts={content.posts}
                   />
                 )}
+
+                {activePanel === 'commands' && <AdminCommandPanel />}
 
                 {activePanel === 'homepage' && (
                   <AdminHomepagePanel homepage={content.homepage} onHomepageChange={updateHomepage} />
@@ -3808,7 +3852,7 @@ function AdminNotesPanel({
         {noteSections.map((section, index) => {
           const count = posts.filter((post) => post.category === section.category).length;
           return (
-            <div className="note-editor-row" key={`${section.category}-${index}`}>
+            <div className="note-editor-row" key={section.id ?? `note-section-${index}`}>
               <label>
                 名称
                 <input
@@ -3848,6 +3892,23 @@ function AdminSeriesPanel({
   posts: Post[];
   seriesList: FeaturedSeries[];
 }) {
+  const [currentPage, setCurrentPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(seriesList.length / adminSeriesPerPage));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const firstSeriesIndex = (safeCurrentPage - 1) * adminSeriesPerPage;
+  const pagedSeries = seriesList.slice(firstSeriesIndex, safeCurrentPage * adminSeriesPerPage);
+  const firstItemIndex = seriesList.length === 0 ? 0 : firstSeriesIndex + 1;
+  const lastItemIndex = Math.min(seriesList.length, safeCurrentPage * adminSeriesPerPage);
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
+
+  function addSeriesAndOpen() {
+    onAddSeries();
+    setCurrentPage(Math.max(1, Math.ceil((seriesList.length + 1) / adminSeriesPerPage)));
+  }
+
   function movePost(series: FeaturedSeries, postIndex: number, direction: -1 | 1) {
     const targetIndex = postIndex + direction;
     if (targetIndex < 0 || targetIndex >= series.postSlugs.length) {
@@ -3866,10 +3927,11 @@ function AdminSeriesPanel({
 
   return (
     <section className="admin-panel" aria-label="专题管理">
-      <PanelHeader action={<button type="button" onClick={onAddSeries}><Plus size={17} />新增专题</button>} title="专题管理" />
+      <PanelHeader action={<button type="button" onClick={addSeriesAndOpen}><Plus size={17} />新增专题</button>} title="专题管理" />
       <div className="series-editor-list">
         {seriesList.length > 0 ? (
-          seriesList.map((series, index) => {
+          pagedSeries.map((series, pageIndex) => {
+            const index = firstSeriesIndex + pageIndex;
             const selectedPosts = series.postSlugs
               .map((slug) => posts.find((post) => post.slug === slug))
               .filter((post): post is Post => Boolean(post));
@@ -3982,6 +4044,34 @@ function AdminSeriesPanel({
           </div>
         )}
       </div>
+      {seriesList.length > 0 && (
+        <nav className="admin-pagination" aria-label="专题分页">
+          <span>
+            第 {firstItemIndex}-{lastItemIndex} 个，共 {seriesList.length} 个专题
+          </span>
+          <div>
+            <button
+              className="secondary-action"
+              disabled={safeCurrentPage === 1}
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              type="button"
+            >
+              上一页
+            </button>
+            <strong>
+              {safeCurrentPage} / {totalPages}
+            </strong>
+            <button
+              className="secondary-action"
+              disabled={safeCurrentPage === totalPages}
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              type="button"
+            >
+              下一页
+            </button>
+          </div>
+        </nav>
+      )}
     </section>
   );
 }
@@ -5165,11 +5255,7 @@ function LatestPosts({ homepage, posts }: { homepage: HomepageCopy; posts: Post[
       />
       <div className="post-grid">
         <a className={`featured-card tone-${lead.tone}`} href={`/posts/${lead.slug}`}>
-          {lead.coverImage && (
-            <div className="featured-card-cover">
-              <img alt="" loading="lazy" src={lead.coverImage} />
-            </div>
-          )}
+          <PostCover className="featured-card-cover" coverImage={lead.coverImage} loading="lazy" />
           <div className="featured-card-body">
             <span>{lead.category}</span>
             <h3 className={`featured-title-${featuredTitleDensity}`}>{lead.title}</h3>
@@ -5216,11 +5302,7 @@ function getFeaturedTitleDensity(title: string) {
 function PostCard({ post }: { post: Post }) {
   return (
     <a className={`post-card tone-${post.tone}`} href={`/posts/${post.slug}`}>
-      {post.coverImage && (
-        <div className="post-card-cover">
-          <img alt="" loading="lazy" src={post.coverImage} />
-        </div>
-      )}
+      <PostCover className="post-card-cover" coverImage={post.coverImage} loading="lazy" />
       <div className="post-card-body">
         <div className="post-card-meta">
           <span>{post.category}</span>
@@ -5231,6 +5313,33 @@ function PostCard({ post }: { post: Post }) {
         <footer>{post.date}</footer>
       </div>
     </a>
+  );
+}
+
+function PostCover({
+  className,
+  coverImage,
+  loading,
+}: {
+  className: string;
+  coverImage?: string;
+  loading?: 'eager' | 'lazy';
+}) {
+  const [isBroken, setIsBroken] = useState(false);
+  const imageUrl = coverImage?.trim() ?? '';
+
+  useEffect(() => {
+    setIsBroken(false);
+  }, [imageUrl]);
+
+  if (!imageUrl || isBroken) {
+    return null;
+  }
+
+  return (
+    <div className={className}>
+      <img alt="" loading={loading} onError={() => setIsBroken(true)} src={imageUrl} />
+    </div>
   );
 }
 
@@ -5329,8 +5438,6 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
       startY: event.clientY,
     };
     scrollPositionRef.current = river.scrollLeft;
-    river.classList.add('is-dragging');
-    river.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -5342,7 +5449,13 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
     const verticalDistance = event.clientY - dragState.startY;
     if (Math.hypot(dragDistance, verticalDistance) > 5) {
       dragState.dragged = true;
+      river.classList.add('is-dragging');
+      if (!river.hasPointerCapture(event.pointerId)) {
+        river.setPointerCapture(event.pointerId);
+      }
     }
+
+    if (!dragState.dragged) return;
 
     setLoopedScroll(river, dragState.startScroll - dragDistance * 1.8);
   };
@@ -5355,6 +5468,11 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
     river.classList.remove('is-dragging');
     if (river.hasPointerCapture(event.pointerId)) {
       river.releasePointerCapture(event.pointerId);
+    }
+    if (dragStateRef.current.dragged) {
+      window.setTimeout(() => {
+        dragStateRef.current.dragged = false;
+      }, 0);
     }
   };
 
@@ -5993,11 +6111,7 @@ function AuthorAvatar({
 function PostListItem({ post }: { post: Post }) {
   return (
     <a className={`list-post tone-${post.tone}`} href={`/posts/${post.slug}`}>
-      {post.coverImage && (
-        <div className="list-post-cover">
-          <img alt="" loading="lazy" src={post.coverImage} />
-        </div>
-      )}
+      <PostCover className="list-post-cover" coverImage={post.coverImage} loading="lazy" />
       <div>
         <span>{post.category}</span>
         <h3>{post.title}</h3>
@@ -6119,11 +6233,7 @@ function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: strin
   return (
     <article className="article-page">
       <header className={`article-hero tone-${post.tone}`}>
-        {post.coverImage && (
-          <div className="article-hero-cover">
-            <img alt="" src={post.coverImage} />
-          </div>
-        )}
+        <PostCover className="article-hero-cover" coverImage={post.coverImage} />
         <div className="article-hero-content">
           <a className="breadcrumb" href="/posts/page/1">
             全部文章

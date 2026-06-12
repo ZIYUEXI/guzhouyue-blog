@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { ChevronDown, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { NoteSection } from './contentStore';
 import type { Post, PostStatus } from './posts';
 
@@ -43,7 +43,34 @@ export function AdminPostsPanel({
   const [bulkCategory, setBulkCategory] = useState(noteSections[0]?.category ?? '');
   const [batchNotice, setBatchNotice] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
-  const categories = useMemo(() => ['全部', ...Array.from(new Set(posts.map((post) => post.category))).sort()], [posts]);
+  const categories = useMemo(() => {
+    const sectionCategories = noteSections.map((section) => section.category.trim()).filter(Boolean);
+    const extraPostCategories = posts
+      .map((post) => post.category.trim())
+      .filter((category) => category && !sectionCategories.includes(category))
+      .sort();
+
+    return ['全部', ...Array.from(new Set([...sectionCategories, ...extraPostCategories]))];
+  }, [noteSections, posts]);
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    posts.forEach((post) => counts.set(post.category, (counts.get(post.category) ?? 0) + 1));
+    counts.set('全部', posts.length);
+    return counts;
+  }, [posts]);
+  const statusCounts = useMemo(() => {
+    const counts = new Map<'all' | PostStatus, number>([
+      ['all', posts.length],
+      ['published', 0],
+      ['draft', 0],
+      ['archived', 0],
+    ]);
+    posts.forEach((post) => {
+      const status = getPostStatus(post);
+      counts.set(status, (counts.get(status) ?? 0) + 1);
+    });
+    return counts;
+  }, [posts]);
   const filteredPosts = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
 
@@ -62,6 +89,12 @@ export function AdminPostsPanel({
   const visibleSlugs = pagedPosts.map((post) => post.slug);
   const allVisibleSelected = visibleSlugs.length > 0 && visibleSlugs.every((slug) => selectedSlugs.includes(slug));
   const selectedCount = selectedSlugs.length;
+  const statusOptions: Array<['all' | PostStatus, string]> = [
+    ['all', '全部状态'],
+    ['published', '已发布'],
+    ['draft', '草稿'],
+    ['archived', '已归档'],
+  ];
 
   useEffect(() => {
     setCurrentPage((page) => Math.min(page, totalPages));
@@ -70,6 +103,12 @@ export function AdminPostsPanel({
   useEffect(() => {
     setCurrentPage(1);
   }, [activeCategory, activeStatus, searchQuery]);
+
+  useEffect(() => {
+    if (!categories.includes(activeCategory)) {
+      setActiveCategory('全部');
+    }
+  }, [activeCategory, categories]);
 
   useEffect(() => {
     setSelectedSlugs((slugs) => slugs.filter((slug) => posts.some((post) => post.slug === slug)));
@@ -123,53 +162,75 @@ export function AdminPostsPanel({
         </a>
       </header>
       <div className="admin-posts-overview">
-        <div className="archive-summary">
-          <strong>{posts.length}</strong>
-          <span>篇文章</span>
-          <strong>{new Set(posts.map((post) => post.category)).size}</strong>
-          <span>个分类</span>
-          <strong>{posts.filter((post) => getPostStatus(post) === 'draft').length}</strong>
-          <span>篇草稿</span>
+        <div className="archive-summary admin-post-metrics">
+          <div>
+            <strong>{posts.length}</strong>
+            <span>篇文章</span>
+          </div>
+          <div>
+            <strong>{new Set(posts.map((post) => post.category)).size}</strong>
+            <span>个分类</span>
+          </div>
+          <div>
+            <strong>{posts.filter((post) => getPostStatus(post) === 'draft').length}</strong>
+            <span>篇草稿</span>
+          </div>
         </div>
 
-        <div className="admin-toolbar" aria-label="文章筛选">
-          <label className="admin-search-field">
-            <Search size={17} />
-            <input
-              aria-label="搜索文章"
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="搜索标题、摘要、分类或标签"
-              value={searchQuery}
-            />
-          </label>
-          <div className="admin-filter-tabs" role="group" aria-label="按分类筛选文章">
-            {categories.map((categoryName) => (
-              <button
-                aria-pressed={activeCategory === categoryName}
-                key={categoryName}
-                onClick={() => setActiveCategory(categoryName)}
-                type="button"
-              >
-                {categoryName}
-              </button>
-            ))}
+        <div className="admin-toolbar admin-post-filter-toolbar" aria-label="文章筛选">
+          <div className="admin-filter-search-panel">
+            <label className="admin-search-field">
+              <Search size={17} />
+              <input
+                aria-label="搜索文章"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="搜索标题、摘要、分类或标签"
+                value={searchQuery}
+              />
+            </label>
+            <small>
+              匹配 {filteredPosts.length} / {posts.length} 篇
+            </small>
           </div>
-          <div className="admin-filter-tabs admin-status-tabs" role="group" aria-label="按状态筛选文章">
-            {[
-              ['all', '全部状态'],
-              ['published', '已发布'],
-              ['draft', '草稿'],
-              ['archived', '已归档'],
-            ].map(([status, label]) => (
-              <button
-                aria-pressed={activeStatus === status}
-                key={status}
-                onClick={() => setActiveStatus(status as 'all' | PostStatus)}
-                type="button"
+          <div className="admin-filter-group admin-filter-select-group">
+            <div className="admin-filter-group-title">
+              <Filter size={16} />
+              <span>分类</span>
+              <small>{categoryCounts.get(activeCategory) ?? 0} 篇</small>
+            </div>
+            <label className="admin-select-field">
+              <select
+                aria-label="按分类筛选文章"
+                value={activeCategory}
+                onChange={(event) => setActiveCategory(event.target.value)}
               >
-                {label}
-              </button>
-            ))}
+                {categories.map((categoryName) => (
+                  <option key={categoryName} value={categoryName}>
+                    {categoryName}（{categoryCounts.get(categoryName) ?? 0}）
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={17} />
+            </label>
+          </div>
+          <div className="admin-filter-group admin-filter-group-compact">
+            <div className="admin-filter-group-title">
+              <Filter size={16} />
+              <span>状态</span>
+              <small>{statusCounts.get(activeStatus) ?? 0} 篇</small>
+            </div>
+            <div className="admin-filter-tabs admin-status-tabs" role="group" aria-label="按状态筛选文章">
+              {statusOptions.map(([status, label]) => (
+                <button
+                  aria-pressed={activeStatus === status}
+                  key={status}
+                  onClick={() => setActiveStatus(status)}
+                  type="button"
+                >
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -210,7 +271,7 @@ export function AdminPostsPanel({
             onChange={(event) => setBulkCategory(event.target.value)}
           >
             {noteSections.map((section) => (
-              <option key={section.category} value={section.category}>
+              <option key={section.id ?? section.category} value={section.category}>
                 {section.category}
               </option>
             ))}

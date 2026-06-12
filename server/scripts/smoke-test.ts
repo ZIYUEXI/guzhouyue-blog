@@ -8,7 +8,15 @@ const site = await app.inject({ method: 'GET', url: '/api/site' });
 const articles = await app.inject({ method: 'GET', url: '/api/articles' });
 const firstArticleSlug = articles.json().items?.[0]?.slug;
 const detail = await app.inject({ method: 'GET', url: `/api/articles/${encodeURIComponent(firstArticleSlug ?? '')}` });
+const firstArticlePublishedAt = detail.json().article?.publishedAt ?? new Date().toISOString();
 const publicGallery = await app.inject({ method: 'GET', url: '/api/gallery' });
+const firstPublicGalleryAlbum = publicGallery.json().items?.[0];
+const publicGalleryImages = firstPublicGalleryAlbum
+  ? await app.inject({
+      method: 'GET',
+      url: `/api/gallery/albums/${encodeURIComponent(firstPublicGalleryAlbum.slug ?? firstPublicGalleryAlbum.id)}/images?page=1&pageSize=12`,
+    })
+  : null;
 const adminGalleryAnonymous = await app.inject({ method: 'GET', url: '/api/admin/gallery' });
 const login = await app.inject({
   method: 'POST',
@@ -26,6 +34,9 @@ const admin = await app.inject({
   url: '/api/admin/content',
   headers: { cookie: cookieHeader },
 });
+const firstAdminArticle = admin.json().posts?.[0];
+const firstAdminArticleId = firstAdminArticle?.id ?? '';
+const firstAdminArticleTitle = firstAdminArticle?.title ?? '';
 const adminGallery = await app.inject({
   method: 'GET',
   url: '/api/admin/gallery',
@@ -35,6 +46,45 @@ const adminOps = await app.inject({
   method: 'GET',
   url: '/api/admin/ops',
   headers: { cookie: cookieHeader },
+});
+const adminCommandsAnonymous = await app.inject({
+  method: 'GET',
+  url: '/api/admin/commands',
+});
+const adminCommandGuide = await app.inject({
+  method: 'GET',
+  url: '/api/admin/commands',
+  headers: { cookie: cookieHeader },
+});
+const adminCommandParse = await app.inject({
+  method: 'POST',
+  url: '/api/admin/commands/parse',
+  headers: adminWriteHeaders,
+  payload: { input: `article:set-date ${firstArticleSlug} --date=${firstArticlePublishedAt}` },
+});
+const adminCommandRun = await app.inject({
+  method: 'POST',
+  url: '/api/admin/commands/run',
+  headers: adminWriteHeaders,
+  payload: { input: `article:set-date ${firstArticleSlug} --date=${firstArticlePublishedAt}` },
+});
+const adminCommandListIds = await app.inject({
+  method: 'POST',
+  url: '/api/admin/commands/run',
+  headers: adminWriteHeaders,
+  payload: { input: 'article:list-ids' },
+});
+const adminCommandGetContent = await app.inject({
+  method: 'POST',
+  url: '/api/admin/commands/run',
+  headers: adminWriteHeaders,
+  payload: { input: `article:get-content ${firstAdminArticleId}` },
+});
+const adminCommandSetTitle = await app.inject({
+  method: 'POST',
+  url: '/api/admin/commands/run',
+  headers: adminWriteHeaders,
+  payload: { input: `article:set-title ${firstAdminArticleId} --title="${firstAdminArticleTitle}"` },
 });
 const hiddenAlbum = await app.inject({
   method: 'POST',
@@ -99,11 +149,23 @@ const result = {
   articles: articles.statusCode,
   detail: detail.statusCode,
   publicGallery: publicGallery.statusCode,
+  publicGalleryImages: publicGalleryImages?.statusCode ?? 200,
+  publicGalleryImagePageSize: publicGalleryImages?.json().pageSize ?? 0,
   adminGalleryAnonymous: adminGalleryAnonymous.statusCode,
   login: login.statusCode,
   admin: admin.statusCode,
   adminGallery: adminGallery.statusCode,
   adminOps: adminOps.statusCode,
+  adminCommandsAnonymous: adminCommandsAnonymous.statusCode,
+  adminCommandGuide: adminCommandGuide.statusCode,
+  adminCommandRegistryCount: adminCommandGuide.json().commands.length,
+  adminCommandParseOk: adminCommandParse.json().ok,
+  adminCommandRunStatus: adminCommandRun.json().status,
+  adminCommandArticleDate: adminCommandRun.json().result?.article?.publishedAt,
+  adminCommandListIdsStatus: adminCommandListIds.json().status,
+  adminCommandListIdsCount: adminCommandListIds.json().result?.count,
+  adminCommandGetContentStatus: adminCommandGetContent.json().status,
+  adminCommandSetTitleStatus: adminCommandSetTitle.json().status,
   hiddenAlbum: hiddenAlbum.statusCode,
   invalidUpload: invalidUpload.statusCode,
   systemAlbumDelete: systemAlbumDelete.statusCode,

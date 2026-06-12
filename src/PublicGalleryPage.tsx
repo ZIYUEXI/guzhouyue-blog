@@ -1,23 +1,128 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Image as ImageIcon, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Image as ImageIcon, X } from 'lucide-react';
+import { fetchPublicGalleryAlbumImages, normalizeApiGalleryImage } from './apiClient';
 import { systemGalleryAlbumId, systemGalleryAlbumSlug, type GalleryAlbum, type GalleryImage } from './contentStore';
+
+const galleryPageSize = 24;
+
+type GalleryPageState = {
+  images: GalleryImage[];
+  page: number;
+  pageCount: number;
+  total: number;
+  isLoading: boolean;
+  error: string;
+};
 
 export function PublicGalleryPage({ albums }: { albums: GalleryAlbum[] }) {
   const publicAlbums = useMemo(
     () => sortGalleryAlbums(albums).filter((album) => album.isPublic && !isSystemGalleryAlbum(album)),
     [albums],
   );
-  const [activeAlbumSlug, setActiveAlbumSlug] = useState(publicAlbums[0]?.slug ?? '');
-  const activeAlbum = publicAlbums.find((album) => album.slug === activeAlbumSlug) ?? publicAlbums[0] ?? null;
-  const images = useMemo(() => sortGalleryImages(activeAlbum?.images.filter((image) => image.isPublic) ?? []), [activeAlbum]);
+  const [expandedAlbumSlug, setExpandedAlbumSlug] = useState(publicAlbums[0]?.slug ?? '');
+  const [hasSelectedInitialAlbum, setHasSelectedInitialAlbum] = useState(false);
+  const [pageByAlbumSlug, setPageByAlbumSlug] = useState<Record<string, number>>({});
+  const [remoteImagesByAlbumSlug, setRemoteImagesByAlbumSlug] = useState<Record<string, GalleryPageState>>({});
+  const activeAlbum = publicAlbums.find((album) => album.slug === expandedAlbumSlug) ?? null;
+  const activeAlbumPage = activeAlbum ? pageByAlbumSlug[activeAlbum.slug] ?? 1 : 1;
+  const activeAlbumLocalImages = useMemo(
+    () => sortGalleryImages(activeAlbum?.images.filter((image) => image.isPublic) ?? []),
+    [activeAlbum],
+  );
+  const hasLocalImages = activeAlbumLocalImages.length > 0;
+  const localPageCount = Math.max(1, Math.ceil(activeAlbumLocalImages.length / galleryPageSize));
+  const remotePage = activeAlbum ? remoteImagesByAlbumSlug[activeAlbum.slug] : undefined;
+  const images = hasLocalImages
+    ? activeAlbumLocalImages.slice((activeAlbumPage - 1) * galleryPageSize, activeAlbumPage * galleryPageSize)
+    : remotePage?.images ?? [];
+  const pageCount = hasLocalImages ? localPageCount : remotePage?.pageCount ?? 1;
+  const totalImages = hasLocalImages ? activeAlbumLocalImages.length : remotePage?.total ?? activeAlbum?.imageCount ?? 0;
+  const isLoadingImages = !hasLocalImages && Boolean(remotePage?.isLoading);
+  const imageLoadError = !hasLocalImages ? remotePage?.error ?? '' : '';
   const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null);
   const activeImage = activeImageIndex === null ? null : images[activeImageIndex] ?? null;
 
   useEffect(() => {
-    if (!activeAlbumSlug && publicAlbums[0]) {
-      setActiveAlbumSlug(publicAlbums[0].slug);
+    if (!hasSelectedInitialAlbum && publicAlbums[0]) {
+      setExpandedAlbumSlug(publicAlbums[0].slug);
+      setHasSelectedInitialAlbum(true);
+      return;
     }
-  }, [activeAlbumSlug, publicAlbums]);
+
+    if (expandedAlbumSlug && !publicAlbums.some((album) => album.slug === expandedAlbumSlug)) {
+      setExpandedAlbumSlug(publicAlbums[0]?.slug ?? '');
+    }
+  }, [expandedAlbumSlug, hasSelectedInitialAlbum, publicAlbums]);
+
+  useEffect(() => {
+    if (!activeAlbum || hasLocalImages) {
+      return;
+    }
+
+    const cachedPage = remoteImagesByAlbumSlug[activeAlbum.slug];
+    if (cachedPage?.page === activeAlbumPage && (cachedPage.isLoading || cachedPage.images.length > 0 || cachedPage.error || cachedPage.total === 0)) {
+      return;
+    }
+
+    let cancelled = false;
+    setRemoteImagesByAlbumSlug((currentPages) => ({
+      ...currentPages,
+      [activeAlbum.slug]: {
+        images: cachedPage?.page === activeAlbumPage ? cachedPage.images : [],
+        page: activeAlbumPage,
+        pageCount: cachedPage?.page === activeAlbumPage ? cachedPage.pageCount : 1,
+        total: cachedPage?.page === activeAlbumPage ? cachedPage.total : activeAlbum.imageCount,
+        isLoading: true,
+        error: '',
+      },
+    }));
+
+    fetchPublicGalleryAlbumImages(activeAlbum.id || activeAlbum.slug, {
+      page: activeAlbumPage,
+      pageSize: galleryPageSize,
+    })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+
+        const nextImages = payload.items
+          .map(normalizeApiGalleryImage)
+          .filter((image): image is GalleryImage => image !== null);
+        setRemoteImagesByAlbumSlug((currentPages) => ({
+          ...currentPages,
+          [activeAlbum.slug]: {
+            images: nextImages,
+            page: payload.page,
+            pageCount: payload.pageCount,
+            total: payload.total,
+            isLoading: false,
+            error: '',
+          },
+        }));
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setRemoteImagesByAlbumSlug((currentPages) => ({
+          ...currentPages,
+          [activeAlbum.slug]: {
+            images: [],
+            page: activeAlbumPage,
+            pageCount: 1,
+            total: activeAlbum.imageCount,
+            isLoading: false,
+            error: '图片加载失败，请稍后再试。',
+          },
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAlbum, activeAlbumPage, hasLocalImages]);
 
   function moveLightbox(direction: -1 | 1) {
     if (activeImageIndex === null || images.length === 0) {
@@ -25,6 +130,16 @@ export function PublicGalleryPage({ albums }: { albums: GalleryAlbum[] }) {
     }
 
     setActiveImageIndex((activeImageIndex + direction + images.length) % images.length);
+  }
+
+  function toggleAlbum(album: GalleryAlbum) {
+    setExpandedAlbumSlug((currentSlug) => (currentSlug === album.slug ? '' : album.slug));
+    setActiveImageIndex(null);
+  }
+
+  function setActiveAlbumPage(album: GalleryAlbum, page: number) {
+    setPageByAlbumSlug((currentPages) => ({ ...currentPages, [album.slug]: page }));
+    setActiveImageIndex(null);
   }
 
   return (
@@ -38,47 +153,70 @@ export function PublicGalleryPage({ albums }: { albums: GalleryAlbum[] }) {
       </div>
 
       {publicAlbums.length > 0 ? (
-        <>
-          <div className="gallery-album-grid" aria-label="公开相册">
-            {publicAlbums.map((album) => (
-              <button
-                className="gallery-album-card"
-                type="button"
-                key={album.slug}
-                aria-pressed={activeAlbum?.slug === album.slug}
-                onClick={() => {
-                  setActiveAlbumSlug(album.slug);
-                  setActiveImageIndex(null);
-                }}
-              >
-                <span className="gallery-cover">
-                  {album.coverImageUrl ? <img alt="" src={album.coverImageUrl} /> : <ImageIcon size={28} />}
-                </span>
-                <div>
-                  <span>{album.imageCount} 张图片</span>
-                  <h3>{album.title}</h3>
-                  <p>{album.description || '这个相册还没有说明。'}</p>
-                </div>
-              </button>
-            ))}
-          </div>
-
-          <div className="gallery-image-grid" aria-label={activeAlbum ? `${activeAlbum.title}图片` : '图库图片'}>
-            {images.length > 0 ? (
-              images.map((image, index) => (
-                <button className="gallery-image-tile" type="button" key={image.id} onClick={() => setActiveImageIndex(index)}>
-                  <img alt={image.title} src={image.imageUrl} />
-                  <span>
-                    <strong>{image.title}</strong>
-                    <small>{image.capturedAt ? formatGalleryTime(image.capturedAt) : activeAlbum?.title}</small>
+        <div className="gallery-album-stack" aria-label="公开相册">
+          {publicAlbums.map((album) => {
+            const isExpanded = activeAlbum?.slug === album.slug;
+            return (
+              <article className="gallery-album-panel" key={album.slug}>
+                <button
+                  className="gallery-album-toggle"
+                  type="button"
+                  aria-expanded={isExpanded}
+                  aria-controls={`gallery-album-${album.slug}`}
+                  onClick={() => toggleAlbum(album)}
+                >
+                  <span className="gallery-cover">
+                    {album.coverImageUrl ? <img alt="" src={album.coverImageUrl} /> : <ImageIcon size={28} />}
                   </span>
+                  <span className="gallery-album-copy">
+                    <small>{album.imageCount} 张图片</small>
+                    <strong>{album.title}</strong>
+                    <span>{album.description || '这个相册还没有说明。'}</span>
+                  </span>
+                  <ChevronDown className="gallery-album-chevron" size={20} aria-hidden="true" />
                 </button>
-              ))
-            ) : (
-              <p className="empty-state">这个公开相册暂时没有图片。</p>
-            )}
-          </div>
-        </>
+
+                {isExpanded && (
+                  <div className="gallery-album-body" id={`gallery-album-${album.slug}`}>
+                    <div className="gallery-image-toolbar">
+                      <span>
+                        第 {Math.min(activeAlbumPage, pageCount)} / {pageCount} 页
+                      </span>
+                      <strong>{totalImages} 张公开图片</strong>
+                    </div>
+                    <div className="gallery-image-grid" aria-label={`${album.title}图片`}>
+                      {isLoadingImages ? (
+                        <p className="empty-state">正在加载图片...</p>
+                      ) : imageLoadError ? (
+                        <p className="empty-state">{imageLoadError}</p>
+                      ) : images.length > 0 ? (
+                        images.map((image, index) => (
+                          <button className="gallery-image-tile" type="button" key={image.id} onClick={() => setActiveImageIndex(index)}>
+                            <img alt={image.title} src={image.imageUrl} loading="lazy" />
+                            <span>
+                              <strong>{image.title}</strong>
+                              <small>{image.capturedAt ? formatGalleryTime(image.capturedAt) : album.title}</small>
+                            </span>
+                          </button>
+                        ))
+                      ) : (
+                        <p className="empty-state">这个公开相册暂时没有图片。</p>
+                      )}
+                    </div>
+                    {pageCount > 1 && (
+                      <GalleryPagination
+                        page={Math.min(activeAlbumPage, pageCount)}
+                        pageCount={pageCount}
+                        onPrevious={() => setActiveAlbumPage(album, Math.max(1, activeAlbumPage - 1))}
+                        onNext={() => setActiveAlbumPage(album, Math.min(pageCount, activeAlbumPage + 1))}
+                      />
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
       ) : (
         <p className="empty-state">暂无公开图库。</p>
       )}
@@ -108,6 +246,32 @@ export function PublicGalleryPage({ albums }: { albums: GalleryAlbum[] }) {
         </div>
       )}
     </section>
+  );
+}
+
+function GalleryPagination({
+  page,
+  pageCount,
+  onPrevious,
+  onNext,
+}: {
+  page: number;
+  pageCount: number;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <nav className="gallery-pagination" aria-label="图库分页">
+      <button className="secondary-action" type="button" onClick={onPrevious} disabled={page <= 1}>
+        上一页
+      </button>
+      <span>
+        {page} / {pageCount}
+      </span>
+      <button className="secondary-action" type="button" onClick={onNext} disabled={page >= pageCount}>
+        下一页
+      </button>
+    </nav>
   );
 }
 

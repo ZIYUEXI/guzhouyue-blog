@@ -1,7 +1,9 @@
 import type { Post } from './posts';
 
 export type NoteSection = {
+  id?: string;
   category: string;
+  slug?: string;
   description: string;
 };
 

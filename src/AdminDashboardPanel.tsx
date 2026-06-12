@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ChevronRight, FileText, Image as ImageIcon, Plus, Settings, Sun } from 'lucide-react';
+import { ChevronRight, FileText, Image as ImageIcon, Plus, Settings, SquareTerminal, Sun } from 'lucide-react';
 import { fetchAdminOps, type ApiAdminOps } from './apiClient';
 import type { SiteContent } from './contentStore';
 import type { Post } from './posts';
@@ -15,6 +15,7 @@ type AdminPanelId =
   | 'series'
   | 'gallery'
   | 'archive'
+  | 'commands'
   | 'homepage'
   | 'appearance';
 
@@ -46,6 +47,7 @@ export function AdminDashboardPanel({
   const quickActions: Array<{ label: string; detail: string; panel: AdminPanelId; icon: ReactNode }> = [
     { label: '整理文章', detail: '搜索、预览、编辑和删除', panel: 'posts', icon: <FileText size={18} /> },
     { label: '维护图库', detail: `${content.galleryAlbums.length} 个相册，${galleryImageCount} 张图片`, panel: 'gallery', icon: <ImageIcon size={18} /> },
+    { label: '快速指令', detail: '管理员指令通道框架', panel: 'commands', icon: <SquareTerminal size={18} /> },
     { label: '更新首页', detail: '标题、按钮、关于和今日小记', panel: 'homepage', icon: <Settings size={18} /> },
     { label: '调整外观', detail: colorScheme === 'light' ? '当前亮色模式' : '当前暗色模式', panel: 'appearance', icon: <Sun size={18} /> },
   ];

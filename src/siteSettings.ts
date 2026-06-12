@@ -47,9 +47,12 @@ export function readSiteSettings(): SiteSettings {
   try {
     const parsedSettings = JSON.parse(storedSettings) as Partial<SiteSettings>;
     return {
-      stylePreset: siteSettings.stylePreset,
-      ownerName: normalizeOwnerName(parsedSettings.ownerName),
-      ownerAvatarUrl: normalizeOwnerAvatarUrl(parsedSettings.ownerAvatarUrl),
+      stylePreset: isStylePreset(parsedSettings.stylePreset) ? parsedSettings.stylePreset : siteSettings.stylePreset,
+      ownerName: parsedSettings.ownerName !== undefined ? normalizeOwnerName(parsedSettings.ownerName) : siteSettings.ownerName,
+      ownerAvatarUrl:
+        parsedSettings.ownerAvatarUrl !== undefined
+          ? normalizeOwnerAvatarUrl(parsedSettings.ownerAvatarUrl)
+          : siteSettings.ownerAvatarUrl,
     };
   } catch {
     return siteSettings;

@@ -35,7 +35,7 @@ const seed = db.transaction(() => {
     VALUES (?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(slug) DO UPDATE SET title = excluded.title, excerpt = excluded.excerpt,
       category_id = excluded.category_id,
-      status = excluded.status, published_at = excluded.published_at,
+      status = articles.status, published_at = COALESCE(articles.published_at, excluded.published_at),
       updated_at = excluded.updated_at, tone = excluded.tone, tags_json = excluded.tags_json,
       body_markdown = excluded.body_markdown, seo_title = excluded.seo_title,
       seo_description = excluded.seo_description, cover_image = excluded.cover_image

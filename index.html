@@ -33,7 +33,11 @@
           const colorScheme = colorSchemes.has(storedColorScheme)
             ? storedColorScheme
             : defaultSettings.colorScheme;
-          const stylePreset = defaultSettings.stylePreset;
+          const storedSettings = window.localStorage.getItem('guzhouyue.siteSettings');
+          const parsedSettings = storedSettings ? JSON.parse(storedSettings) : {};
+          const stylePreset = stylePresets.has(parsedSettings.stylePreset)
+            ? parsedSettings.stylePreset
+            : defaultSettings.stylePreset;
           const colors = themeColors[stylePreset][colorScheme];
 
           document.documentElement.dataset.colorScheme = colorScheme;

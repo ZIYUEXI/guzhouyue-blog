@@ -29,6 +29,14 @@ export type ApiArticlesPayload = {
   items?: unknown[];
 };
 
+export type ApiGalleryImagesPayload = {
+  items?: unknown[];
+  page?: number;
+  pageSize?: number;
+  pageCount?: number;
+  total?: number;
+};
+
 export type ApiComment = {
   id: string;
   author: string;
@@ -70,6 +78,74 @@ export type ApiAdminOps = {
     createdAt?: string;
   }>;
 };
+
+export type ApiAdminCommandOptionValue = string | boolean | string[];
+
+export type ApiAdminCommandInvocation = {
+  raw: string;
+  name: string;
+  positional: string[];
+  options: Record<string, ApiAdminCommandOptionValue>;
+};
+
+export type ApiAdminCommandDescriptor = {
+  name: string;
+  summary: string;
+  scope: string;
+  risk: 'low' | 'medium' | 'high';
+  arguments: Array<{
+    name: string;
+    description: string;
+    required?: boolean;
+    type?: 'string' | 'number' | 'boolean' | 'json';
+  }>;
+  confirmationRequired: boolean;
+};
+
+export type ApiAdminCommandGuide = {
+  pattern: string;
+  rules: string[];
+  placeholderExamples: string[];
+  commands: ApiAdminCommandDescriptor[];
+};
+
+export type ApiAdminCommandParseResult =
+  | {
+      ok: true;
+      invocation: ApiAdminCommandInvocation;
+      tokens: string[];
+      guide: ApiAdminCommandGuide;
+    }
+  | {
+      ok: false;
+      errors: string[];
+      tokens: string[];
+      guide: ApiAdminCommandGuide;
+    };
+
+export type ApiAdminCommandRunResult =
+  | {
+      status: 'invalid';
+      errors: string[];
+      guide: ApiAdminCommandGuide;
+    }
+  | {
+      status: 'unknown_command';
+      invocation: ApiAdminCommandInvocation;
+      guide: ApiAdminCommandGuide;
+    }
+  | {
+      status: 'failed';
+      invocation: ApiAdminCommandInvocation;
+      command: ApiAdminCommandDescriptor;
+      errors: string[];
+    }
+  | {
+      status: 'confirmation_required' | 'dry_run' | 'executed';
+      invocation: ApiAdminCommandInvocation;
+      command: ApiAdminCommandDescriptor;
+      result?: unknown;
+    };
 
 export type ApiComposerDraft = {
   title: string;
@@ -135,6 +211,25 @@ export async function fetchPublicArticles() {
 export async function fetchPublicGallery() {
   const payload = await requestJson<unknown[] | { items?: unknown[] }>('/api/gallery');
   return Array.isArray(payload) ? payload : payload.items ?? [];
+}
+
+export async function fetchPublicGalleryAlbumImages(albumIdOrSlug: string, options: { page?: number; pageSize?: number } = {}) {
+  const params = new URLSearchParams({
+    page: String(options.page ?? 1),
+    pageSize: String(options.pageSize ?? 24),
+  });
+  const payload = await requestJson<ApiGalleryImagesPayload>(
+    `/api/gallery/albums/${encodeURIComponent(albumIdOrSlug)}/images?${params.toString()}`,
+  );
+  const images = Array.isArray(payload.items) ? payload.items : [];
+
+  return {
+    items: images,
+    page: asNumber(payload.page, options.page ?? 1),
+    pageSize: asNumber(payload.pageSize, options.pageSize ?? 24),
+    pageCount: asNumber(payload.pageCount, 1),
+    total: asNumber(payload.total, images.length),
+  };
 }
 
 export async function fetchAdminContent(): Promise<ApiContentPayload> {
@@ -332,6 +427,24 @@ export async function fetchAdminOps() {
   return requestJson<ApiAdminOps>('/api/admin/ops');
 }
 
+export async function fetchAdminCommandGuide() {
+  return requestJson<ApiAdminCommandGuide>('/api/admin/commands');
+}
+
+export async function parseAdminCommand(input: string) {
+  return requestJson<ApiAdminCommandParseResult>('/api/admin/commands/parse', {
+    method: 'POST',
+    body: JSON.stringify({ input }),
+  });
+}
+
+export async function runAdminCommand(input: string, options: { confirm?: boolean; dryRun?: boolean } = {}) {
+  return requestJson<ApiAdminCommandRunResult>('/api/admin/commands/run', {
+    method: 'POST',
+    body: JSON.stringify({ input, ...options }),
+  });
+}
+
 export async function updateAdminCommentStatus(id: string, status: AdminCommentStatus) {
   return requestJson<{ ok?: boolean }>(`/api/admin/comments/${encodeURIComponent(id)}`, {
     method: 'PUT',
@@ -394,23 +507,24 @@ export function normalizeApiNoteSections(value: unknown[] | undefined): NoteSect
     return [];
   }
 
-  return value
-    .map((section) => {
-      if (!isRecord(section)) {
-        return null;
-      }
+  return value.reduce<NoteSection[]>((sections, section) => {
+    if (!isRecord(section)) {
+      return sections;
+    }
 
-      const category = asText(section.category) || asText(section.name);
-      if (!category) {
-        return null;
-      }
+    const category = asText(section.category) || asText(section.name);
+    if (!category) {
+      return sections;
+    }
 
-      return {
-        category,
-        description: asText(section.description),
-      };
-    })
-    .filter((section): section is NoteSection => section !== null);
+    sections.push({
+      id: asText(section.id),
+      category,
+      slug: asText(section.slug),
+      description: asText(section.description),
+    });
+    return sections;
+  }, []);
 }
 
 export function normalizeApiFeaturedSeries(value: unknown[] | undefined): FeaturedSeries[] {

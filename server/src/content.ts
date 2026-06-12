@@ -355,13 +355,17 @@ export function listNoteSections() {
   }));
 }
 
+export function normalizeSiteStylePreset(value: unknown) {
+  return value === 'classic' || value === 'cyber' ? value : 'classic';
+}
+
 export function getSiteSettings() {
   const row = db.prepare('SELECT * FROM site_settings WHERE id = ?').get('site') as
     | { style_preset: string; color_scheme: string; owner_name: string; owner_avatar_url?: string; updated_at: string }
     | undefined;
 
   return {
-    stylePreset: row?.style_preset ?? 'classic',
+    stylePreset: normalizeSiteStylePreset(row?.style_preset),
     ownerName: row?.owner_name ?? '孤舟月',
     ownerAvatarUrl: row?.owner_avatar_url ?? '',
     updatedAt: row?.updated_at ?? nowIso(),
@@ -463,10 +467,17 @@ export function listGalleryAlbums(options: { includePrivate?: boolean } = {}) {
     .prepare(
       `
         SELECT a.*,
-          cover.image_url AS cover_image_url,
+          COALESCE(cover.image_url, first_image.image_url) AS cover_image_url,
           COUNT(CASE WHEN img.is_public = 1 THEN 1 END) AS image_count
         FROM gallery_albums a
         LEFT JOIN gallery_images cover ON cover.id = a.cover_image_id
+        LEFT JOIN gallery_images first_image ON first_image.id = (
+          SELECT first_public_image.id
+          FROM gallery_images first_public_image
+          WHERE first_public_image.album_id = a.id AND first_public_image.is_public = 1
+          ORDER BY first_public_image.sort_order ASC, first_public_image.created_at ASC
+          LIMIT 1
+        )
         LEFT JOIN gallery_images img ON img.album_id = a.id
         ${publicSql}
         GROUP BY a.id
@@ -630,6 +641,42 @@ export function listGalleryImages(albumId: string, includePrivate = false) {
     .all(albumId) as GalleryImageRow[];
 
   return rows.map(toGalleryImage);
+}
+
+export function listGalleryImagesPage(albumId: string, options: { page?: number; pageSize?: number; includePrivate?: boolean } = {}) {
+  const page = Math.max(1, Number(options.page || 1));
+  const pageSize = Math.min(60, Math.max(1, Number(options.pageSize || 24)));
+  const publicSql = options.includePrivate ? '' : 'AND is_public = 1';
+  const total = (
+    db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM gallery_images
+          WHERE album_id = ? ${publicSql}
+        `,
+      )
+      .get(albumId) as { count: number }
+  ).count;
+  const rows = db
+    .prepare(
+      `
+        SELECT *
+        FROM gallery_images
+        WHERE album_id = ? ${publicSql}
+        ORDER BY sort_order ASC, created_at ASC
+        LIMIT ? OFFSET ?
+      `,
+    )
+    .all(albumId, pageSize, (page - 1) * pageSize) as GalleryImageRow[];
+
+  return {
+    items: rows.map(toGalleryImage),
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(total / pageSize)),
+    total,
+  };
 }
 
 export function createGalleryImage(albumId: string, input: GalleryImageInput) {

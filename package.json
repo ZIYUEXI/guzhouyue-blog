@@ -9,7 +9,8 @@
     "seed:server": "tsx server/scripts/seed.ts",
     "seed:test-articles": "tsx server/scripts/seed-test-articles.ts",
     "test:server": "tsx server/scripts/smoke-test.ts",
-    "build": "tsc --noEmit && vite build",
+    "test:theme": "node scripts/audit-theme-vars.mjs",
+    "build": "node scripts/audit-theme-vars.mjs && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
