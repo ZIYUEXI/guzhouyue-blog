@@ -1,4 +1,5 @@
 import {
+  Bot,
   CalendarDays,
   ChevronRight,
   Code2,
@@ -23,6 +24,7 @@ import {
   Send,
   Save,
   Image as ImageIcon,
+  Orbit,
   SquareTerminal,
   Sun,
   Table2,
@@ -41,9 +43,11 @@ import { ArticleComments } from './ArticleComments';
 import { AdminCommandPanel } from './AdminCommandPanel';
 import { AdminDashboardPanel } from './AdminDashboardPanel';
 import { AdminPostsPanel } from './AdminPostsPanel';
+import { AdminStarfieldPanel } from './AdminStarfieldPanel';
 import { useArticleHead } from './articleSeo';
 import { MarkdownBody } from './MarkdownBody';
 import { PublicGalleryPage } from './PublicGalleryPage';
+import { StarfieldPage } from './StarfieldPage';
 import type { RichMarkdownEditorHandle } from './RichMarkdownEditor';
 import {
   defaultSiteContent,
@@ -71,6 +75,8 @@ import {
   fetchAdminContent,
   fetchAdminComments,
   fetchAdminDraft,
+  fetchAdminLlmConfig,
+  fetchAdminLlmTokenUsage,
   fetchAdminMe,
   createAdminGalleryAlbum,
   deleteAdminGalleryAlbum,
@@ -78,7 +84,9 @@ import {
   fetchPublicArticles,
   fetchPublicGallery,
   fetchPublicSite,
+  generateAdminArticleMetadata,
   fetchAdminDeletedArticles,
+  fetchPublicStarfield,
   loginAdmin,
   logoutAdmin,
   normalizeApiFeaturedSeries,
@@ -92,8 +100,10 @@ import {
   saveAdminDraft,
   saveAdminFeaturedSeries,
   saveAdminHomepage,
+  saveAdminLlmConfig,
   saveAdminNoteSections,
   saveAdminSettings,
+  testAdminLlmConnection,
   unpublishAdminArticle,
   updateAdminArticle,
   updateAdminCommentStatus,
@@ -102,7 +112,12 @@ import {
   uploadAdminGalleryImage,
   ApiError,
   type AdminCommentStatus,
+  type ApiArticleMetadataSuggestion,
   type ApiAdminComment,
+  type ApiLlmConnectionTestResult,
+  type ApiLlmConfig,
+  type ApiLlmTokenUsagePayload,
+  type LlmProvider,
 } from './apiClient';
 import {
   applySiteSettings,
@@ -133,6 +148,7 @@ const navItems = [
   { label: '札记', href: '/notes/page/1' },
   { label: '归档', href: '/archive/page/1' },
   { label: '图库', href: '/gallery' },
+  { label: '星图', href: '/starfield' },
   { label: '关于', href: '/#关于' },
 ];
 
@@ -162,10 +178,12 @@ function readInitialSiteContent() {
 }
 
 function App() {
+  const [, setLocationVersion] = useState(0);
   const [settings, setSettings] = useState<SiteSettings>(() => readSiteSettings());
   const [colorScheme, setColorScheme] = useState<ColorScheme>(() => readUserColorScheme());
   const [content, setContent] = useState<SiteContent>(() => readInitialSiteContent());
   const [adminAuthStatus, setAdminAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous'>('checking');
+  const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
   const [dataSourceNotice, setDataSourceNotice] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -177,8 +195,46 @@ function App() {
   const isAdminRoute = isAdminPath(pathname);
 
   useEffect(() => {
+    function handleLocationChange() {
+      setLocationVersion((version) => version + 1);
+    }
+
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, []);
+
+  useEffect(() => {
     applySiteSettings(settings, colorScheme);
   }, [settings, colorScheme]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (isAdminRoute) {
+      setOwnerAuthenticated(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    async function checkOwnerSession() {
+      try {
+        await fetchAdminMe();
+        if (!cancelled) {
+          setOwnerAuthenticated(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setOwnerAuthenticated(false);
+        }
+      }
+    }
+
+    checkOwnerSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminRoute]);
 
   useEffect(() => {
     let cancelled = false;
@@ -329,6 +385,7 @@ function App() {
       <SiteHeader
         homepage={content.homepage}
         colorScheme={colorScheme}
+        ownerAuthenticated={ownerAuthenticated}
         menuOpen={menuOpen}
         onMenuToggle={() => setMenuOpen((value) => !value)}
         onColorSchemeToggle={() => updateColorScheme(colorScheme === 'light' ? 'dark' : 'light')}
@@ -341,6 +398,11 @@ function App() {
               {item.label}
             </a>
           ))}
+          {ownerAuthenticated && (
+            <a href="/admin" onClick={() => setMenuOpen(false)}>
+              后台
+            </a>
+          )}
         </nav>
       )}
 
@@ -364,6 +426,7 @@ function App() {
         )}
         {route.name === 'archive' && <AllArchivePage currentPage={route.page} posts={publicPosts} />}
         {route.name === 'gallery' && <PublicGalleryPage albums={content.galleryAlbums} />}
+        {route.name === 'starfield' && <StarfieldPage />}
         {route.name === 'post' && <PostDetailPage ownerAvatarUrl={ownerAvatarUrl} posts={publicPosts} slug={route.slug} />}
         {route.name === 'not-found' && <NotFoundPage />}
       </main>
@@ -1029,8 +1092,10 @@ type AdminPanelId =
   | 'notes'
   | 'series'
   | 'gallery'
+  | 'starfield'
   | 'archive'
   | 'commands'
+  | 'llm'
   | 'homepage'
   | 'appearance';
 
@@ -1039,8 +1104,76 @@ type BatchResult = {
   failed: number;
 };
 
+const adminPanelIds = new Set<AdminPanelId>([
+  'overview',
+  'posts',
+  'trash',
+  'comments',
+  'notes',
+  'series',
+  'gallery',
+  'starfield',
+  'archive',
+  'commands',
+  'llm',
+  'homepage',
+  'appearance',
+]);
+
 function formatBatchResult(action: string, result: BatchResult) {
   return `${action}完成：成功 ${result.success} 项，失败 ${result.failed} 项。`;
+}
+
+function navigateAdmin(path: string) {
+  window.history.pushState({}, '', path);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+function getAdminPanelFromUrl(): AdminPanelId {
+  if (window.location.pathname === '/admin/posts') {
+    const panel = window.location.search ? new URLSearchParams(window.location.search).get('panel') : null;
+    return panel && adminPanelIds.has(panel as AdminPanelId) ? (panel as AdminPanelId) : 'posts';
+  }
+
+  return 'overview';
+}
+
+function getAdminPostsPageFromUrl() {
+  const page = Number(new URLSearchParams(window.location.search).get('page') ?? '1');
+  return Number.isInteger(page) && page > 0 ? page : 1;
+}
+
+function getSafeAdminReturnPath(search: string) {
+  const returnTo = new URLSearchParams(search).get('returnTo');
+  if (!returnTo) {
+    return '/admin/posts?panel=posts';
+  }
+
+  try {
+    const parsed = new URL(returnTo, window.location.origin);
+    if (parsed.origin !== window.location.origin || parsed.pathname !== '/admin/posts') {
+      return '/admin/posts?panel=posts';
+    }
+
+    const params = new URLSearchParams(parsed.search);
+    params.set('panel', 'posts');
+    const page = Number(params.get('page') ?? '1');
+    if (!Number.isInteger(page) || page <= 1) {
+      params.delete('page');
+    }
+    const scroll = Number(params.get('scroll') ?? '0');
+    if (!Number.isInteger(scroll) || scroll < 0) {
+      params.delete('scroll');
+    } else if (scroll === 0) {
+      params.delete('scroll');
+    } else {
+      params.set('scroll', String(scroll));
+    }
+
+    return `/admin/posts?${params.toString()}`;
+  } catch {
+    return '/admin/posts?panel=posts';
+  }
 }
 
 function AdminPage({
@@ -1060,14 +1193,22 @@ function AdminPage({
   onColorSchemeChange: (colorScheme: ColorScheme) => void;
   onSettingsChange: (settings: SiteSettings) => void;
 }) {
-  const [activePanel, setActivePanel] = useState<AdminPanelId>('overview');
+  const [activePanel, setActivePanel] = useState<AdminPanelId>(() => getAdminPanelFromUrl());
   const [deletedPosts, setDeletedPosts] = useState<Post[]>([]);
   const [trashNotice, setTrashNotice] = useState('');
   const archiveGroups = buildArchive(content.posts);
   const editPostSlug = getAdminEditPostSlug(window.location.pathname);
   const editingPost = editPostSlug ? getPostBySlug(content.posts, editPostSlug) : undefined;
   const isPostComposerRoute = window.location.pathname === '/admin/posts/new' || Boolean(editPostSlug);
+  const adminPostsPage = getAdminPostsPageFromUrl();
+  const composerReturnPath = getSafeAdminReturnPath(window.location.search);
   const noteSectionsSaveTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isPostComposerRoute) {
+      setActivePanel(getAdminPanelFromUrl());
+    }
+  }, [isPostComposerRoute]);
 
   useEffect(() => {
     if (isPostComposerRoute) {
@@ -1232,8 +1373,7 @@ function AdminPage({
     }
 
     onContentChange({ ...content, posts: [savedPost, ...content.posts] });
-    window.history.pushState({}, '', '/admin/posts');
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    navigateAdmin(composerReturnPath);
     return true;
   }
 
@@ -1254,8 +1394,7 @@ function AdminPage({
       postSlugs: series.postSlugs.map((postSlug) => (postSlug === originalSlug ? savedPost.slug : postSlug)),
     }));
     onContentChange({ ...content, posts: nextPosts, featuredSeries: nextFeaturedSeries });
-    window.history.pushState({}, '', '/admin/posts');
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    navigateAdmin(composerReturnPath);
     return true;
   }
 
@@ -1715,6 +1854,24 @@ function AdminPage({
     onContentChange(nextContent);
   }
 
+  function selectAdminPanel(panel: AdminPanelId) {
+    setActivePanel(panel);
+    navigateAdmin(panel === 'overview' ? '/admin' : `/admin/posts?panel=${panel}`);
+  }
+
+  function updateAdminPostsPage(page: number) {
+    const targetPage = Math.max(1, page);
+    const params = new URLSearchParams(window.location.search);
+    params.set('panel', 'posts');
+    if (targetPage > 1) {
+      params.set('page', String(targetPage));
+    } else {
+      params.delete('page');
+    }
+    params.delete('scroll');
+    navigateAdmin(`/admin/posts?${params.toString()}`);
+  }
+
   return (
     <div className="site-shell admin-shell">
       {!isPostComposerRoute && (
@@ -1742,7 +1899,7 @@ function AdminPage({
         </header>
       )}
 
-      <main className={isPostComposerRoute ? 'admin-main admin-main-composer' : 'admin-main'}>
+      <main className={isPostComposerRoute ? 'admin-main admin-main-composer' : `admin-main${activePanel === 'starfield' ? ' admin-main-starfield' : ''}`}>
         {isPostComposerRoute ? (
           <AdminPostComposer
             key={editingPost?.slug ?? (editPostSlug ? `loading:${editPostSlug}` : 'new')}
@@ -1752,6 +1909,7 @@ function AdminPage({
             onCreatePost={createPost}
             onUpdatePost={updatePost}
             onUploadImages={uploadComposerImages}
+            returnPath={composerReturnPath}
             onThemeToggle={() => onColorSchemeChange(colorScheme === 'light' ? 'dark' : 'light')}
             colorScheme={colorScheme}
             posts={content.posts}
@@ -1787,15 +1945,17 @@ function AdminPage({
                   { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
                   { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
                   { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
+                  { panel: 'starfield', label: '星图管理', Icon: Orbit, meta: '文段关系' },
                   { panel: 'archive', label: '归档管理', Icon: CalendarDays, meta: `${archiveGroups.length} 个月` },
                   { panel: 'commands', label: '快速指令', Icon: SquareTerminal, meta: '指令通道' },
+                  { panel: 'llm', label: 'LLM 配置', Icon: Bot, meta: 'deepseek-v4-pro' },
                   { panel: 'homepage', label: '主页词汇', Icon: Settings, meta: '首页内容' },
                   { panel: 'appearance', label: '外观设置', Icon: Sun, meta: colorScheme === 'light' ? '亮色' : '暗色' },
                 ].map(({ panel, label, Icon, meta }) => (
                   <button
                     aria-pressed={activePanel === panel}
                     key={panel}
-                    onClick={() => setActivePanel(panel as AdminPanelId)}
+                    onClick={() => selectAdminPanel(panel as AdminPanelId)}
                     type="button"
                   >
                     <Icon size={18} />
@@ -1814,15 +1974,17 @@ function AdminPage({
                     colorScheme={colorScheme}
                     content={content}
                     deletedPosts={deletedPosts}
-                    onSelectPanel={setActivePanel}
+                    onSelectPanel={selectAdminPanel}
                   />
                 )}
 
                 {activePanel === 'posts' && (
                   <AdminPostsPanel
+                    currentPage={adminPostsPage}
                     noteSections={content.noteSections}
                     onDeletePosts={deletePosts}
                     onArchivePosts={archivePosts}
+                    onPageChange={updateAdminPostsPage}
                     onMovePostsToCategory={movePostsToCategory}
                     onPublishPosts={publishPosts}
                     onSyncPost={syncPost}
@@ -1876,6 +2038,8 @@ function AdminPage({
                   />
                 )}
 
+                {activePanel === 'starfield' && <AdminStarfieldPanel posts={content.posts} />}
+
                 {activePanel === 'archive' && (
                   <AdminArchivePanel
                     archiveGroups={archiveGroups}
@@ -1888,6 +2052,8 @@ function AdminPage({
                 )}
 
                 {activePanel === 'commands' && <AdminCommandPanel />}
+
+                {activePanel === 'llm' && <AdminLlmConfigPanel />}
 
                 {activePanel === 'homepage' && (
                   <AdminHomepagePanel homepage={content.homepage} onHomepageChange={updateHomepage} />
@@ -2232,6 +2398,7 @@ function AdminPostComposer({
   onUpdatePost,
   onUploadImages,
   posts,
+  returnPath,
   settings,
   siteName,
 }: {
@@ -2244,6 +2411,7 @@ function AdminPostComposer({
   onUpdatePost: (originalSlug: string, post: Post) => Promise<boolean>;
   onUploadImages: (files: File[]) => Promise<GalleryImage[]>;
   posts: Post[];
+  returnPath: string;
   settings: SiteSettings;
   siteName: string;
 }) {
@@ -2286,6 +2454,9 @@ function AdminPostComposer({
   const [isComposerImageDragging, setIsComposerImageDragging] = useState(false);
   const [composerImageUploadCount, setComposerImageUploadCount] = useState(0);
   const [composerImageNotice, setComposerImageNotice] = useState('');
+  const [aiAgentStatus, setAiAgentStatus] = useState<'idle' | 'generating' | 'ready' | 'error'>('idle');
+  const [aiAgentNotice, setAiAgentNotice] = useState('');
+  const [aiAgentSuggestion, setAiAgentSuggestion] = useState<ApiArticleMetadataSuggestion | null>(null);
   const markdownInputRef = useRef<HTMLTextAreaElement>(null);
   const mdxEditorRef = useRef<RichMarkdownEditorHandle>(null);
   const paperRef = useRef<HTMLElement>(null);
@@ -2491,6 +2662,58 @@ function AdminPostComposer({
     savedSnapshotRef.current = currentSnapshot;
     setDraftStatus('published');
     return true;
+  }
+
+  async function generateArticleMetadataSuggestion() {
+    if (aiAgentStatus === 'generating') {
+      return;
+    }
+
+    const normalizedBodyMarkdown = normalizeMarkdown(bodyMarkdown);
+    if (normalizedBodyMarkdown.replace(/\s/g, '').length < 20) {
+      setAiAgentStatus('error');
+      setAiAgentNotice('正文内容太少，请先补充正文后再生成。');
+      setAiAgentSuggestion(null);
+      setDetailsOpen(true);
+      return;
+    }
+
+    setAiAgentStatus('generating');
+    setAiAgentNotice('');
+    setAiAgentSuggestion(null);
+    setDetailsOpen(true);
+    try {
+      const suggestion = await generateAdminArticleMetadata({
+        title,
+        excerpt,
+        category,
+        tags,
+        bodyMarkdown: normalizedBodyMarkdown,
+      });
+      setAiAgentSuggestion(suggestion);
+      setAiAgentStatus('ready');
+    } catch (error) {
+      setAiAgentStatus('error');
+      setAiAgentNotice(
+        error instanceof ApiError
+          ? 'AI-AGENT 暂时无法生成，请检查 LLM 配置、API Key 或服务商支持情况。'
+          : 'AI-AGENT 暂时无法生成，请稍后重试。',
+      );
+    }
+  }
+
+  function applyArticleMetadataSuggestion() {
+    if (!aiAgentSuggestion) {
+      return;
+    }
+
+    updateTitle(aiAgentSuggestion.title);
+    updateMetaField('excerpt', aiAgentSuggestion.excerpt, setExcerpt);
+    updateMetaField('seoTitle', aiAgentSuggestion.seoTitle, setSeoTitle);
+    updateMetaField('seoDescription', aiAgentSuggestion.seoDescription, setSeoDescription);
+    setAiAgentStatus('idle');
+    setAiAgentSuggestion(null);
+    setAiAgentNotice('AI-AGENT 结果已应用到发布信息。');
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -3201,6 +3424,16 @@ function AdminPostComposer({
             <button
               className="typora-icon-action"
               type="button"
+              onClick={() => void generateArticleMetadataSuggestion()}
+              disabled={aiAgentStatus === 'generating'}
+              title="AI 生成标题/摘要"
+              aria-label="AI 生成标题和摘要"
+            >
+              <Bot size={17} />
+            </button>
+            <button
+              className="typora-icon-action"
+              type="button"
               onClick={onThemeToggle}
               title="切换明暗模式"
               aria-label="切换明暗模式"
@@ -3243,7 +3476,7 @@ function AdminPostComposer({
             >
               <FileText size={17} />
             </button>
-            <a className="secondary-action" href="/admin/posts">
+            <a className="secondary-action" href={returnPath}>
               取消
             </a>
             <button className="primary-action" type="submit">
@@ -3346,6 +3579,14 @@ function AdminPostComposer({
             )}
 
             <div className="typora-toolbar" aria-label="Markdown 工具栏">
+              <button
+                type="button"
+                onClick={() => void generateArticleMetadataSuggestion()}
+                disabled={aiAgentStatus === 'generating'}
+                title="AI 生成标题/摘要"
+              >
+                <Bot size={17} />
+              </button>
               <button type="button" onClick={() => insertMarkdown('## {{selection}}', -2)} title="二级标题">
                 <Heading2 size={17} />
               </button>
@@ -3458,6 +3699,66 @@ function AdminPostComposer({
             </div>
 
             <div className="composer-meta-fields">
+              <section className="ai-agent-panel" aria-label="AI-AGENT 标题摘要生成">
+                <header>
+                  <div>
+                    <span>AI-AGENT</span>
+                    <strong>标题、摘要与 SEO</strong>
+                  </div>
+                  <button
+                    className="secondary-action"
+                    disabled={aiAgentStatus === 'generating'}
+                    type="button"
+                    onClick={() => void generateArticleMetadataSuggestion()}
+                  >
+                    <Bot size={16} />
+                    {aiAgentStatus === 'generating' ? '生成中' : '生成'}
+                  </button>
+                </header>
+                {aiAgentNotice && (
+                  <p className={`ai-agent-notice ${aiAgentStatus === 'error' ? 'is-error' : ''}`} role={aiAgentStatus === 'error' ? 'alert' : 'status'}>
+                    {aiAgentNotice}
+                  </p>
+                )}
+                {aiAgentSuggestion && (
+                  <div className="ai-agent-preview">
+                    <dl>
+                      <div>
+                        <dt>标题</dt>
+                        <dd>{aiAgentSuggestion.title}</dd>
+                      </div>
+                      <div>
+                        <dt>摘要</dt>
+                        <dd>{aiAgentSuggestion.excerpt}</dd>
+                      </div>
+                      <div>
+                        <dt>SEO 标题</dt>
+                        <dd>{aiAgentSuggestion.seoTitle}</dd>
+                      </div>
+                      <div>
+                        <dt>SEO 描述</dt>
+                        <dd>{aiAgentSuggestion.seoDescription}</dd>
+                      </div>
+                    </dl>
+                    <div className="ai-agent-actions">
+                      <button className="primary-action" type="button" onClick={applyArticleMetadataSuggestion}>
+                        应用全部
+                      </button>
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        onClick={() => {
+                          setAiAgentSuggestion(null);
+                          setAiAgentStatus('idle');
+                          setAiAgentNotice('');
+                        }}
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
               <label>
                 链接标识
                 <input
@@ -4530,9 +4831,9 @@ function AdminArchivePanel({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMonth, setActiveMonth] = useState('all');
   const [activeStatus, setActiveStatus] = useState<'all' | PostStatus>('all');
-  const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
-  const [targetMonth, setTargetMonth] = useState(() => getPostArchiveMonthValue(posts[0]) || '');
-  const [batchNotice, setBatchNotice] = useState('');
+ const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
+  const [targetMonth, setTargetMonth] = useState(() => posts[0] ? getPostArchiveMonthValue(posts[0]) || '' : '');
+ const [batchNotice, setBatchNotice] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
   const monthOptions = useMemo(() => archiveGroups.map((group) => group.month), [archiveGroups]);
   const filteredPosts = useMemo(() => {
@@ -4558,9 +4859,9 @@ function AdminArchivePanel({
   }, [posts]);
 
   useEffect(() => {
-    if (!targetMonth) {
-      setTargetMonth(getPostArchiveMonthValue(posts[0]) || '');
-    }
+   if (!targetMonth) {
+      setTargetMonth(posts[0] ? getPostArchiveMonthValue(posts[0]) || '' : '');
+   }
   }, [posts, targetMonth]);
 
   function togglePost(slug: string) {
@@ -4894,6 +5195,374 @@ function AdminHomepagePanel({
   );
 }
 
+const llmProviderOptions: Array<{ value: LlmProvider; label: string; model: string; baseUrl: string }> = [
+  { value: 'deepseek', label: 'DeepSeek', model: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com' },
+  { value: 'openai', label: 'OpenAI', model: 'gpt-4.1', baseUrl: 'https://api.openai.com/v1' },
+  { value: 'anthropic', label: 'Anthropic', model: 'claude-3-5-sonnet-latest', baseUrl: 'https://api.anthropic.com' },
+  { value: 'google', label: 'Google Gemini', model: 'gemini-1.5-pro', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+  { value: 'moonshot', label: 'Moonshot', model: 'moonshot-v1-128k', baseUrl: 'https://api.moonshot.cn/v1' },
+  { value: 'qwen', label: '通义千问', model: 'qwen-max', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { value: 'zhipu', label: '智谱 GLM', model: 'glm-4-plus', baseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { value: 'custom', label: '自定义', model: 'deepseek-v4-pro', baseUrl: '' },
+];
+
+const defaultLlmConfig: ApiLlmConfig = {
+  provider: 'deepseek',
+  model: 'deepseek-v4-pro',
+  baseUrl: 'https://api.deepseek.com',
+  apiKey: '',
+  temperature: 0.7,
+  enabled: true,
+};
+
+const defaultLlmTokenUsage: ApiLlmTokenUsagePayload = {
+  summary: {
+    totalCalls: 0,
+    successCalls: 0,
+    failedCalls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    unknownTokenRecords: 0,
+  },
+  items: [],
+};
+
+function AdminLlmConfigPanel() {
+  const [config, setConfig] = useState<ApiLlmConfig>(defaultLlmConfig);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'saving' | 'saved' | 'error'>('loading');
+  const [tokenUsage, setTokenUsage] = useState<ApiLlmTokenUsagePayload>(defaultLlmTokenUsage);
+  const [tokenUsageStatus, setTokenUsageStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [connectionTestStatus, setConnectionTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
+  const [connectionTestResult, setConnectionTestResult] = useState<ApiLlmConnectionTestResult | null>(null);
+  const activeProvider = llmProviderOptions.find((provider) => provider.value === config.provider) ?? llmProviderOptions[0];
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatus('loading');
+    setTokenUsageStatus('loading');
+
+    Promise.allSettled([fetchAdminLlmConfig(), fetchAdminLlmTokenUsage()])
+      .then(([configResult, tokenUsageResult]) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (configResult.status === 'fulfilled') {
+          setConfig({ ...defaultLlmConfig, ...configResult.value });
+          setStatus('ready');
+        } else {
+          setStatus('error');
+        }
+
+        if (tokenUsageResult.status === 'fulfilled') {
+          setTokenUsage({
+            summary: { ...defaultLlmTokenUsage.summary, ...tokenUsageResult.value.summary },
+            items: tokenUsageResult.value.items ?? [],
+          });
+          setTokenUsageStatus('ready');
+        } else {
+          setTokenUsageStatus('error');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStatus('error');
+          setTokenUsageStatus('error');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function refreshTokenUsage() {
+    setTokenUsageStatus('loading');
+    try {
+      const latestTokenUsage = await fetchAdminLlmTokenUsage();
+      setTokenUsage({
+        summary: { ...defaultLlmTokenUsage.summary, ...latestTokenUsage.summary },
+        items: latestTokenUsage.items ?? [],
+      });
+      setTokenUsageStatus('ready');
+    } catch {
+      setTokenUsageStatus('error');
+    }
+  }
+
+  function updateConfig(nextConfig: ApiLlmConfig) {
+    setConfig(nextConfig);
+    setConnectionTestStatus('idle');
+    setConnectionTestResult(null);
+    if (status === 'saved' || status === 'error') {
+      setStatus('ready');
+    }
+  }
+
+  function selectProvider(provider: LlmProvider) {
+    const providerDefaults = llmProviderOptions.find((item) => item.value === provider) ?? llmProviderOptions[0];
+    updateConfig({
+      ...config,
+      provider,
+      model: providerDefaults.model,
+      baseUrl: providerDefaults.baseUrl,
+    });
+  }
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStatus('saving');
+    try {
+      const savedConfig = await saveAdminLlmConfig(config);
+      setConfig({ ...defaultLlmConfig, ...savedConfig });
+      setStatus('saved');
+    } catch {
+      setStatus('error');
+    }
+  }
+
+  async function handleConnectionTest() {
+    setConnectionTestStatus('testing');
+    setConnectionTestResult(null);
+    try {
+      const result = await testAdminLlmConnection();
+      setConnectionTestResult(result);
+      setConnectionTestStatus(result.ok ? 'success' : 'failed');
+    } catch {
+      setConnectionTestStatus('failed');
+      setConnectionTestResult(null);
+    } finally {
+      await refreshTokenUsage();
+    }
+  }
+
+  return (
+    <section className="admin-panel" aria-label="LLM 配置">
+      <PanelHeader title="LLM 配置" />
+      <form className="admin-form llm-config-form" onSubmit={handleSubmit}>
+        <label className="inline-toggle">
+          <input
+            checked={config.enabled}
+            type="checkbox"
+            onChange={(event) => updateConfig({ ...config, enabled: event.target.checked })}
+          />
+          启用 LLM 能力
+        </label>
+
+        <div className="llm-provider-grid" role="group" aria-label="选择 LLM 服务商">
+          {llmProviderOptions.map((provider) => (
+            <button
+              aria-pressed={config.provider === provider.value}
+              key={provider.value}
+              onClick={() => selectProvider(provider.value)}
+              type="button"
+            >
+              <strong>{provider.label}</strong>
+              <small>{provider.model}</small>
+            </button>
+          ))}
+        </div>
+
+        <div className="form-grid two-columns">
+          <label>
+            当前服务商
+            <select value={config.provider} onChange={(event) => selectProvider(event.target.value as LlmProvider)}>
+              {llmProviderOptions.map((provider) => (
+                <option key={provider.value} value={provider.value}>
+                  {provider.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            模型
+            <input
+              value={config.model}
+              onChange={(event) => updateConfig({ ...config, model: event.target.value })}
+              placeholder={activeProvider.model}
+            />
+          </label>
+          <label>
+            Base URL
+            <input
+              value={config.baseUrl}
+              onChange={(event) => updateConfig({ ...config, baseUrl: event.target.value })}
+              placeholder={activeProvider.baseUrl || 'https://example.com/v1'}
+            />
+          </label>
+          <label>
+            API Key
+            <input
+              autoComplete="off"
+              type="password"
+              value={config.apiKey}
+              onChange={(event) => updateConfig({ ...config, apiKey: event.target.value })}
+              placeholder="sk-..."
+            />
+          </label>
+          <label>
+            Temperature
+            <input
+              max={2}
+              min={0}
+              step={0.1}
+              type="number"
+              value={config.temperature}
+              onChange={(event) => updateConfig({ ...config, temperature: Number(event.target.value) })}
+            />
+          </label>
+        </div>
+
+        <div className="llm-config-summary">
+          <div>
+            <span>默认模型</span>
+            <strong>{activeProvider.model}</strong>
+            <small>切换服务商会自动带入推荐模型和 Base URL。</small>
+          </div>
+          <div>
+            <span>当前状态</span>
+            <strong>{config.enabled ? '已启用' : '未启用'}</strong>
+            <small>{status === 'loading' ? '正在读取后台配置' : status === 'saved' ? '配置已保存' : config.baseUrl || '未配置 Base URL'}</small>
+          </div>
+        </div>
+
+        {status === 'error' && <p className="admin-batch-notice">LLM 配置暂时无法连接后台，请确认服务已启动并且登录没有过期。</p>}
+        {status === 'saved' && <p className="admin-batch-notice">LLM 配置已保存。</p>}
+        {connectionTestStatus === 'success' && connectionTestResult && (
+          <p className="admin-batch-notice llm-test-result is-success">
+            LLM 连接正常：{connectionTestResult.provider} / {connectionTestResult.model} 返回 {connectionTestResult.message}
+          </p>
+        )}
+        {connectionTestStatus === 'failed' && (
+          <p className="admin-batch-notice llm-test-result is-failed">
+            LLM 连接测试失败，请确认已保存配置、API Key、Base URL 和模型名称可用。
+          </p>
+        )}
+
+        <div className="form-actions">
+          <button className="primary-action" disabled={status === 'loading' || status === 'saving'} type="submit">
+            {status === 'saving' ? '保存中' : '保存配置'}
+          </button>
+          <button
+            className="secondary-action"
+            disabled={status === 'loading' || status === 'saving' || connectionTestStatus === 'testing'}
+            type="button"
+            onClick={handleConnectionTest}
+          >
+            {connectionTestStatus === 'testing' ? '测试中' : '测试 LLM 连接'}
+          </button>
+          <small className="llm-test-hint">测试会使用后台已保存的配置，并写入一次 Token 消耗记录。</small>
+        </div>
+      </form>
+
+      <section className="llm-token-usage-panel" aria-label="Token 消耗记录">
+        <div className="admin-dashboard-section-header">
+          <div>
+            <span>Token Usage</span>
+            <h3>Token 消耗</h3>
+          </div>
+        </div>
+
+        <div className="llm-token-summary">
+          <div>
+            <span>累计 Token</span>
+            <strong>{formatInteger(tokenUsage.summary.totalTokens)}</strong>
+            <small>仅统计服务商返回 usage 的调用</small>
+          </div>
+          <div>
+            <span>Prompt</span>
+            <strong>{formatInteger(tokenUsage.summary.promptTokens)}</strong>
+            <small>输入 token 累计</small>
+          </div>
+          <div>
+            <span>Completion</span>
+            <strong>{formatInteger(tokenUsage.summary.completionTokens)}</strong>
+            <small>输出 token 累计</small>
+          </div>
+          <div>
+            <span>调用次数</span>
+            <strong>{formatInteger(tokenUsage.summary.totalCalls)}</strong>
+            <small>成功 {formatInteger(tokenUsage.summary.successCalls)} 次，失败 {formatInteger(tokenUsage.summary.failedCalls)} 次</small>
+          </div>
+          <div>
+            <span>未知 Token</span>
+            <strong>{formatInteger(tokenUsage.summary.unknownTokenRecords)}</strong>
+            <small>成功但响应未返回 usage</small>
+          </div>
+        </div>
+
+        {tokenUsageStatus === 'error' && <p className="admin-batch-notice">Token 消耗记录暂时无法读取。</p>}
+
+        <div className="llm-token-usage-list" aria-label="最近 Token 消耗明细">
+          <div className="llm-token-usage-head" role="row">
+            <span>时间</span>
+            <span>功能</span>
+            <span>模型</span>
+            <span>状态</span>
+            <span>Token</span>
+          </div>
+          {tokenUsageStatus === 'loading' ? (
+            <p className="empty-state">正在读取 Token 消耗记录。</p>
+          ) : tokenUsage.items.length > 0 ? (
+            tokenUsage.items.map((item) => (
+              <div className="llm-token-usage-row" key={item.id} role="row">
+                <span data-label="时间">{formatLlmUsageTime(item.createdAt)}</span>
+                <span data-label="功能">{formatLlmUsageFeature(item.feature)}</span>
+                <span data-label="模型">
+                  <strong>{item.model}</strong>
+                  <small>{item.provider}</small>
+                </span>
+                <span data-label="状态">
+                  <span className={`llm-token-status is-${item.status}`}>{item.status === 'success' ? '成功' : '失败'}</span>
+                </span>
+                <span data-label="Token">
+                  <strong>{formatTokenCount(item.totalTokens)}</strong>
+                  <small>
+                    P {formatTokenCount(item.promptTokens)} · C {formatTokenCount(item.completionTokens)}
+                  </small>
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="empty-state">还没有 Token 消耗记录。</p>
+          )}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function formatInteger(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(Number.isFinite(value) ? value : 0);
+}
+
+function formatTokenCount(value: number | null) {
+  return value === null ? '未知' : formatInteger(value);
+}
+
+function formatLlmUsageFeature(value: string) {
+  const labels: Record<string, string> = {
+    article_metadata: '文章元数据',
+    llm_connection_test: '连接测试',
+    starfield_passages: '星图文段',
+    starfield_relationships: '星图关系',
+  };
+  return labels[value] ?? (value || '未知功能');
+}
+
+function formatLlmUsageTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '时间未知';
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
 function AdminAppearancePanel({
   albums,
   colorScheme,
@@ -5113,6 +5782,7 @@ function PanelHeader({ action, title }: { action?: React.ReactNode; title: strin
 function SiteHeader({
   homepage,
   colorScheme,
+  ownerAuthenticated,
   menuOpen,
   onMenuToggle,
   onColorSchemeToggle,
@@ -5120,6 +5790,7 @@ function SiteHeader({
 }: {
   homepage: HomepageCopy;
   colorScheme: ColorScheme;
+  ownerAuthenticated: boolean;
   menuOpen: boolean;
   onMenuToggle: () => void;
   onColorSchemeToggle: () => void;
@@ -5138,6 +5809,7 @@ function SiteHeader({
             {item.label}
           </a>
         ))}
+        {ownerAuthenticated && <a href="/admin">后台</a>}
       </nav>
 
       <div className="header-actions">
@@ -6210,6 +6882,15 @@ function formatCommentTime(value: string) {
   }).format(date);
 }
 
+function decodeHashAnchor(hash: string) {
+  const raw = hash.replace(/^#/, '');
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function calculateReadingMinutes(markdown: string) {
   const chineseCharacters = (markdown.match(/[\u4e00-\u9fa5]/g) ?? []).length;
   const latinWords = markdown.replace(/[\u4e00-\u9fa5]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
@@ -6221,6 +6902,51 @@ function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: strin
   useArticleHead(post ?? null);
   const markdown = post ? getPostMarkdown(post) : '';
   const outlineItems = useMemo(() => getMarkdownOutline(markdown), [markdown]);
+  const passageAnchor = typeof window !== 'undefined' ? decodeHashAnchor(window.location.hash) : '';
+  const [starfieldPassageAnchors, setStarfieldPassageAnchors] = useState<Array<{ anchor: string; text: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!post || !passageAnchor.startsWith('passage-id-')) {
+      setStarfieldPassageAnchors([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+    fetchPublicStarfield()
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setStarfieldPassageAnchors(
+          payload.passages
+            .filter((passage) => passage.article.slug === post.slug)
+            .map((passage) => ({ anchor: passage.anchor, text: passage.text })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStarfieldPassageAnchors([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [passageAnchor, post]);
+
+  useEffect(() => {
+    if (!passageAnchor) {
+      return;
+    }
+    if (passageAnchor.startsWith('passage-id-') && starfieldPassageAnchors.length === 0) {
+      return;
+    }
+    const target = document.getElementById(passageAnchor) ?? document.querySelector('.article-body');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target?.classList.add('is-passage-target');
+    const timeout = window.setTimeout(() => target?.classList.remove('is-passage-target'), 2200);
+    return () => window.clearTimeout(timeout);
+  }, [passageAnchor, starfieldPassageAnchors]);
 
   if (!post) {
     return <NotFoundPage />;
@@ -6270,7 +6996,13 @@ function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: strin
         </nav>
       )}
 
-      <MarkdownBody markdown={markdown} />
+      {passageAnchor && (
+        <p className="passage-anchor-notice">
+          已从星图定位到文段锚点：{passageAnchor}
+        </p>
+      )}
+
+      <MarkdownBody markdown={markdown} passageAnchors={starfieldPassageAnchors} />
 
       <nav className="article-neighbors" aria-label="相邻文章">
         {previousPost ? (

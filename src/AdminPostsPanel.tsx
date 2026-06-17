@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { NoteSection } from './contentStore';
 import type { Post, PostStatus } from './posts';
@@ -17,25 +17,28 @@ const postStatusLabels: Record<PostStatus, string> = {
 };
 
 export function AdminPostsPanel({
+  currentPage,
   noteSections,
   onArchivePosts,
   onDeletePosts,
+  onPageChange,
   onMovePostsToCategory,
   onPublishPosts,
   onSyncPost,
   onUnpublishPosts,
   posts,
 }: {
+  currentPage: number;
   noteSections: NoteSection[];
   onArchivePosts: (slugs: string[]) => Promise<BatchResult>;
   onDeletePosts: (slugs: string[]) => Promise<BatchResult>;
+  onPageChange: (page: number) => void;
   onMovePostsToCategory: (slugs: string[], category: string) => Promise<BatchResult>;
   onPublishPosts: (slugs: string[]) => Promise<BatchResult>;
   onSyncPost: (slug: string) => Promise<BatchResult>;
   onUnpublishPosts: (slugs: string[]) => Promise<BatchResult>;
   posts: Post[];
 }) {
-  const [currentPage, setCurrentPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('全部');
   const [activeStatus, setActiveStatus] = useState<'all' | PostStatus>('all');
@@ -43,6 +46,9 @@ export function AdminPostsPanel({
   const [bulkCategory, setBulkCategory] = useState(noteSections[0]?.category ?? '');
   const [batchNotice, setBatchNotice] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
+  const [returnScrollY, setReturnScrollY] = useState(() => getAdminPostsReturnScrollY());
+  const previousFiltersRef = useRef({ activeCategory, activeStatus, searchQuery });
+  const restoreScrollKeyRef = useRef('');
   const categories = useMemo(() => {
     const sectionCategories = noteSections.map((section) => section.category.trim()).filter(Boolean);
     const extraPostCategories = posts
@@ -89,6 +95,7 @@ export function AdminPostsPanel({
   const visibleSlugs = pagedPosts.map((post) => post.slug);
   const allVisibleSelected = visibleSlugs.length > 0 && visibleSlugs.every((slug) => selectedSlugs.includes(slug));
   const selectedCount = selectedSlugs.length;
+  const requestedScrollY = getAdminPostsScrollFromUrl();
   const statusOptions: Array<['all' | PostStatus, string]> = [
     ['all', '全部状态'],
     ['published', '已发布'],
@@ -97,12 +104,69 @@ export function AdminPostsPanel({
   ];
 
   useEffect(() => {
-    setCurrentPage((page) => Math.min(page, totalPages));
-  }, [totalPages]);
+    if (posts.length > 0 && currentPage > totalPages) {
+      onPageChange(totalPages);
+    }
+  }, [currentPage, onPageChange, posts.length, totalPages]);
 
   useEffect(() => {
-    setCurrentPage(1);
-  }, [activeCategory, activeStatus, searchQuery]);
+    const previousFilters = previousFiltersRef.current;
+    if (
+      previousFilters.activeCategory === activeCategory &&
+      previousFilters.activeStatus === activeStatus &&
+      previousFilters.searchQuery === searchQuery
+    ) {
+      return;
+    }
+
+    previousFiltersRef.current = { activeCategory, activeStatus, searchQuery };
+    onPageChange(1);
+  }, [activeCategory, activeStatus, onPageChange, searchQuery]);
+
+  const postsReturnPath = createAdminPostsReturnPath(safeCurrentPage, returnScrollY);
+
+  useEffect(() => {
+    let frameId = 0;
+
+    function updateReturnScrollY() {
+      frameId = 0;
+      setReturnScrollY(getAdminPostsReturnScrollY());
+    }
+
+    function handleScroll() {
+      if (frameId !== 0) {
+        return;
+      }
+
+      frameId = window.requestAnimationFrame(updateReturnScrollY);
+    }
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (frameId !== 0) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const targetScrollY = requestedScrollY;
+    if (targetScrollY === null || posts.length === 0) {
+      return;
+    }
+
+    const restoreKey = `${safeCurrentPage}:${targetScrollY}`;
+    if (restoreScrollKeyRef.current === restoreKey) {
+      return;
+    }
+
+    restoreScrollKeyRef.current = restoreKey;
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: targetScrollY, behavior: 'auto' });
+      setReturnScrollY(targetScrollY);
+    });
+  }, [posts.length, requestedScrollY, safeCurrentPage]);
 
   useEffect(() => {
     if (!categories.includes(activeCategory)) {
@@ -335,7 +399,7 @@ export function AdminPostsPanel({
                         预览
                       </button>
                     )}
-                    <a className="secondary-action" href={`/admin/posts/${post.slug}/edit`}>
+                    <a className="secondary-action" href={`/admin/posts/${post.slug}/edit?returnTo=${encodeURIComponent(postsReturnPath)}`}>
                       <Pencil size={16} />
                       编辑
                     </a>
@@ -403,7 +467,7 @@ export function AdminPostsPanel({
                 <button
                   className="secondary-action"
                   disabled={safeCurrentPage === 1}
-                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                  onClick={() => onPageChange(Math.max(1, safeCurrentPage - 1))}
                   type="button"
                 >
                   上一页
@@ -414,7 +478,7 @@ export function AdminPostsPanel({
                 <button
                   className="secondary-action"
                   disabled={safeCurrentPage === totalPages}
-                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                  onClick={() => onPageChange(Math.min(totalPages, safeCurrentPage + 1))}
                   type="button"
                 >
                   下一页
@@ -430,6 +494,36 @@ export function AdminPostsPanel({
       </div>
     </section>
   );
+}
+
+function createAdminPostsReturnPath(page: number, scrollY: number) {
+  const params = new URLSearchParams({ panel: 'posts' });
+  if (page > 1) {
+    params.set('page', String(page));
+  }
+  if (scrollY > 0) {
+    params.set('scroll', String(scrollY));
+  }
+
+  return `/admin/posts?${params.toString()}`;
+}
+
+function getAdminPostsReturnScrollY() {
+  return Math.max(0, Math.round(window.scrollY || document.documentElement.scrollTop || 0));
+}
+
+function getAdminPostsScrollFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has('scroll')) {
+    return null;
+  }
+
+  const scroll = Number(params.get('scroll'));
+  if (!Number.isInteger(scroll) || scroll < 0) {
+    return null;
+  }
+
+  return scroll;
 }
 
 function getPostStatus(post: Post): PostStatus {

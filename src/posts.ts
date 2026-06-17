@@ -3,6 +3,7 @@ import importedMarkdownPosts from './importedMarkdownPosts.json';
 export type PostStatus = 'draft' | 'published' | 'archived';
 
 export type Post = {
+  id?: string;
   slug: string;
   title: string;
   excerpt: string;

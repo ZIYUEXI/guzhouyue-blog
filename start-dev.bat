@@ -7,6 +7,9 @@ cd /d "%~dp0"
 set "CONDA_ENV=py313"
 set "BACKEND_URL=http://127.0.0.1:4174"
 set "FRONTEND_URL=http://127.0.0.1:5173"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 
 if /I "%CONDA_DEFAULT_ENV%"=="%CONDA_ENV%" (
   echo Conda env already active: %CONDA_ENV%
@@ -39,16 +42,6 @@ if not exist "node_modules" (
   call npm install
   if errorlevel 1 (
     echo npm install failed.
-    pause
-    exit /b 1
-  )
-)
-
-if exist "server\requirements.txt" (
-  echo Installing Python backend dependencies...
-  call python -m pip install -r server\requirements.txt
-  if errorlevel 1 (
-    echo Python dependency install failed.
     pause
     exit /b 1
   )

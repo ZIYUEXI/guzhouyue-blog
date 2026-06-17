@@ -5,21 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "dev:server": "tsx server/src/server.ts",
-    "seed:server": "tsx server/scripts/seed.ts",
-    "seed:test-articles": "tsx server/scripts/seed-test-articles.ts",
-    "test:server": "tsx server/scripts/smoke-test.ts",
+    "dev:server": "python -m server_py.app",
+    "seed:server": "python -m server_py.seed",
+    "seed:test-articles": "python -m server_py.seed_test_articles",
+    "test:server": "python -m server_py.smoke_test && python -m server_py.compat_test",
     "test:theme": "node scripts/audit-theme-vars.mjs",
     "build": "node scripts/audit-theme-vars.mjs && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^11.2.0",
-    "@fastify/multipart": "^9.3.0",
     "@mdxeditor/editor": "^4.0.0",
-    "better-sqlite3": "^12.10.0",
-    "fastify": "^5.8.5",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.47",
     "lucide-react": "^0.561.0",
@@ -32,12 +27,10 @@
     "remark-math": "^6.0.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "tsx": "^4.22.3",
+    "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^5.9.3",
-    "vite": "^7.2.7"
+    "vite": "^8.0.16"
   }
 }

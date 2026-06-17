@@ -22,6 +22,7 @@ import {
   codeBlockPlugin,
   codeMirrorPlugin,
   headingsPlugin,
+  imagePlugin,
   linkDialogPlugin,
   linkPlugin,
   listsPlugin,
@@ -29,6 +30,7 @@ import {
   quotePlugin,
   realmPlugin,
   tablePlugin,
+  thematicBreakPlugin,
   toolbarPlugin,
   type LexicalVisitor,
   type MdastImportVisitor,
@@ -271,11 +273,16 @@ export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkd
     const plugins = useMemo(
       () => [
         headingsPlugin(),
+        imagePlugin({
+          disableImageResize: true,
+          disableImageSettingsButton: true,
+        }),
         listsPlugin(),
         quotePlugin(),
         linkPlugin(),
         linkDialogPlugin(),
         tablePlugin(),
+        thematicBreakPlugin(),
         mathPlugin(),
         codeBlockPlugin({ defaultCodeBlockLanguage: 'ts' }),
         codeMirrorPlugin({

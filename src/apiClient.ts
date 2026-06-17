@@ -37,6 +37,93 @@ export type ApiGalleryImagesPayload = {
   total?: number;
 };
 
+export type ApiStarfieldVersion = {
+  id: string;
+  name: string;
+  status: 'draft' | 'published' | 'archived';
+  isActive: boolean;
+  sourceArticleIds: string[];
+  generationModel: string;
+  generationPromptVersion: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string | null;
+  passageCount?: number | null;
+  acceptedPassageCount?: number | null;
+  relationshipCount?: number | null;
+  acceptedRelationshipCount?: number | null;
+};
+
+export type ApiStarfieldPassage = {
+  id: string;
+  versionId: string;
+  articleId: string;
+  article: {
+    id: string;
+    slug: string;
+    title: string;
+    category: string;
+  };
+  title: string;
+  text: string;
+  excerpt: string;
+  anchor: string;
+  keywords: string[];
+  status: 'suggested' | 'accepted' | 'hidden';
+  sortOrder: number;
+  reviewNote: string;
+  embeddingRef: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string | null;
+  starSize?: number;
+  starColorKey?: string;
+};
+
+export type ApiStarfieldRelationship = {
+  id: string;
+  versionId: string;
+  sourcePassageId: string;
+  targetPassageId: string;
+  relationshipType: 'same_topic' | 'prerequisite' | 'further_reading' | 'problem_solution' | 'comparison';
+  relationshipLabel: string;
+  rationale: string;
+  strength: number;
+  status: 'suggested' | 'accepted' | 'hidden';
+  isCrossArticle: boolean;
+  reviewNote: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string | null;
+};
+
+export type ApiStarfieldPayload = {
+  version?: {
+    id: string;
+    name: string;
+    publishedAt?: string | null;
+  } | null;
+  passages?: unknown[];
+  relationships?: unknown[];
+};
+
+export type ApiAdminStarfieldVersionPayload = {
+  version: ApiStarfieldVersion;
+  passages: ApiStarfieldPassage[];
+  relationships: ApiStarfieldRelationship[];
+  jobs: Array<{
+    id: string;
+    versionId: string;
+    phase: 'passages' | 'relationships';
+    status: 'pending' | 'running' | 'succeeded' | 'failed';
+    selectedArticleIds: string[];
+    errorMessage: string;
+    createdAt: string;
+    updatedAt: string;
+    completedAt?: string | null;
+  }>;
+};
+
 export type ApiComment = {
   id: string;
   author: string;
@@ -77,6 +164,61 @@ export type ApiAdminOps = {
     userAgent?: string;
     createdAt?: string;
   }>;
+  llmTokenUsage?: ApiLlmTokenUsageSummary;
+};
+
+export type LlmProvider = 'deepseek' | 'openai' | 'anthropic' | 'google' | 'moonshot' | 'qwen' | 'zhipu' | 'custom';
+
+export type ApiLlmConfig = {
+  provider: LlmProvider;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  temperature: number;
+  enabled: boolean;
+  updatedAt?: string;
+};
+
+export type ApiLlmTokenUsageSummary = {
+  totalCalls: number;
+  successCalls: number;
+  failedCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  unknownTokenRecords: number;
+};
+
+export type ApiLlmTokenUsageItem = {
+  id: string;
+  feature: string;
+  provider: string;
+  model: string;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  status: 'success' | 'failed';
+  errorMessage: string;
+  createdAt: string;
+};
+
+export type ApiLlmTokenUsagePayload = {
+  summary: ApiLlmTokenUsageSummary;
+  items: ApiLlmTokenUsageItem[];
+};
+
+export type ApiLlmConnectionTestResult = {
+  ok: boolean;
+  message: string;
+  provider: string;
+  model: string;
+};
+
+export type ApiArticleMetadataSuggestion = {
+  title: string;
+  excerpt: string;
+  seoTitle: string;
+  seoDescription: string;
 };
 
 export type ApiAdminCommandOptionValue = string | boolean | string[];
@@ -211,6 +353,15 @@ export async function fetchPublicArticles() {
 export async function fetchPublicGallery() {
   const payload = await requestJson<unknown[] | { items?: unknown[] }>('/api/gallery');
   return Array.isArray(payload) ? payload : payload.items ?? [];
+}
+
+export async function fetchPublicStarfield() {
+  const payload = await requestJson<ApiStarfieldPayload>('/api/starfield');
+  return {
+    version: payload.version ?? null,
+    passages: (payload.passages ?? []).map(normalizeStarfieldPassage).filter((passage): passage is ApiStarfieldPassage => passage !== null),
+    relationships: (payload.relationships ?? []).map(normalizeStarfieldRelationship).filter((relationship): relationship is ApiStarfieldRelationship => relationship !== null),
+  };
 }
 
 export async function fetchPublicGalleryAlbumImages(albumIdOrSlug: string, options: { page?: number; pageSize?: number } = {}) {
@@ -427,6 +578,95 @@ export async function fetchAdminOps() {
   return requestJson<ApiAdminOps>('/api/admin/ops');
 }
 
+export async function fetchAdminLlmConfig() {
+  return requestJson<ApiLlmConfig>('/api/admin/llm-config');
+}
+
+export async function fetchAdminLlmTokenUsage() {
+  return requestJson<ApiLlmTokenUsagePayload>('/api/admin/llm-token-usage');
+}
+
+export async function saveAdminLlmConfig(config: ApiLlmConfig) {
+  return requestJson<ApiLlmConfig>('/api/admin/llm-config', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function testAdminLlmConnection() {
+  return requestJson<ApiLlmConnectionTestResult>('/api/admin/llm-config/test', {
+    method: 'POST',
+  });
+}
+
+export async function generateAdminArticleMetadata(payload: {
+  title: string;
+  excerpt: string;
+  category: string;
+  tags: string[];
+  bodyMarkdown: string;
+}) {
+  return requestJson<ApiArticleMetadataSuggestion>('/api/admin/ai-agent/article-metadata', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchAdminStarfieldVersions() {
+  const payload = await requestJson<{ items?: unknown[] }>('/api/admin/starfield/versions');
+  return (payload.items ?? []).map(normalizeStarfieldVersion).filter((version): version is ApiStarfieldVersion => version !== null);
+}
+
+export async function createAdminStarfieldVersion(name: string) {
+  return requestJson<ApiAdminStarfieldVersionPayload>('/api/admin/starfield/versions', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function fetchAdminStarfieldVersion(id: string) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(id)}`);
+}
+
+export async function generateAdminStarfieldPassages(versionId: string, articleIds: string[]) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-passages`, {
+    method: 'POST',
+    body: JSON.stringify({ articleIds }),
+  });
+}
+
+export async function generateAdminStarfieldRelationships(versionId: string) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-relationships`, {
+    method: 'POST',
+  });
+}
+
+export async function updateAdminStarfieldPassage(id: string, payload: Partial<ApiStarfieldPassage>) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/passages/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateAdminStarfieldRelationship(id: string, payload: Partial<ApiStarfieldRelationship>) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/relationships/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function publishAdminStarfieldVersion(id: string) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(id)}/publish`, {
+    method: 'POST',
+  });
+}
+
+export async function archiveAdminStarfieldVersion(id: string) {
+  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(id)}/archive`, {
+    method: 'POST',
+  });
+}
+
 export async function fetchAdminCommandGuide() {
   return requestJson<ApiAdminCommandGuide>('/api/admin/commands');
 }
@@ -483,6 +723,7 @@ export function normalizeApiPost(value: unknown): Post | null {
   }
 
   return {
+    id: asText(value.id),
     slug: asText(value.slug) || slugify(title || 'untitled'),
     title: title || '未命名文章',
     excerpt: asText(value.excerpt),
@@ -693,6 +934,100 @@ function normalizeAdminComment(value: unknown): ApiAdminComment | null {
   };
 }
 
+function normalizeStarfieldVersion(value: unknown): ApiStarfieldVersion | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    name: asText(value.name) || '星空版本',
+    status: value.status === 'published' || value.status === 'archived' ? value.status : 'draft',
+    isActive: asBoolean(value.isActive, false),
+    sourceArticleIds: Array.isArray(value.sourceArticleIds) ? value.sourceArticleIds.map(asText).filter(Boolean) : [],
+    generationModel: asText(value.generationModel),
+    generationPromptVersion: asText(value.generationPromptVersion),
+    createdAt: asText(value.createdAt),
+    updatedAt: asText(value.updatedAt),
+    publishedAt: asText(value.publishedAt) || null,
+    passageCount: typeof value.passageCount === 'number' ? value.passageCount : null,
+    acceptedPassageCount: typeof value.acceptedPassageCount === 'number' ? value.acceptedPassageCount : null,
+    relationshipCount: typeof value.relationshipCount === 'number' ? value.relationshipCount : null,
+    acceptedRelationshipCount: typeof value.acceptedRelationshipCount === 'number' ? value.acceptedRelationshipCount : null,
+  };
+}
+
+function normalizeStarfieldPassage(value: unknown): ApiStarfieldPassage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  const article = isRecord(value.article) ? value.article : {};
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    versionId: asText(value.versionId),
+    articleId: asText(value.articleId) || asText(article.id),
+    article: {
+      id: asText(article.id) || asText(value.articleId),
+      slug: asText(article.slug),
+      title: asText(article.title) || '未知文章',
+      category: asText(article.category) || '未分类',
+    },
+    title: asText(value.title) || '未命名星点',
+    text: asText(value.text),
+    excerpt: asText(value.excerpt),
+    anchor: asText(value.anchor),
+    keywords: Array.isArray(value.keywords) ? value.keywords.map(asText).filter(Boolean) : [],
+    status: value.status === 'accepted' || value.status === 'hidden' ? value.status : 'suggested',
+    sortOrder: asNumber(value.sortOrder, 0),
+    reviewNote: asText(value.reviewNote),
+    embeddingRef: asText(value.embeddingRef),
+    createdAt: asText(value.createdAt),
+    updatedAt: asText(value.updatedAt),
+    reviewedAt: asText(value.reviewedAt) || null,
+    starSize: asNumber(value.starSize, 1),
+    starColorKey: asText(value.starColorKey),
+  };
+}
+
+function normalizeStarfieldRelationship(value: unknown): ApiStarfieldRelationship | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    versionId: asText(value.versionId),
+    sourcePassageId: asText(value.sourcePassageId),
+    targetPassageId: asText(value.targetPassageId),
+    relationshipType: normalizeRelationshipType(asText(value.relationshipType)),
+    relationshipLabel: asText(value.relationshipLabel),
+    rationale: asText(value.rationale),
+    strength: asNumber(value.strength, 1),
+    status: value.status === 'accepted' || value.status === 'hidden' ? value.status : 'suggested',
+    isCrossArticle: asBoolean(value.isCrossArticle, true),
+    reviewNote: asText(value.reviewNote),
+    createdAt: asText(value.createdAt),
+    updatedAt: asText(value.updatedAt),
+    reviewedAt: asText(value.reviewedAt) || null,
+  };
+}
+
 function normalizeComposerDraftResponse(value: unknown): ApiComposerDraft {
   const record = isRecord(value) ? value : {};
   const draft = isRecord(record.draft) ? record.draft : record;
@@ -726,6 +1061,16 @@ function normalizePostStatus(value: string): PostStatus {
 
 function normalizeCommentStatus(value: string): AdminCommentStatus {
   return value === 'approved' || value === 'rejected' || value === 'pending' ? value : 'pending';
+}
+
+function normalizeRelationshipType(value: string): ApiStarfieldRelationship['relationshipType'] {
+  return value === 'prerequisite' ||
+    value === 'further_reading' ||
+    value === 'problem_solution' ||
+    value === 'comparison' ||
+    value === 'same_topic'
+    ? value
+    : 'same_topic';
 }
 
 function formatApiDate(value: string) {

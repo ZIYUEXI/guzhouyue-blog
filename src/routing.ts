@@ -4,6 +4,7 @@ export type Route =
   | { name: 'notes'; page: number }
   | { name: 'archive'; page: number }
   | { name: 'gallery' }
+  | { name: 'starfield' }
   | { name: 'post'; slug: string }
   | { name: 'not-found' };
 
@@ -50,6 +51,10 @@ export function getRoute(pathname: string): Route {
 
   if (pathname === '/gallery') {
     return { name: 'gallery' };
+  }
+
+  if (pathname === '/starfield') {
+    return { name: 'starfield' };
   }
 
   const postMatch = pathname.match(/^\/posts\/([^/]+)$/);

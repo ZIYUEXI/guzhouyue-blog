@@ -19,8 +19,7 @@ export function PublicGalleryPage({ albums }: { albums: GalleryAlbum[] }) {
     () => sortGalleryAlbums(albums).filter((album) => album.isPublic && !isSystemGalleryAlbum(album)),
     [albums],
   );
-  const [expandedAlbumSlug, setExpandedAlbumSlug] = useState(publicAlbums[0]?.slug ?? '');
-  const [hasSelectedInitialAlbum, setHasSelectedInitialAlbum] = useState(false);
+  const [expandedAlbumSlug, setExpandedAlbumSlug] = useState('');
   const [pageByAlbumSlug, setPageByAlbumSlug] = useState<Record<string, number>>({});
   const [remoteImagesByAlbumSlug, setRemoteImagesByAlbumSlug] = useState<Record<string, GalleryPageState>>({});
   const activeAlbum = publicAlbums.find((album) => album.slug === expandedAlbumSlug) ?? null;
@@ -43,16 +42,10 @@ export function PublicGalleryPage({ albums }: { albums: GalleryAlbum[] }) {
   const activeImage = activeImageIndex === null ? null : images[activeImageIndex] ?? null;
 
   useEffect(() => {
-    if (!hasSelectedInitialAlbum && publicAlbums[0]) {
-      setExpandedAlbumSlug(publicAlbums[0].slug);
-      setHasSelectedInitialAlbum(true);
-      return;
-    }
-
     if (expandedAlbumSlug && !publicAlbums.some((album) => album.slug === expandedAlbumSlug)) {
-      setExpandedAlbumSlug(publicAlbums[0]?.slug ?? '');
+      setExpandedAlbumSlug('');
     }
-  }, [expandedAlbumSlug, hasSelectedInitialAlbum, publicAlbums]);
+  }, [expandedAlbumSlug, publicAlbums]);
 
   useEffect(() => {
     if (!activeAlbum || hasLocalImages) {

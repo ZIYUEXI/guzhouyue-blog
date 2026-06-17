@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ChevronRight, FileText, Image as ImageIcon, Plus, Settings, SquareTerminal, Sun } from 'lucide-react';
+import { Bot, ChevronRight, FileText, Image as ImageIcon, Orbit, Plus, Settings, SquareTerminal, Sun } from 'lucide-react';
 import { fetchAdminOps, type ApiAdminOps } from './apiClient';
 import type { SiteContent } from './contentStore';
 import type { Post } from './posts';
@@ -14,8 +14,10 @@ type AdminPanelId =
   | 'notes'
   | 'series'
   | 'gallery'
+  | 'starfield'
   | 'archive'
   | 'commands'
+  | 'llm'
   | 'homepage'
   | 'appearance';
 
@@ -47,7 +49,9 @@ export function AdminDashboardPanel({
   const quickActions: Array<{ label: string; detail: string; panel: AdminPanelId; icon: ReactNode }> = [
     { label: '整理文章', detail: '搜索、预览、编辑和删除', panel: 'posts', icon: <FileText size={18} /> },
     { label: '维护图库', detail: `${content.galleryAlbums.length} 个相册，${galleryImageCount} 张图片`, panel: 'gallery', icon: <ImageIcon size={18} /> },
+    { label: '星图管理', detail: '生成、审核和发布文段星图', panel: 'starfield', icon: <Orbit size={18} /> },
     { label: '快速指令', detail: '管理员指令通道框架', panel: 'commands', icon: <SquareTerminal size={18} /> },
+    { label: 'LLM 配置', detail: '服务商、模型和调用参数', panel: 'llm', icon: <Bot size={18} /> },
     { label: '更新首页', detail: '标题、按钮、关于和今日小记', panel: 'homepage', icon: <Settings size={18} /> },
     { label: '调整外观', detail: colorScheme === 'light' ? '当前亮色模式' : '当前暗色模式', panel: 'appearance', icon: <Sun size={18} /> },
   ];
@@ -153,6 +157,10 @@ export function AdminDashboardPanel({
               <strong>数据文件</strong>
               <small>{formatBytes(ops?.database?.sizeBytes ?? 0)}</small>
             </div>
+            <div>
+              <strong>Token</strong>
+              <small>{formatCount(ops?.llmTokenUsage?.totalTokens ?? 0)} token · {formatCount(ops?.llmTokenUsage?.totalCalls ?? 0)} 次调用</small>
+            </div>
           </div>
         </section>
 
@@ -238,4 +246,8 @@ function formatBytes(value: number) {
   const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   const size = value / 1024 ** exponent;
   return `${size.toFixed(size >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(Number.isFinite(value) ? value : 0);
 }

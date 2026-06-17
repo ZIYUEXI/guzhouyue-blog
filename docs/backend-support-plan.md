@@ -34,16 +34,18 @@
 
 ### 3.1 服务端
 
-推荐新增一个轻量 Node 后端：
+当前后端已切换为轻量 Python 后端：
 
-- Runtime：Node.js。
-- Web 框架：Fastify 或 Express，建议 Fastify，类型约束和插件生态更清晰。
+- Runtime：Python。
+- Web 框架：FastAPI。
 - 数据库：SQLite 起步，后续可迁移 PostgreSQL。
-- ORM：Prisma 或 Drizzle，建议 Prisma，迁移和关系模型更直接。
+- 数据访问：当前使用标准库 `sqlite3` 和幂等 schema 初始化；后续模型复杂后可引入 SQLAlchemy/Alembic。
 - 鉴权：管理员账号 + session cookie，第一版不需要开放注册。
 - 部署：前端静态资源由 Vite 构建，后端同时提供 `/api/*` 和静态文件托管，或前后端分开部署。
 
 选择 SQLite 的原因：这是个人博客，读多写少，部署和备份成本低。只要模型设计不绑定 SQLite 特性，后续迁移 PostgreSQL 不难。
+
+选择 Python 的原因：后续知识图谱、实体抽取、Embedding、检索、文本分块和 Agent 工作流会更多依赖 Python 生态，避免继续通过 Node 子进程拼接智能能力。
 
 ### 3.2 前端改造方式
 
@@ -440,9 +442,9 @@ Content-Type: application/json; charset=utf-8
 
 建议新增脚本：
 
-- `server/scripts/seed.ts`
-- `server/scripts/export-content.ts`
-- `server/scripts/backup-db.ts`
+- `server_py/seed.py`
+- `server_py/seed_test_articles.py`
+- `server_py/backup_db.py`
 
 备份策略：
 
@@ -457,8 +459,8 @@ Content-Type: application/json; charset=utf-8
 
 任务：
 
-1. 新增 `server/`。
-2. 配置 Fastify、Prisma、SQLite。
+1. 新增 `server_py/`。
+2. 配置 FastAPI、SQLite。
 3. 建立 Article、Note Section、Featured Series、Site Settings、Homepage Copy 模型。
 4. 编写 seed，把当前默认内容写入数据库。
 5. 实现 `GET /api/site`、`GET /api/articles`、`GET /api/articles/:slug`、`GET /api/archive`。
@@ -556,37 +558,17 @@ ADR 已明确不启用 raw HTML。后端也应把 `bodyMarkdown` 当作 Markdown
 ## 10. 建议的目录结构
 
 ```text
-server/
-  prisma/
-    schema.prisma
-    migrations/
-  scripts/
-    seed.ts
-    backup-db.ts
-    export-content.ts
-  src/
-    app.ts
-    server.ts
-    config.ts
-    db.ts
-    auth/
-      auth.routes.ts
-      session.ts
-    articles/
-      article.model.ts
-      article.routes.ts
-      article.service.ts
-    comments/
-      comment.routes.ts
-      comment.service.ts
-    site/
-      site.routes.ts
-      site.service.ts
-    admin/
-      admin.routes.ts
-    seo/
-      rss.ts
-      sitemap.ts
+server_py/
+  app.py
+  config.py
+  db.py
+  content.py
+  ai_agent.py
+  almanac.py
+  admin_commands.py
+  seed.py
+  seed_test_articles.py
+  smoke_test.py
 ```
 
 前端建议新增：

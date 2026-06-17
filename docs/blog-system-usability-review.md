@@ -4,7 +4,7 @@
 
 ## 总体结论
 
-项目已经具备现代博客系统雏形：React/Vite 前端、Fastify + SQLite 后端、管理台、文章编辑器、草稿、发布/下架、回收站、评论审核、图库、动态 RSS/sitemap、SEO 字段和 smoke test 均已存在。
+项目已经具备现代博客系统雏形：React/Vite 前端、FastAPI + SQLite 后端、管理台、文章编辑器、草稿、发布/下架、回收站、评论审核、图库、动态 RSS/sitemap、SEO 字段和 smoke test 均已存在。
 
 但系统还未达到成熟生产级现代博客标准。主要短板集中在 SEO 路由一致性、SPA 收录能力、公共导航、后台发布状态反馈、安全加固、测试覆盖和前端可维护性。
 
@@ -25,7 +25,7 @@
 相关位置：
 
 - `src/App.tsx`：公开文章路由 `/posts/:slug`
-- `server/src/app.ts`：`/rss.xml`、`/sitemap.xml` 输出 `/posts/:slug`
+- `server_py/app.py`：`/rss.xml`、`/sitemap.xml` 输出 `/posts/:slug`
 
 建议：
 

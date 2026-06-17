@@ -1,1 +1,6 @@
 cnlunar==0.2.4
+fastapi==0.124.0
+starlette==0.50.0
+uvicorn[standard]==0.38.0
+httpx==0.28.1
+python-multipart==0.0.20
