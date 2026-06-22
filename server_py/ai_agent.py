@@ -56,10 +56,19 @@ async def generate_starfield_passages(input_data: dict[str, Any]) -> dict[str, A
     return _normalize_starfield_passage_response(payload)
 
 
+async def generate_starfield_canonical_keywords(input_data: dict[str, Any]) -> dict[str, Any]:
+    payload = await _chat_json_completion(
+        "starfield_canonical_keywords",
+        "你是中文博客的标签归并助手。只返回严格 JSON，不要 Markdown，不要解释。JSON 顶层字段必须是 canonicalKeywords。标签不是节点，只是生成 Passage Relationship 的证据。",
+        _normalize_starfield_canonical_keyword_request(input_data),
+    )
+    return _normalize_starfield_canonical_keyword_response(payload)
+
+
 async def generate_starfield_relationships(input_data: dict[str, Any]) -> dict[str, Any]:
     payload = await _chat_json_completion(
         "starfield_relationships",
-        "你是中文博客的知识关系助手。只返回严格 JSON，不要 Markdown，不要解释。JSON 顶层字段必须是 relationships。",
+        "你是中文博客的知识关系助手。只返回严格 JSON，不要 Markdown，不要解释。JSON 顶层字段必须是 relationships。只能在给定候选边中升级关系类型，不能创造新的 Passage pair。",
         _normalize_starfield_relationship_request(input_data),
     )
     return _normalize_starfield_relationship_response(payload)
@@ -249,9 +258,13 @@ def _normalize_starfield_passage_request(input_data: dict[str, Any]) -> dict[str
 
 def _normalize_starfield_relationship_request(input_data: dict[str, Any]) -> dict[str, Any]:
     passages = input_data.get("passages") if isinstance(input_data, dict) else None
+    candidates = input_data.get("candidates") if isinstance(input_data, dict) else None
     if not isinstance(passages, list) or not passages:
         raise AiAgentError(400, "Starfield relationship generation requires passages payload")
+    if not isinstance(candidates, list) or not candidates:
+        raise AiAgentError(400, "Starfield relationship generation requires keyword-derived candidates")
     normalized_passages = []
+    valid_passage_ids: set[str] = set()
     for passage in passages[:180]:
         if not isinstance(passage, dict):
             continue
@@ -259,6 +272,7 @@ def _normalize_starfield_relationship_request(input_data: dict[str, Any]) -> dic
         article_id = _normalize_text(passage.get("articleId"), 80)
         if not passage_id or not article_id:
             continue
+        valid_passage_ids.add(passage_id)
         normalized_passages.append(
             {
                 "id": passage_id,
@@ -272,19 +286,47 @@ def _normalize_starfield_relationship_request(input_data: dict[str, Any]) -> dic
         )
     if not normalized_passages:
         raise AiAgentError(400, "Starfield relationship generation requires valid passage payload")
+    normalized_candidates = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for candidate in candidates[:500]:
+        if not isinstance(candidate, dict):
+            continue
+        source_id = _normalize_text(candidate.get("sourcePassageId") or candidate.get("sourceId"), 80)
+        target_id = _normalize_text(candidate.get("targetPassageId") or candidate.get("targetId"), 80)
+        if not source_id or not target_id or source_id == target_id or source_id not in valid_passage_ids or target_id not in valid_passage_ids:
+            continue
+        pair = (min(source_id, target_id), max(source_id, target_id))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        normalized_candidates.append(
+            {
+                "sourcePassageId": source_id,
+                "targetPassageId": target_id,
+                "evidenceKeywords": _clean_starfield_keywords(candidate.get("evidenceKeywords")),
+                "defaultRelationshipType": "same_topic",
+                "defaultRationale": _normalize_text(candidate.get("rationale"), 300),
+                "defaultStrength": _safe_strength(candidate.get("strength")),
+            }
+        )
+    if not normalized_candidates:
+        raise AiAgentError(400, "Starfield relationship generation requires valid keyword-derived candidates")
     return {
-        "task": "为 Passage 之间挑选最重要的知识关系，优先跨文章关系。",
+        "task": "只评估给定的 Keyword-Derived Relationship 候选边。共享标签只能证明 same_topic；如果 Passage Text 支持更具体的语义关系，可以升级 relationshipType。",
         "constraints": {
             "relationshipTypes": ["same_topic", "prerequisite", "further_reading", "problem_solution", "comparison"],
             "maxCrossArticlePerPassage": 9,
             "rules": [
-                "优先选择不同文章之间的关系。",
-                "同一对 Passage 只输出一次，不要重复。",
-                "rationale 必须说明为什么这两个 Passage 相关。",
+                "只能输出 candidates 中已有的 sourcePassageId 和 targetPassageId 组合。",
+                "如果只是共享标签或主题相似，relationshipType 必须保持 same_topic。",
+                "只有 Passage Text 清楚支持时，才升级为 prerequisite、further_reading、problem_solution 或 comparison。",
+                "rationale 必须说明关系，并尽量引用 evidenceKeywords。",
                 "strength 取 0 到 1 之间的小数。",
+                "evidenceKeywords 必须来自候选边给出的 evidenceKeywords。",
             ],
         },
         "passages": normalized_passages,
+        "candidates": normalized_candidates,
     }
 
 
@@ -345,6 +387,7 @@ def _normalize_starfield_relationship_response(value: dict[str, Any]) -> dict[st
         target_id = _normalize_text(relationship.get("targetPassageId") or relationship.get("targetId"), 80)
         relationship_type = _normalize_text(relationship.get("relationshipType"), 40)
         rationale = _normalize_text(relationship.get("rationale"), 500)
+        evidence_keywords = _clean_starfield_keywords(relationship.get("evidenceKeywords"))
         strength = _safe_strength(relationship.get("strength"))
         if not source_id or not target_id or source_id == target_id or relationship_type not in {"same_topic", "prerequisite", "further_reading", "problem_solution", "comparison"}:
             continue
@@ -358,12 +401,75 @@ def _normalize_starfield_relationship_response(value: dict[str, Any]) -> dict[st
                 "targetPassageId": target_id,
                 "relationshipType": relationship_type,
                 "rationale": rationale[:500],
+                "evidenceKeywords": evidence_keywords,
                 "strength": strength,
             }
         )
     if not normalized:
         raise AiAgentError(502, "LLM response missed valid relationships")
     return {"relationships": normalized}
+
+
+def _normalize_starfield_canonical_keyword_request(input_data: dict[str, Any]) -> dict[str, Any]:
+    passages = input_data.get("passages") if isinstance(input_data, dict) else None
+    if not isinstance(passages, list) or not passages:
+        raise AiAgentError(400, "Canonical keyword generation requires passages payload")
+    normalized_passages = []
+    for passage in passages[:240]:
+        if not isinstance(passage, dict):
+            continue
+        passage_id = _normalize_text(passage.get("id"), 80)
+        if not passage_id:
+            continue
+        keywords = _clean_starfield_keywords(passage.get("keywords"))
+        if not keywords:
+            continue
+        normalized_passages.append(
+            {
+                "id": passage_id,
+                "title": _normalize_text(passage.get("title"), 120),
+                "keywords": keywords,
+                "articleTitle": _normalize_text(passage.get("articleTitle"), 120),
+                "articleCategory": _normalize_text(passage.get("articleCategory"), 80),
+            }
+        )
+    if not normalized_passages:
+        raise AiAgentError(400, "Canonical keyword generation requires valid passage keywords")
+    return {
+        "task": "把高度相似的 Passage Keywords 合并为 Canonical Passage Keywords。Canonical Passage Keyword 只作为关系生成证据，不是星图节点。",
+        "constraints": {
+            "rules": [
+                "只合并语义高度相似或同义的标签，不要把宽泛分类合并成大标签。",
+                "每个 canonical keyword 至少关联 2 个 Passage。",
+                "label 使用简洁、稳定、可读的中文或技术术语。",
+                "aliases 保留被合并的原始标签。",
+                "passageIds 是拥有这些标签的 Passage id。",
+            ],
+        },
+        "passages": normalized_passages,
+    }
+
+
+def _normalize_starfield_canonical_keyword_response(value: dict[str, Any]) -> dict[str, Any]:
+    groups = value.get("canonicalKeywords") if isinstance(value, dict) else None
+    if not isinstance(groups, list):
+        raise AiAgentError(502, "LLM response missed canonicalKeywords array")
+    normalized = []
+    seen_labels: set[str] = set()
+    for group in groups[:300]:
+        if not isinstance(group, dict):
+            continue
+        label = _normalize_text(group.get("label"), 40)
+        aliases = _clean_starfield_keywords(group.get("aliases"))
+        passage_ids = [_normalize_text(item, 80) for item in (group.get("passageIds") if isinstance(group.get("passageIds"), list) else [])]
+        passage_ids = list(dict.fromkeys([item for item in passage_ids if item]))
+        if not label or label in seen_labels or len(passage_ids) < 2:
+            continue
+        seen_labels.add(label)
+        normalized.append({"label": label, "aliases": aliases, "passageIds": passage_ids})
+    if not normalized:
+        raise AiAgentError(502, "LLM response missed valid canonical keywords")
+    return {"canonicalKeywords": normalized}
 
 
 def _clean_starfield_keywords(values: Any) -> list[str]:

@@ -76,6 +76,14 @@ _Avoid_: Full article copy, raw markdown dump, rewritten passage
 A concept, topic, tool, or named idea associated with a Passage. Passage Keywords help describe and retrieve stars without becoming stars themselves in the first version.
 _Avoid_: Concept node, tag-only navigation
 
+**Canonical Passage Keyword**:
+A normalized Passage Keyword produced by merging highly similar Passage Keywords across Passages. It gives relationship generation a shared vocabulary while remaining evidence for Passage Relationships rather than a visible node.
+_Avoid_: Keyword node, concept node, reader-facing tag
+
+**Keyword-Derived Relationship**:
+A Passage Relationship proposed because multiple Passages share the same normalized Passage Keyword or highly similar Passage Keywords. The normalized keyword is evidence for the edge, not a graph node.
+_Avoid_: Keyword node, tag node, concept star
+
 **Passage Relationship**:
 A reader-facing connection between two Passages, including connections across different Articles.
 _Avoid_: Article relationship, backlink

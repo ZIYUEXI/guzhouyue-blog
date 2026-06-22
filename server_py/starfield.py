@@ -5,9 +5,11 @@ import math
 import re
 import secrets
 import time
+from datetime import datetime, timezone
 from typing import Any
 
-from .ai_agent import AiAgentError, generate_starfield_passages as generate_ai_starfield_passages
+from .ai_agent import AiAgentError, generate_starfield_canonical_keywords as generate_ai_starfield_canonical_keywords
+from .ai_agent import generate_starfield_passages as generate_ai_starfield_passages
 from .ai_agent import generate_starfield_relationships as generate_ai_starfield_relationships
 from .content import base36, slugify
 from .db import get_db, json_parse, now_iso
@@ -23,6 +25,7 @@ RELATIONSHIP_LABELS = {
 }
 PASSAGE_STATUS = {"suggested", "accepted", "hidden"}
 RELATIONSHIP_STATUS = {"suggested", "accepted", "hidden"}
+STALE_JOB_SECONDS = 30 * 60
 
 
 def make_id(prefix: str) -> str:
@@ -71,6 +74,7 @@ def get_admin_version(version_id: str) -> dict[str, Any]:
         version = conn.execute("SELECT * FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
         if not version:
             raise ValueError("Starfield version not found")
+        _expire_stale_jobs(conn, version_id)
         passages = conn.execute(
             """
             SELECT p.*, a.slug AS article_slug, a.title AS article_title, ns.name AS article_category
@@ -91,6 +95,15 @@ def get_admin_version(version_id: str) -> dict[str, Any]:
             """,
             (version_id,),
         ).fetchall()
+        canonical_keywords = conn.execute(
+            """
+            SELECT *
+            FROM starfield_canonical_keywords
+            WHERE version_id = ?
+            ORDER BY label ASC, created_at ASC
+            """,
+            (version_id,),
+        ).fetchall()
         jobs = conn.execute(
             """
             SELECT * FROM starfield_generation_jobs
@@ -104,6 +117,7 @@ def get_admin_version(version_id: str) -> dict[str, Any]:
         "version": _version_row(version),
         "passages": [_passage_row(row) for row in passages],
         "relationships": [_relationship_row(row) for row in relationships],
+        "canonicalKeywords": [_canonical_keyword_row(row) for row in canonical_keywords],
         "jobs": [_job_row(row) for row in jobs],
     }
 
@@ -137,7 +151,7 @@ def get_public_starfield() -> dict[str, Any]:
             (version["id"],),
         ).fetchall()
     relationships = [
-        _relationship_row(row)
+        _public_relationship_row(row)
         for row in relationship_rows
         if row["source_passage_id"] in accepted_passage_ids and row["target_passage_id"] in accepted_passage_ids
     ]
@@ -153,7 +167,7 @@ def get_public_starfield() -> dict[str, Any]:
     }
 
 
-async def generate_passages(version_id: str, article_ids: list[str]) -> dict[str, Any]:
+def enqueue_passage_generation(version_id: str, article_ids: list[str]) -> dict[str, Any]:
     safe_article_ids = [str(article_id) for article_id in article_ids if str(article_id).strip()]
     if not safe_article_ids:
         raise ValueError("No articles selected")
@@ -163,25 +177,81 @@ async def generate_passages(version_id: str, article_ids: list[str]) -> dict[str
         version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
         if not version:
             raise ValueError("Starfield version not found")
-        rows = conn.execute(
+        selected_count = conn.execute(
             f"""
-            SELECT a.*, ns.name AS category_name
+            SELECT COUNT(*) AS count
             FROM articles a
-            LEFT JOIN note_sections ns ON ns.id = a.category_id
             WHERE a.id IN ({','.join(['?'] * len(safe_article_ids))}) AND a.status = 'published' AND a.deleted_at IS NULL
             """,
             safe_article_ids,
-        ).fetchall()
+        ).fetchone()["count"]
+        if selected_count < 1:
+            raise ValueError("No published articles selected")
         conn.execute(
             """
-            INSERT INTO starfield_generation_jobs (id, version_id, phase, status, selected_article_ids_json, created_at, updated_at)
-            VALUES (?, ?, 'passages', 'running', ?, ?, ?)
+            INSERT INTO starfield_generation_jobs (
+              id, version_id, phase, status, selected_article_ids_json,
+              progress_current, progress_total, current_step, created_at, updated_at
+            )
+            VALUES (?, ?, 'passages', 'pending', ?, 0, ?, '任务已创建，等待 AI-agent 开始拆分文段。', ?, ?)
             """,
-            (job_id, version_id, json.dumps(safe_article_ids, ensure_ascii=False), now, now),
+            (job_id, version_id, json.dumps(safe_article_ids, ensure_ascii=False), selected_count, now, now),
         )
+        conn.execute("UPDATE starfield_versions SET source_article_ids_json = ?, updated_at = ? WHERE id = ?", (json.dumps(safe_article_ids, ensure_ascii=False), now, version_id))
+    payload = get_admin_version(version_id)
+    return {"ok": True, "created": 0, "jobId": job_id, **payload}
+
+
+async def run_passage_generation_job(job_id: str) -> None:
+    try:
+        with get_db() as conn:
+            job = conn.execute("SELECT * FROM starfield_generation_jobs WHERE id = ?", (job_id,)).fetchone()
+            if not job:
+                return
+            version_id = job["version_id"]
+            safe_article_ids = [str(article_id) for article_id in json_parse(job["selected_article_ids_json"], []) if str(article_id).strip()]
+            rows = conn.execute(
+                f"""
+                SELECT a.*, ns.name AS category_name
+                FROM articles a
+                LEFT JOIN note_sections ns ON ns.id = a.category_id
+                WHERE a.id IN ({','.join(['?'] * len(safe_article_ids))}) AND a.status = 'published' AND a.deleted_at IS NULL
+                """,
+                safe_article_ids,
+            ).fetchall()
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'running', progress_current = 0, progress_total = ?, current_step = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (len(rows), "AI-agent 正在读取选中文章，准备拆分 Passage。", now_iso(), job_id),
+            )
+        await _execute_passage_generation(version_id, job_id, rows, safe_article_ids)
+    except Exception as error_value:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'failed', error_message = ?, current_step = 'Passage 生成失败。', updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (str(error_value)[:500], now_iso(), now_iso(), job_id),
+            )
+
+
+async def generate_passages(version_id: str, article_ids: list[str]) -> dict[str, Any]:
+    payload = enqueue_passage_generation(version_id, article_ids)
+    await run_passage_generation_job(payload["jobId"])
+    return {"ok": True, **get_admin_version(version_id)}
+
+
+async def _execute_passage_generation(version_id: str, job_id: str, rows: list[Any], safe_article_ids: list[str]) -> None:
+    now = now_iso()
     generated_by_article: dict[str, list[dict[str, Any]]] = {}
     fallback_errors: list[str] = []
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
+        _update_job_progress(job_id, index - 1, len(rows), f"AI-agent 正在拆分《{row['title']}》的 Passage。")
         try:
             generated_by_article[row["id"]] = await _generate_ai_passages_for_article(row)
         except AiAgentError as error_value:
@@ -190,6 +260,7 @@ async def generate_passages(version_id: str, article_ids: list[str]) -> dict[str
         except Exception as error_value:
             fallback_errors.append(f"{row['title']}: {error_value}")
             generated_by_article[row["id"]] = _extract_passages(row)
+        _update_job_progress(job_id, index, len(rows), f"《{row['title']}》已完成，生成 {len(generated_by_article[row['id']])} 个 Passage 候选。")
 
     created = 0
     with get_db() as conn:
@@ -233,50 +304,171 @@ async def generate_passages(version_id: str, article_ids: list[str]) -> dict[str
         conn.execute(
             """
             UPDATE starfield_generation_jobs
-            SET status = 'succeeded', error_message = ?, updated_at = ?, completed_at = ?
+            SET status = 'succeeded', progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
             WHERE id = ?
             """,
-            (_fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
+            (len(rows), len(rows), f"Passage 生成完成，共创建 {created} 个候选。", _fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
         )
-    return {"ok": True, "created": created, "jobId": job_id, **get_admin_version(version_id)}
+
+
+def _update_job_progress(job_id: str, current: int, total: int, step: str) -> None:
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE starfield_generation_jobs
+            SET progress_current = ?, progress_total = ?, current_step = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (current, total, step[:240], now_iso(), job_id),
+        )
+
+
+def _expire_stale_jobs(conn: Any, version_id: str) -> None:
+    now = datetime.now(timezone.utc)
+    rows = conn.execute(
+        """
+        SELECT id, updated_at
+        FROM starfield_generation_jobs
+        WHERE version_id = ? AND status IN ('pending', 'running')
+        """,
+        (version_id,),
+    ).fetchall()
+    expired_ids = [
+        row["id"]
+        for row in rows
+        if _seconds_since(row["updated_at"], now) > STALE_JOB_SECONDS
+    ]
+    if not expired_ids:
+        return
+
+    timestamp = now_iso()
+    for job_id in expired_ids:
+        conn.execute(
+            """
+            UPDATE starfield_generation_jobs
+            SET status = 'failed',
+                current_step = '任务长时间没有更新，已自动标记失败。请重新点击生成。',
+                error_message = '任务长时间没有更新，可能是服务重启或后台进程中断。',
+                updated_at = ?,
+                completed_at = ?
+            WHERE id = ?
+            """,
+            (timestamp, timestamp, job_id),
+        )
+
+
+def _seconds_since(value: str, now: datetime) -> float:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return STALE_JOB_SECONDS + 1
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (now - parsed).total_seconds()
 
 
 async def generate_relationships(version_id: str) -> dict[str, Any]:
+    payload = enqueue_relationship_generation(version_id)
+    await run_relationship_generation_job(payload["jobId"])
+    return {"ok": True, **get_admin_version(version_id)}
+
+
+def enqueue_relationship_generation(version_id: str) -> dict[str, Any]:
     now = now_iso()
     job_id = make_id("starfield_job")
     with get_db() as conn:
         version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
         if not version:
             raise ValueError("Starfield version not found")
-        passages = conn.execute(
+        passage_count = conn.execute(
             """
-            SELECT p.*, a.title AS article_title, ns.name AS article_category
+            SELECT COUNT(*) AS count
             FROM starfield_passages p
-            JOIN articles a ON a.id = p.article_id
-            LEFT JOIN note_sections ns ON ns.id = a.category_id
             WHERE p.version_id = ? AND p.status = 'accepted'
-            ORDER BY p.sort_order ASC, p.created_at ASC
             """,
             (version_id,),
-        ).fetchall()
-        conn.execute("DELETE FROM starfield_relationships WHERE version_id = ? AND status = 'suggested'", (version_id,))
+        ).fetchone()["count"]
+        if passage_count < 2:
+            raise ValueError("At least two accepted passages are required")
         conn.execute(
             """
-            INSERT INTO starfield_generation_jobs (id, version_id, phase, status, selected_article_ids_json, created_at, updated_at)
-            VALUES (?, ?, 'relationships', 'running', '[]', ?, ?)
+            INSERT INTO starfield_generation_jobs (
+              id, version_id, phase, status, selected_article_ids_json,
+              progress_current, progress_total, current_step, created_at, updated_at
+            )
+            VALUES (?, ?, 'relationships', 'pending', '[]', 0, 5, '任务已创建，等待 AI-agent 开始生成关系。', ?, ?)
             """,
             (job_id, version_id, now, now),
         )
-    fallback_errors: list[str] = []
+    return {"ok": True, "created": 0, "jobId": job_id, **get_admin_version(version_id)}
+
+
+async def run_relationship_generation_job(job_id: str) -> None:
     try:
-        scored = await _generate_ai_relationships(passages)
+        with get_db() as conn:
+            job = conn.execute("SELECT * FROM starfield_generation_jobs WHERE id = ?", (job_id,)).fetchone()
+            if not job:
+                return
+            version_id = job["version_id"]
+            passages = conn.execute(
+                """
+                SELECT p.*, a.title AS article_title, ns.name AS article_category
+                FROM starfield_passages p
+                JOIN articles a ON a.id = p.article_id
+                LEFT JOIN note_sections ns ON ns.id = a.category_id
+                WHERE p.version_id = ? AND p.status = 'accepted'
+                ORDER BY p.sort_order ASC, p.created_at ASC
+                """,
+                (version_id,),
+            ).fetchall()
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'running', progress_current = 0, progress_total = 5, current_step = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("AI-agent 正在读取已接受 Passage，准备归并标签。", now_iso(), job_id),
+            )
+        await _execute_relationship_generation(version_id, job_id, passages)
+    except Exception as error_value:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'failed', error_message = ?, current_step = '关系生成失败。', updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (str(error_value)[:500], now_iso(), now_iso(), job_id),
+            )
+
+
+async def _execute_relationship_generation(version_id: str, job_id: str, passages: list[Any]) -> None:
+    now = now_iso()
+    rows = [_passage_like(row) for row in passages]
+    fallback_errors: list[str] = []
+    _update_job_progress(job_id, 1, 5, f"AI-agent 正在归并 {len(rows)} 个 Passage 的标签。")
+    try:
+        canonical_keyword_groups = await _generate_ai_canonical_keyword_groups(rows)
     except AiAgentError as error_value:
         fallback_errors.append(str(error_value))
-        scored = _score_relationships(passages)
+        canonical_keyword_groups = _canonical_keyword_groups(rows)
     except Exception as error_value:
         fallback_errors.append(str(error_value))
-        scored = _score_relationships(passages)
+        canonical_keyword_groups = _canonical_keyword_groups(rows)
 
+    _update_job_progress(job_id, 2, 5, f"标签归并完成，得到 {len(canonical_keyword_groups)} 个合并标签，正在生成候选边。")
+    candidates = _keyword_bridge_relationships(rows, canonical_keyword_groups)
+    _update_job_progress(job_id, 3, 5, f"已生成 {len(candidates)} 条候选边，AI-agent 正在判断关系类型。")
+    try:
+        scored = await _generate_ai_relationships(rows, candidates)
+    except AiAgentError as error_value:
+        fallback_errors.append(str(error_value))
+        scored = candidates
+    except Exception as error_value:
+        fallback_errors.append(str(error_value))
+        scored = candidates
+
+    _update_job_progress(job_id, 4, 5, f"关系判断完成，正在写入 {len(scored)} 条候选关系。")
     created = 0
     seen_pairs: set[tuple[str, str]] = set()
     per_passage_cross_count: dict[str, int] = {}
@@ -284,6 +476,27 @@ async def generate_relationships(version_id: str) -> dict[str, Any]:
         created = 0
         seen_pairs: set[tuple[str, str]] = set()
         per_passage_cross_count: dict[str, int] = {}
+        conn.execute("DELETE FROM starfield_relationships WHERE version_id = ? AND status = 'suggested'", (version_id,))
+        conn.execute("DELETE FROM starfield_canonical_keywords WHERE version_id = ?", (version_id,))
+        for group in canonical_keyword_groups:
+            keyword_id = make_id("canonical_keyword")
+            conn.execute(
+                """
+                INSERT INTO starfield_canonical_keywords (
+                  id, version_id, label, aliases_json, passage_ids_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    keyword_id,
+                    version_id,
+                    str(group.get("label") or "")[:80],
+                    json.dumps(_clean_keywords(group.get("aliases") if isinstance(group.get("aliases"), list) else []), ensure_ascii=False),
+                    json.dumps([str(item) for item in group.get("passage_ids", [])], ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
         for item in scored:
             source = item["source"]
             target = item["target"]
@@ -300,9 +513,9 @@ async def generate_relationships(version_id: str) -> dict[str, Any]:
                 """
                 INSERT INTO starfield_relationships (
                   id, version_id, source_passage_id, target_passage_id, relationship_type,
-                  rationale, strength, status, is_cross_article, created_at, updated_at
+                  rationale, evidence_keywords_json, strength, status, is_cross_article, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'suggested', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     relationship_id,
@@ -311,7 +524,9 @@ async def generate_relationships(version_id: str) -> dict[str, Any]:
                     target["id"],
                     item["relationship_type"],
                     item["rationale"],
+                    json.dumps(item.get("evidence_keywords", []), ensure_ascii=False),
                     item["strength"],
+                    "suggested" if is_cross_article else "hidden",
                     1 if is_cross_article else 0,
                     now,
                     now,
@@ -322,11 +537,14 @@ async def generate_relationships(version_id: str) -> dict[str, Any]:
                 per_passage_cross_count[target["id"]] = per_passage_cross_count.get(target["id"], 0) + 1
             created += 1
         conn.execute(
-            "UPDATE starfield_generation_jobs SET status = 'succeeded', error_message = ?, updated_at = ?, completed_at = ? WHERE id = ?",
-            (_fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
+            """
+            UPDATE starfield_generation_jobs
+            SET status = 'succeeded', progress_current = 5, progress_total = 5, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (f"关系生成完成，共创建 {created} 条候选关系。", _fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
         )
         conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now_iso(), version_id))
-    return {"ok": True, "created": created, "jobId": job_id, **get_admin_version(version_id)}
 
 
 def update_passage(passage_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -367,6 +585,46 @@ def update_passage(passage_id: str, input_data: dict[str, Any]) -> dict[str, Any
     return get_admin_version(version_id)
 
 
+def update_passages_bulk(version_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    now = now_iso()
+    status = input_data.get("status")
+    if status not in PASSAGE_STATUS:
+        raise ValueError("Invalid passage status")
+    passage_ids = input_data.get("passageIds")
+    source_status = input_data.get("sourceStatus")
+    if source_status is not None and source_status not in PASSAGE_STATUS:
+        raise ValueError("Invalid passage source status")
+
+    with get_db() as conn:
+        version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+        if not version:
+            raise ValueError("Starfield version not found")
+
+        params: list[Any] = [status, now, status, now, version_id]
+        where_parts = ["version_id = ?"]
+        if isinstance(passage_ids, list):
+            safe_ids = [str(passage_id) for passage_id in passage_ids if str(passage_id).strip()]
+            if not safe_ids:
+                return get_admin_version(version_id)
+            where_parts.append(f"id IN ({','.join(['?'] * len(safe_ids))})")
+            params.extend(safe_ids)
+        if source_status:
+            where_parts.append("status = ?")
+            params.append(source_status)
+
+        conn.execute(
+            f"""
+            UPDATE starfield_passages
+            SET status = ?, updated_at = ?,
+              reviewed_at = CASE WHEN ? IN ('accepted', 'hidden') THEN ? ELSE reviewed_at END
+            WHERE {' AND '.join(where_parts)}
+            """,
+            params,
+        )
+        conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now, version_id))
+    return get_admin_version(version_id)
+
+
 def update_relationship(relationship_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
     now = now_iso()
     with get_db() as conn:
@@ -399,6 +657,49 @@ def update_relationship(relationship_id: str, input_data: dict[str, Any]) -> dic
             ),
         )
         version_id = existing["version_id"]
+        conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now, version_id))
+    return get_admin_version(version_id)
+
+
+def update_relationships_bulk(version_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    now = now_iso()
+    status = input_data.get("status")
+    if status not in RELATIONSHIP_STATUS:
+        raise ValueError("Invalid relationship status")
+    relationship_ids = input_data.get("relationshipIds")
+    source_status = input_data.get("sourceStatus")
+    if source_status is not None and source_status not in RELATIONSHIP_STATUS:
+        raise ValueError("Invalid relationship source status")
+    cross_article_only = bool(input_data.get("crossArticleOnly", True))
+
+    with get_db() as conn:
+        version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+        if not version:
+            raise ValueError("Starfield version not found")
+
+        params: list[Any] = [status, now, status, now, version_id]
+        where_parts = ["version_id = ?"]
+        if isinstance(relationship_ids, list):
+            safe_ids = [str(relationship_id) for relationship_id in relationship_ids if str(relationship_id).strip()]
+            if not safe_ids:
+                return get_admin_version(version_id)
+            where_parts.append(f"id IN ({','.join(['?'] * len(safe_ids))})")
+            params.extend(safe_ids)
+        if source_status:
+            where_parts.append("status = ?")
+            params.append(source_status)
+        if cross_article_only:
+            where_parts.append("is_cross_article = 1")
+
+        conn.execute(
+            f"""
+            UPDATE starfield_relationships
+            SET status = ?, updated_at = ?,
+              reviewed_at = CASE WHEN ? IN ('accepted', 'hidden') THEN ? ELSE reviewed_at END
+            WHERE {' AND '.join(where_parts)}
+            """,
+            params,
+        )
         conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now, version_id))
     return get_admin_version(version_id)
 
@@ -510,6 +811,7 @@ def _relationship_row(row: Any) -> dict[str, Any]:
         "relationshipType": relationship_type,
         "relationshipLabel": RELATIONSHIP_LABELS.get(relationship_type, relationship_type),
         "rationale": row["rationale"],
+        "evidenceKeywords": json_parse(row["evidence_keywords_json"] if "evidence_keywords_json" in row.keys() else None, []),
         "strength": row["strength"],
         "status": row["status"],
         "isCrossArticle": bool(row["is_cross_article"]),
@@ -520,6 +822,33 @@ def _relationship_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _public_relationship_row(row: Any) -> dict[str, Any]:
+    relationship_type = row["relationship_type"]
+    return {
+        "id": row["id"],
+        "sourcePassageId": row["source_passage_id"],
+        "targetPassageId": row["target_passage_id"],
+        "relationshipType": relationship_type,
+        "relationshipLabel": RELATIONSHIP_LABELS.get(relationship_type, relationship_type),
+        "rationale": row["rationale"],
+        "evidenceKeywords": json_parse(row["evidence_keywords_json"] if "evidence_keywords_json" in row.keys() else None, []),
+        "strength": row["strength"],
+        "isCrossArticle": bool(row["is_cross_article"]),
+    }
+
+
+def _canonical_keyword_row(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "versionId": row["version_id"],
+        "label": row["label"],
+        "aliases": json_parse(row["aliases_json"], []),
+        "passageIds": json_parse(row["passage_ids_json"], []),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
 def _job_row(row: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -527,6 +856,9 @@ def _job_row(row: Any) -> dict[str, Any]:
         "phase": row["phase"],
         "status": row["status"],
         "selectedArticleIds": json_parse(row["selected_article_ids_json"], []),
+        "progressCurrent": row["progress_current"] if "progress_current" in row.keys() else 0,
+        "progressTotal": row["progress_total"] if "progress_total" in row.keys() else 0,
+        "currentStep": row["current_step"] if "current_step" in row.keys() else "",
         "errorMessage": row["error_message"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -554,8 +886,37 @@ async def _generate_ai_passages_for_article(article: Any) -> list[dict[str, Any]
     return normalized
 
 
-async def _generate_ai_relationships(passages: list[Any]) -> list[dict[str, Any]]:
-    rows = [_passage_like(row) for row in passages]
+async def _generate_ai_canonical_keyword_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    payload = await generate_ai_starfield_canonical_keywords(
+        {
+            "passages": [
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "keywords": row["keywords"],
+                    "articleTitle": row["article_title"],
+                    "articleCategory": row["article_category"],
+                }
+                for row in rows
+            ]
+        }
+    )
+    valid_ids = {row["id"] for row in rows}
+    groups = []
+    for group in payload.get("canonicalKeywords", []):
+        label = str(group.get("label") or "").strip()
+        aliases = _clean_keywords(group.get("aliases") if isinstance(group.get("aliases"), list) else [])
+        passage_ids = [str(item) for item in group.get("passageIds", []) if str(item) in valid_ids]
+        if label and len(set(passage_ids)) >= 2:
+            groups.append({"label": label[:40], "aliases": aliases, "passage_ids": list(dict.fromkeys(passage_ids))})
+    if not groups:
+        raise AiAgentError(502, "LLM did not return usable canonical keywords")
+    return groups
+
+
+async def _generate_ai_relationships(rows: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not candidates:
+        return []
     payload = await generate_ai_starfield_relationships(
         {
             "passages": [
@@ -570,28 +931,45 @@ async def _generate_ai_relationships(passages: list[Any]) -> list[dict[str, Any]
                     "articleCategory": row["article_category"],
                 }
                 for row in rows
-            ]
+            ],
+            "candidates": [
+                {
+                    "sourcePassageId": item["source"]["id"],
+                    "targetPassageId": item["target"]["id"],
+                    "evidenceKeywords": item.get("evidence_keywords", []),
+                    "relationshipType": item["relationship_type"],
+                    "rationale": item["rationale"],
+                    "strength": item["strength"],
+                }
+                for item in candidates[:500]
+            ],
         }
     )
     by_id = {row["id"]: row for row in rows}
-    scored = []
+    by_pair = {tuple(sorted([item["source"]["id"], item["target"]["id"]])): item for item in candidates}
+    upgraded_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
     for item in payload.get("relationships", []):
         source = by_id.get(item.get("sourcePassageId"))
         target = by_id.get(item.get("targetPassageId"))
         relationship_type = item.get("relationshipType")
         if not source or not target or source["id"] == target["id"] or relationship_type not in RELATIONSHIP_TYPES:
             continue
-        scored.append(
-            {
-                "source": source,
-                "target": target,
-                "relationship_type": relationship_type,
-                "rationale": str(item.get("rationale") or "")[:500],
-                "strength": _safe_float(item.get("strength"), 0.5),
-            }
-        )
-    if not scored:
+        pair = tuple(sorted([source["id"], target["id"]]))
+        base_candidate = by_pair.get(pair)
+        if not base_candidate:
+            continue
+        evidence_keywords = _clean_keywords(item.get("evidenceKeywords") if isinstance(item.get("evidenceKeywords"), list) else base_candidate.get("evidence_keywords", []))
+        upgraded_by_pair[pair] = {
+            "source": source,
+            "target": target,
+            "relationship_type": relationship_type,
+            "rationale": str(item.get("rationale") or base_candidate["rationale"])[:500],
+            "strength": _safe_float(item.get("strength"), base_candidate["strength"]),
+            "evidence_keywords": evidence_keywords or base_candidate.get("evidence_keywords", []),
+        }
+    if not upgraded_by_pair:
         raise AiAgentError(502, "LLM did not return usable relationships")
+    scored = [upgraded_by_pair.get(tuple(sorted([item["source"]["id"], item["target"]["id"]])), item) for item in candidates]
     return sorted(scored, key=lambda item: (item["source"]["article_id"] != item["target"]["article_id"], item["strength"]), reverse=True)
 
 
@@ -747,36 +1125,91 @@ def _unique_anchor(base: str, used: set[str]) -> str:
     return anchor
 
 
-def _score_relationships(passages: list[Any]) -> list[dict[str, Any]]:
-    scored: list[dict[str, Any]] = []
-    rows = [_passage_like(row) for row in passages]
-    for index, source in enumerate(rows):
-        for target in rows[index + 1 :]:
-            source_keywords = set(source["keywords"])
-            target_keywords = set(target["keywords"])
-            overlap = source_keywords.intersection(target_keywords)
-            same_article = source["article_id"] == target["article_id"]
-            if not overlap and not same_article:
+def _canonical_keyword_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keyword_passages: dict[str, list[str]] = {}
+    keyword_aliases: dict[str, list[str]] = {}
+    for row in rows:
+        for keyword in row["keywords"]:
+            canonical = _canonicalize_keyword(keyword)
+            if not canonical or _is_generic_keyword(canonical):
                 continue
-            strength = len(overlap) / max(1, len(source_keywords.union(target_keywords)))
-            if same_article:
-                strength = max(strength, 0.18)
-            if strength < 0.12:
-                continue
-            relationship_type = "same_topic" if overlap else "further_reading"
-            if re.search(r"问题|错误|失败|异常|痛点", source["text"] + target["text"]) and re.search(r"解决|实现|方法|步骤|配置", source["text"] + target["text"]):
-                relationship_type = "problem_solution"
-            rationale = _build_rationale(source, target, relationship_type, sorted(overlap))
-            scored.append(
-                {
-                    "source": source,
-                    "target": target,
-                    "relationship_type": relationship_type,
-                    "rationale": rationale,
-                    "strength": round(min(1, max(0.2, strength + (0.15 if source["article_id"] != target["article_id"] else 0))), 2),
-                }
-            )
-    return sorted(scored, key=lambda item: (item["source"]["article_id"] != item["target"]["article_id"], item["strength"]), reverse=True)
+            keyword_passages.setdefault(canonical, [])
+            if row["id"] not in keyword_passages[canonical]:
+                keyword_passages[canonical].append(row["id"])
+            keyword_aliases.setdefault(canonical, [])
+            if keyword not in keyword_aliases[canonical]:
+                keyword_aliases[canonical].append(keyword)
+
+    groups = []
+    max_passages_per_keyword = max(6, math.ceil(len(rows) * 0.45))
+    for canonical, passage_ids in keyword_passages.items():
+        if len(passage_ids) < 2 or len(passage_ids) > max_passages_per_keyword:
+            continue
+        groups.append(
+            {
+                "label": _label_from_aliases(canonical, keyword_aliases.get(canonical, [])),
+                "aliases": keyword_aliases.get(canonical, [])[:8],
+                "passage_ids": passage_ids,
+            }
+        )
+    return groups
+
+
+def _keyword_bridge_relationships(rows: list[dict[str, Any]], canonical_keyword_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {row["id"]: row for row in rows}
+    pair_keywords: dict[tuple[str, str], list[str]] = {}
+    for group in canonical_keyword_groups:
+        label = str(group.get("label") or "").strip()
+        passage_ids = [passage_id for passage_id in group.get("passage_ids", []) if passage_id in by_id]
+        if not label or len(passage_ids) < 2:
+            continue
+        for index, source_id in enumerate(passage_ids):
+            for target_id in passage_ids[index + 1 :]:
+                pair = tuple(sorted([source_id, target_id]))
+                pair_keywords.setdefault(pair, [])
+                if label not in pair_keywords[pair]:
+                    pair_keywords[pair].append(label)
+
+    candidates = []
+    for (source_id, target_id), evidence_keywords in pair_keywords.items():
+        source = by_id[source_id]
+        target = by_id[target_id]
+        shared_count = len(evidence_keywords)
+        same_article = source["article_id"] == target["article_id"]
+        strength = min(1, 0.36 + shared_count * 0.16 + (0.12 if not same_article else 0))
+        candidates.append(
+            {
+                "source": source,
+                "target": target,
+                "relationship_type": "same_topic",
+                "rationale": _build_rationale(source, target, "same_topic", evidence_keywords),
+                "strength": round(strength, 2),
+                "evidence_keywords": evidence_keywords[:6],
+            }
+        )
+    return sorted(candidates, key=lambda item: (item["source"]["article_id"] != item["target"]["article_id"], item["strength"]), reverse=True)
+
+
+def _canonicalize_keyword(value: str) -> str:
+    text = re.sub(r"\s+", "", str(value or "").strip().lower())
+    text = re.sub(r"[^\w#.+\-\u4e00-\u9fa5]", "", text)
+    suffixes = ("相关", "实践", "方法", "技巧", "内容", "知识", "基础", "概念")
+    for suffix in suffixes:
+        if len(text) > len(suffix) + 2 and text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return text[:40]
+
+
+def _is_generic_keyword(value: str) -> bool:
+    generic = {"技术", "技术笔记", "笔记", "博客", "文章", "内容", "开发", "配置", "系统", "方法", "实践", "经验", "问题"}
+    return value in generic or len(value) < 2
+
+
+def _label_from_aliases(canonical: str, aliases: list[str]) -> str:
+    clean_aliases = _clean_keywords(aliases)
+    if clean_aliases:
+        return min(clean_aliases, key=lambda item: (len(item), item))
+    return canonical
 
 
 def _passage_like(row: Any) -> dict[str, Any]:

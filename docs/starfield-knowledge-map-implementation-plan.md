@@ -48,6 +48,20 @@
 1. Passage-First Generation：先为选中文章生成 Passage Suggestion。
 2. 关系生成：管理员审核 Passage 后，再基于已接受的 Passage 生成 Passage Relationship Suggestion。
 
+关系生成内部采用关键词桥接流程：
+
+1. AI-agent 为每个 Passage 生成最终原始 Passage Keyword 集。
+2. 汇总所有 Passage Keyword，由 AI-agent 判断高度相似标签并合并为 Canonical Passage Keyword。
+3. 共享同一个 Canonical Passage Keyword 的 Passage 形成 Keyword-Derived Relationship 候选边。
+4. Keyword-Derived Relationship 默认先作为 `same_topic` 候选关系。
+5. AI-agent 可在二次判断中读取两端 Passage Text，把 `same_topic` 升级为 `prerequisite`、`further_reading`、`problem_solution` 或 `comparison`。
+
+约束：
+
+- Canonical Passage Keyword 是生成边的统一口径和证据，不是星图节点。
+- 星图节点仍然只使用 Passage。
+- 第一版不保留每一轮标签生成的完整对话历史，只保留每个 Passage 的最终原始标签集、Canonical Passage Keyword 合并结果和关系证据。
+
 约束：
 
 - 每篇文章生成 3-12 个 Passage。
@@ -492,6 +506,8 @@ src/
 - accepted Passage 列表。
 - Source Article 信息。
 - 已有关系。
+- 每个 Passage 的最终原始 Passage Keyword 集。
+- Canonical Passage Keyword 合并结果。
 - 每个 Passage 最多 9 条跨文章关系。
 
 输出 JSON：
@@ -504,7 +520,8 @@ src/
       "targetPassageId": "passage_b",
       "relationshipType": "prerequisite",
       "rationale": "为什么这条关系对读者有用",
-      "strength": 0.82
+      "strength": 0.82,
+      "evidenceKeywords": ["Docker 部署"]
     }
   ]
 }
@@ -515,6 +532,7 @@ src/
 - 两端 Passage 必须存在。
 - 关系类型必须合法。
 - 不允许自连接。
+- Keyword-Derived Relationship 没有二次语义判断时默认使用 `same_topic`。
 - 优先保留 Cross-Article Relationship。
 - 同一 pair 去重。
 

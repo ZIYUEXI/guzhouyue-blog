@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -101,32 +102,146 @@ def main() -> None:
 
         settings = client.put("/api/admin/settings", json={"stylePreset": "cyber", "ownerName": "测试站长", "ownerAvatarUrl": "/avatar.png"}, headers=write_headers)
         homepage = client.put("/api/admin/homepage", json={"siteName": "兼容测试站", "siteTagline": "旧契约"}, headers=write_headers)
-        note_sections_before = len(admin_content.json().get("noteSections", []))
-        note_sections = client.put("/api/admin/note-sections", json=admin_content.json().get("noteSections", []), headers=write_headers)
+        note_sections_payload = admin_content.json().get("noteSections", [])
+        note_sections_before = len(note_sections_payload)
+        note_sections = client.put("/api/admin/note-sections", json=note_sections_payload, headers=write_headers)
+        note_section_with_article = next(
+            (
+                section
+                for section in note_sections_payload
+                if any(post.get("categoryId") == section.get("id") for post in admin_content.json().get("posts", []))
+            ),
+            None,
+        )
+        note_sections_after_delete = None
+        if note_section_with_article and len(note_sections_payload) > 1:
+            kept_note_sections = [section for section in note_sections_payload if section.get("id") != note_section_with_article.get("id")]
+            note_sections_after_delete = client.put("/api/admin/note-sections", json=kept_note_sections, headers=write_headers)
+            client.put("/api/admin/note-sections", json=note_sections_payload, headers=write_headers)
         featured_series = client.put("/api/admin/featured-series", json=admin_content.json().get("featuredSeries", []), headers=write_headers)
-        first_article_id = (admin_content.json().get("posts") or [{}])[0].get("id", "")
+        starfield_source_slugs = {"python-backend-takes-over", "test-long-article-pagination-reading"}
+        starfield_article_ids = [
+            item.get("id", "")
+            for item in admin_content.json().get("posts", [])
+            if item.get("slug") in starfield_source_slugs and item.get("id")
+        ]
+        if len(starfield_article_ids) < 2:
+            starfield_article_ids = [
+                item.get("id", "")
+                for item in admin_content.json().get("posts", [])
+                if item.get("id")
+            ][:2]
+        first_article_id = starfield_article_ids[0] if starfield_article_ids else ""
         starfield_version = client.post("/api/admin/starfield/versions", json={"name": "兼容星图"}, headers=write_headers)
         starfield_version_id = starfield_version.json().get("version", {}).get("id", "")
         starfield_passages = client.post(
             f"/api/admin/starfield/versions/{starfield_version_id}/generate-passages",
-            json={"articleIds": [first_article_id]},
+            json={"articleIds": starfield_article_ids or [first_article_id]},
             headers=write_headers,
         )
+        starfield_passage_job_id = starfield_passages.json().get("jobId", "")
         starfield_passage_jobs = starfield_passages.json().get("jobs", [])
+        starfield_passage_initial_job = next((job for job in starfield_passage_jobs if job.get("id") == starfield_passage_job_id), None)
+        starfield_passage_task_created = (
+            starfield_passages.status_code == 200
+            and bool(starfield_passage_job_id)
+            and starfield_passage_initial_job is not None
+            and starfield_passage_initial_job.get("status") in {"pending", "running", "succeeded"}
+            and starfield_passage_initial_job.get("progressTotal", 0) >= 1
+            and bool(starfield_passage_initial_job.get("currentStep"))
+        )
+        starfield_passage_final_job = starfield_passage_initial_job
+        for _ in range(30):
+            starfield_passages = client.get(f"/api/admin/starfield/versions/{starfield_version_id}", headers=write_headers)
+            starfield_passage_jobs = starfield_passages.json().get("jobs", [])
+            starfield_passage_final_job = next((job for job in starfield_passage_jobs if job.get("id") == starfield_passage_job_id), None)
+            if starfield_passage_final_job and starfield_passage_final_job.get("status") in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        starfield_passage_progress_recorded = (
+            starfield_passage_final_job is not None
+            and starfield_passage_final_job.get("status") == "succeeded"
+            and starfield_passage_final_job.get("progressCurrent") == starfield_passage_final_job.get("progressTotal")
+            and bool(starfield_passage_final_job.get("currentStep"))
+        )
         starfield_passage_fallback_recorded = any("本地规则兜底" in str(job.get("errorMessage") or "") for job in starfield_passage_jobs)
-        first_passage = (starfield_passages.json().get("passages") or [{}])[0]
-        starfield_accept_passage = client.put(
-            f"/api/admin/starfield/passages/{first_passage.get('id', '')}",
-            json={"status": "accepted", "title": first_passage.get("title", ""), "keywords": first_passage.get("keywords", [])},
+        starfield_generated_passages = starfield_passages.json().get("passages") or []
+        accepted_starfield_passages = []
+        starfield_accept_passage = None
+        accepted_article_ids: set[str] = set()
+        for passage in starfield_generated_passages:
+            article_id = passage.get("articleId", "")
+            if article_id in accepted_article_ids and len(accepted_article_ids) < 2:
+                continue
+            starfield_accept_passage = client.put(
+                f"/api/admin/starfield/passages/{passage.get('id', '')}",
+                json={
+                    "status": "accepted",
+                    "title": passage.get("title", ""),
+                    "keywords": ["CompatSharedStarfieldKeyword", *passage.get("keywords", [])],
+                },
+                headers=write_headers,
+            )
+            if starfield_accept_passage.status_code == 200:
+                accepted_article_ids.add(article_id)
+                accepted_starfield_passages.append(passage)
+            if len(accepted_article_ids) >= 2:
+                break
+        starfield_bulk_accept_passages = client.post(
+            f"/api/admin/starfield/versions/{starfield_version_id}/passages/bulk",
+            json={"status": "accepted", "sourceStatus": "suggested"},
             headers=write_headers,
         )
         starfield_relationships = client.post(
             f"/api/admin/starfield/versions/{starfield_version_id}/generate-relationships",
             headers=write_headers,
         )
+        starfield_relationship_job_id = starfield_relationships.json().get("jobId", "")
         starfield_relationship_jobs = starfield_relationships.json().get("jobs", [])
+        starfield_relationship_initial_job = next((job for job in starfield_relationship_jobs if job.get("id") == starfield_relationship_job_id), None)
+        starfield_relationship_task_created = (
+            starfield_relationships.status_code == 200
+            and bool(starfield_relationship_job_id)
+            and starfield_relationship_initial_job is not None
+            and starfield_relationship_initial_job.get("status") in {"pending", "running", "succeeded"}
+            and starfield_relationship_initial_job.get("progressTotal", 0) >= 1
+            and bool(starfield_relationship_initial_job.get("currentStep"))
+        )
+        starfield_relationship_final_job = starfield_relationship_initial_job
+        for _ in range(30):
+            starfield_relationships = client.get(f"/api/admin/starfield/versions/{starfield_version_id}", headers=write_headers)
+            starfield_relationship_jobs = starfield_relationships.json().get("jobs", [])
+            starfield_relationship_final_job = next((job for job in starfield_relationship_jobs if job.get("id") == starfield_relationship_job_id), None)
+            if starfield_relationship_final_job and starfield_relationship_final_job.get("status") in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        starfield_relationship_progress_recorded = (
+            starfield_relationship_final_job is not None
+            and starfield_relationship_final_job.get("status") == "succeeded"
+            and starfield_relationship_final_job.get("progressCurrent") == starfield_relationship_final_job.get("progressTotal")
+            and bool(starfield_relationship_final_job.get("currentStep"))
+        )
+        starfield_version_with_keywords = starfield_relationships
         starfield_relationship_fallback_recorded = any("本地规则兜底" in str(job.get("errorMessage") or "") for job in starfield_relationship_jobs)
         first_relationship = (starfield_relationships.json().get("relationships") or [{}])[0]
+        starfield_relationship_items = starfield_relationships.json().get("relationships", [])
+        starfield_canonical_keyword_items = starfield_version_with_keywords.json().get("canonicalKeywords", [])
+        starfield_relationship_evidence_recorded = any(item.get("evidenceKeywords") for item in starfield_relationship_items)
+        starfield_relationship_cross_article_recorded = any(item.get("isCrossArticle") for item in starfield_relationship_items)
+        starfield_same_article_relationships_hidden = all(
+            item.get("status") == "hidden"
+            for item in starfield_relationship_items
+            if not item.get("isCrossArticle")
+        )
+        starfield_canonical_keywords_recorded = any(
+            item.get("label") == "CompatSharedStarfieldKeyword" and len(item.get("passageIds", [])) >= 2
+            for item in starfield_canonical_keyword_items
+        )
+        starfield_bulk_accept_relationships = client.post(
+            f"/api/admin/starfield/versions/{starfield_version_id}/relationships/bulk",
+            json={"status": "accepted", "sourceStatus": "suggested", "crossArticleOnly": True},
+            headers=write_headers,
+        )
         starfield_accept_relationship = (
             client.put(
                 f"/api/admin/starfield/relationships/{first_relationship.get('id', '')}",
@@ -143,6 +258,14 @@ def main() -> None:
         )
         starfield_publish = client.post(f"/api/admin/starfield/versions/{starfield_version_id}/publish", headers=write_headers)
         public_starfield_after_publish = client.get("/api/starfield")
+        public_starfield_relationships = public_starfield_after_publish.json().get("relationships", [])
+        public_starfield_relationship_shape_ok = all(
+            "status" not in item
+            and "reviewNote" not in item
+            and "evidenceKeywords" not in item
+            and all(key in item for key in ["id", "sourcePassageId", "targetPassageId", "relationshipType", "relationshipLabel", "rationale", "strength", "isCrossArticle"])
+            for item in public_starfield_relationships
+        )
         draft_payload = {
             "title": "草稿兼容测试",
             "slug": "compat-draft",
@@ -167,16 +290,40 @@ def main() -> None:
         check("settings save preserves response shape", settings.status_code == 200 and settings.json().get("stylePreset") == "cyber", settings.text)
         check("homepage save returns homepage", homepage.status_code == 200 and homepage.json().get("siteName") == "兼容测试站", homepage.text)
         check("note sections roundtrip", note_sections.status_code == 200 and len(note_sections.json().get("items", [])) == note_sections_before, note_sections.text)
+        check(
+            "note section delete persists even when articles referenced it",
+            note_sections_after_delete is None
+            or (
+                note_sections_after_delete.status_code == 200
+                and all(section.get("id") != note_section_with_article.get("id") for section in note_sections_after_delete.json().get("items", []))
+            ),
+            note_sections_after_delete.text if note_sections_after_delete else "",
+        )
         check("featured series roundtrip", featured_series.status_code == 200 and "items" in featured_series.json(), featured_series.text)
         check("admin starfield version can be created", starfield_version.status_code == 201 and bool(starfield_version_id), starfield_version.text)
-        check("admin starfield passages can be generated", starfield_passages.status_code == 200 and len(starfield_passages.json().get("passages", [])) >= 1, starfield_passages.text)
+        check("admin starfield passage generation creates progress task", starfield_passage_task_created, starfield_passages.text)
+        check("admin starfield passage generation task completes", starfield_passage_progress_recorded, starfield_passages.text)
+        check("admin starfield passages can be generated", starfield_passages.status_code == 200 and len(starfield_passages.json().get("passages", [])) >= 2, starfield_passages.text)
         check("admin starfield passage generation records local fallback when LLM is unconfigured", starfield_passages.status_code == 200 and starfield_passage_fallback_recorded, starfield_passages.text)
-        check("admin starfield passage can be accepted", starfield_accept_passage.status_code == 200 and any(item.get("status") == "accepted" for item in starfield_accept_passage.json().get("passages", [])), starfield_accept_passage.text)
+        check(
+            "admin starfield passages can be accepted across articles",
+            starfield_accept_passage is not None and starfield_accept_passage.status_code == 200 and len(accepted_article_ids) >= 2,
+            starfield_accept_passage.text if starfield_accept_passage else starfield_passages.text,
+        )
+        check("admin starfield passages can be bulk accepted", starfield_bulk_accept_passages.status_code == 200 and all(item.get("status") != "suggested" for item in starfield_bulk_accept_passages.json().get("passages", [])), starfield_bulk_accept_passages.text)
         check("admin starfield relationships request succeeds", starfield_relationships.status_code == 200, starfield_relationships.text)
+        check("admin starfield relationship generation creates progress task", starfield_relationship_task_created, starfield_relationships.text)
+        check("admin starfield relationship generation task completes", starfield_relationship_progress_recorded, starfield_relationships.text)
         check("admin starfield relationship generation records local fallback when LLM is unconfigured", starfield_relationships.status_code == 200 and starfield_relationship_fallback_recorded, starfield_relationships.text)
+        check("admin starfield relationships expose keyword evidence", starfield_relationships.status_code == 200 and starfield_relationship_evidence_recorded, starfield_relationships.text)
+        check("admin starfield creates cross-article keyword-derived relationship", starfield_relationships.status_code == 200 and starfield_relationship_cross_article_recorded, starfield_relationships.text)
+        check("admin starfield same-article relationships default hidden", starfield_relationships.status_code == 200 and starfield_same_article_relationships_hidden, starfield_relationships.text)
+        check("admin starfield relationships can be bulk accepted", starfield_bulk_accept_relationships.status_code == 200 and any(item.get("status") == "accepted" and item.get("isCrossArticle") for item in starfield_bulk_accept_relationships.json().get("relationships", [])), starfield_bulk_accept_relationships.text)
+        check("admin starfield exposes canonical keywords", starfield_version_with_keywords.status_code == 200 and starfield_canonical_keywords_recorded, starfield_version_with_keywords.text)
         check("admin starfield relationship acceptance is optional and safe", starfield_accept_relationship is None or starfield_accept_relationship.status_code == 200, starfield_accept_relationship.text if starfield_accept_relationship else "")
         check("admin starfield version can be published", starfield_publish.status_code == 200 and starfield_publish.json().get("version", {}).get("isActive") is True, starfield_publish.text)
         check("public starfield exposes accepted passages only", public_starfield_after_publish.status_code == 200 and len(public_starfield_after_publish.json().get("passages", [])) >= 1, public_starfield_after_publish.text)
+        check("public starfield exposes reader relationship shape only", public_starfield_after_publish.status_code == 200 and len(public_starfield_relationships) >= 1 and public_starfield_relationship_shape_ok, public_starfield_after_publish.text)
         check("draft save/get/delete roundtrip", draft_save.status_code == 200 and draft_get.status_code == 200 and draft_delete.status_code == 200 and draft_missing.status_code == 404, {"save": draft_save.text, "get": draft_get.text, "delete": draft_delete.text, "missing": draft_missing.text})
 
         create_article_payload = {

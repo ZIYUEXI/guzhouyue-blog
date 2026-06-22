@@ -13,7 +13,7 @@ from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 import uvicorn
-from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
@@ -59,14 +59,19 @@ from .db import get_db, now_iso
 from .starfield import (
     archive_version,
     create_version as create_starfield_version,
-    generate_passages as generate_starfield_passages,
     generate_relationships as generate_starfield_relationships,
     get_admin_version as get_admin_starfield_version,
     get_public_starfield,
+    enqueue_passage_generation as enqueue_starfield_passage_generation,
+    enqueue_relationship_generation as enqueue_starfield_relationship_generation,
     list_versions as list_starfield_versions,
     publish_version as publish_starfield_version,
+    run_passage_generation_job as run_starfield_passage_generation_job,
+    run_relationship_generation_job as run_starfield_relationship_generation_job,
     update_passage as update_starfield_passage,
+    update_passages_bulk as update_starfield_passages_bulk,
     update_relationship as update_starfield_relationship,
+    update_relationships_bulk as update_starfield_relationships_bulk,
 )
 
 
@@ -452,20 +457,24 @@ async def admin_starfield_version(version_id: str, _token: str = Depends(require
 
 
 @app.post("/api/admin/starfield/versions/{version_id}/generate-passages")
-async def admin_generate_starfield_passages(version_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+async def admin_generate_starfield_passages(version_id: str, payload: dict[str, Any], background_tasks: BackgroundTasks, _token: str = Depends(require_admin)):
     try:
         article_ids = payload.get("articleIds")
         if not isinstance(article_ids, list):
             raise ValueError("articleIds must be a list")
-        return await generate_starfield_passages(version_id, [str(article_id) for article_id in article_ids])
+        result = enqueue_starfield_passage_generation(version_id, [str(article_id) for article_id in article_ids])
+        background_tasks.add_task(run_starfield_passage_generation_job, result["jobId"])
+        return result
     except ValueError as error_value:
         raise starfield_error(error_value) from error_value
 
 
 @app.post("/api/admin/starfield/versions/{version_id}/generate-relationships")
-async def admin_generate_starfield_relationships(version_id: str, _token: str = Depends(require_admin)):
+async def admin_generate_starfield_relationships(version_id: str, background_tasks: BackgroundTasks, _token: str = Depends(require_admin)):
     try:
-        return await generate_starfield_relationships(version_id)
+        result = enqueue_starfield_relationship_generation(version_id)
+        background_tasks.add_task(run_starfield_relationship_generation_job, result["jobId"])
+        return result
     except ValueError as error_value:
         raise starfield_error(error_value) from error_value
 
@@ -478,10 +487,26 @@ async def admin_update_starfield_passage(passage_id: str, payload: dict[str, Any
         raise starfield_error(error_value) from error_value
 
 
+@app.post("/api/admin/starfield/versions/{version_id}/passages/bulk")
+async def admin_bulk_update_starfield_passages(version_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return update_starfield_passages_bulk(version_id, payload)
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
 @app.put("/api/admin/starfield/relationships/{relationship_id}")
 async def admin_update_starfield_relationship(relationship_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
     try:
         return update_starfield_relationship(relationship_id, payload)
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
+@app.post("/api/admin/starfield/versions/{version_id}/relationships/bulk")
+async def admin_bulk_update_starfield_relationships(version_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return update_starfield_relationships_bulk(version_id, payload)
     except ValueError as error_value:
         raise starfield_error(error_value) from error_value
 
@@ -830,18 +855,14 @@ async def admin_save_note_sections(payload: Any = Body(...), _token: str = Depen
         normalized.append({"id": section_id, "name": name, "slugBase": slugify(item.get("slug") or name), "description": str(item.get("description") or ""), "sortOrder": index})
     now = now_iso()
     with get_db() as conn:
+        kept_ids = [item["id"] for item in normalized]
         if normalized:
             placeholders = ",".join("?" for _ in normalized)
-            conn.execute(
-                f"""
-                DELETE FROM note_sections
-                WHERE id NOT IN ({placeholders})
-                  AND NOT EXISTS (SELECT 1 FROM articles WHERE articles.category_id = note_sections.id)
-                """,
-                [item["id"] for item in normalized],
-            )
+            conn.execute(f"UPDATE articles SET category_id = NULL, updated_at = ? WHERE category_id NOT IN ({placeholders})", [now, *kept_ids])
+            conn.execute(f"DELETE FROM note_sections WHERE id NOT IN ({placeholders})", kept_ids)
         else:
-            conn.execute("DELETE FROM note_sections WHERE NOT EXISTS (SELECT 1 FROM articles WHERE articles.category_id = note_sections.id)")
+            conn.execute("UPDATE articles SET category_id = NULL, updated_at = ? WHERE category_id IS NOT NULL", (now,))
+            conn.execute("DELETE FROM note_sections")
         used_slugs: set[str] = set()
         for item in normalized:
             slug = item["slugBase"]

@@ -15,6 +15,9 @@ type AdminPanelId =
   | 'series'
   | 'gallery'
   | 'starfield'
+  | 'starfield-generate'
+  | 'starfield-review'
+  | 'tasks'
   | 'archive'
   | 'commands'
   | 'llm'
@@ -49,7 +52,7 @@ export function AdminDashboardPanel({
   const quickActions: Array<{ label: string; detail: string; panel: AdminPanelId; icon: ReactNode }> = [
     { label: '整理文章', detail: '搜索、预览、编辑和删除', panel: 'posts', icon: <FileText size={18} /> },
     { label: '维护图库', detail: `${content.galleryAlbums.length} 个相册，${galleryImageCount} 张图片`, panel: 'gallery', icon: <ImageIcon size={18} /> },
-    { label: '星图管理', detail: '生成、审核和发布文段星图', panel: 'starfield', icon: <Orbit size={18} /> },
+    { label: '星图生成', detail: 'Passage 切割与标签生成', panel: 'starfield-generate', icon: <Orbit size={18} /> },
     { label: '快速指令', detail: '管理员指令通道框架', panel: 'commands', icon: <SquareTerminal size={18} /> },
     { label: 'LLM 配置', detail: '服务商、模型和调用参数', panel: 'llm', icon: <Bot size={18} /> },
     { label: '更新首页', detail: '标题、按钮、关于和今日小记', panel: 'homepage', icon: <Settings size={18} /> },

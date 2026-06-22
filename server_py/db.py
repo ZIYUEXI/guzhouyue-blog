@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS starfield_relationships (
   target_passage_id TEXT NOT NULL,
   relationship_type TEXT NOT NULL,
   rationale TEXT NOT NULL DEFAULT '',
+  evidence_keywords_json TEXT NOT NULL DEFAULT '[]',
   strength REAL NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'suggested',
   is_cross_article INTEGER NOT NULL DEFAULT 1,
@@ -217,12 +218,26 @@ CREATE TABLE IF NOT EXISTS starfield_relationships (
   FOREIGN KEY (target_passage_id) REFERENCES starfield_passages(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS starfield_canonical_keywords (
+  id TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  aliases_json TEXT NOT NULL DEFAULT '[]',
+  passage_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (version_id) REFERENCES starfield_versions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS starfield_generation_jobs (
   id TEXT PRIMARY KEY,
   version_id TEXT NOT NULL,
   phase TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   selected_article_ids_json TEXT NOT NULL DEFAULT '[]',
+  progress_current INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  current_step TEXT NOT NULL DEFAULT '',
   error_message TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -273,6 +288,10 @@ def ensure_schema() -> None:
         _ensure_column(conn, "site_settings", "owner_name", "TEXT NOT NULL DEFAULT '孤舟月'")
         _ensure_column(conn, "site_settings", "owner_avatar_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "articles", "author_name", "TEXT NOT NULL DEFAULT '孤舟月'")
+        _ensure_column(conn, "starfield_relationships", "evidence_keywords_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(conn, "starfield_generation_jobs", "progress_current", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "starfield_generation_jobs", "progress_total", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "starfield_generation_jobs", "current_step", "TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

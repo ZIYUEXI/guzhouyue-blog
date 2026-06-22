@@ -1,11 +1,45 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 output/
-server/data/
-server/uploads/
-server/config.json
-backups/
-*.log
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# Local runtime data
+server/data/
+server/uploads/
+server/config.json
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+backups/
+
+# Python cache and local virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE and local tooling
+.idea/
+.vscode/
+.playwright-cli/
+
+# Logs and local debug artifacts
+*.log
+.codex-*.log
+output-starfield*.png
+reference-shiyun.png

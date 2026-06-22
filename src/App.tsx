@@ -8,6 +8,7 @@ import {
   FileText,
   Feather,
   Focus,
+  GitBranch,
   Heading2,
   Keyboard,
   List,
@@ -183,6 +184,7 @@ function App() {
   const [colorScheme, setColorScheme] = useState<ColorScheme>(() => readUserColorScheme());
   const [content, setContent] = useState<SiteContent>(() => readInitialSiteContent());
   const [adminAuthStatus, setAdminAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous'>('checking');
+  const [adminContentStatus, setAdminContentStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
   const [dataSourceNotice, setDataSourceNotice] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -242,6 +244,7 @@ function App() {
     async function loadSiteData() {
       try {
         if (isAdminRoute) {
+          setAdminContentStatus('loading');
           await fetchAdminMe();
           if (cancelled) {
             return;
@@ -261,6 +264,7 @@ function App() {
           const nextSettings = normalizeLoadedSettings(adminContent.settings, settings);
           setSettings(nextSettings);
           saveSiteSettings(nextSettings);
+          setAdminContentStatus('ready');
           return;
         }
 
@@ -299,6 +303,7 @@ function App() {
       } catch {
         if (isAdminRoute && !cancelled) {
           setAdminAuthStatus('anonymous');
+          setAdminContentStatus('error');
         }
         if (!cancelled && !isAdminRoute) {
           setDataSourceNotice('暂时无法连接数据库内容接口，文章、分类和标签未加载。');
@@ -374,6 +379,7 @@ function App() {
         onLogout={() => setAdminAuthStatus('anonymous')}
         onSettingsChange={updateSettings}
         onColorSchemeChange={updateColorScheme}
+        contentStatus={adminContentStatus}
       />
     );
   }
@@ -1093,6 +1099,9 @@ type AdminPanelId =
   | 'series'
   | 'gallery'
   | 'starfield'
+  | 'starfield-generate'
+  | 'starfield-review'
+  | 'tasks'
   | 'archive'
   | 'commands'
   | 'llm'
@@ -1113,6 +1122,9 @@ const adminPanelIds = new Set<AdminPanelId>([
   'series',
   'gallery',
   'starfield',
+  'starfield-generate',
+  'starfield-review',
+  'tasks',
   'archive',
   'commands',
   'llm',
@@ -1132,6 +1144,9 @@ function navigateAdmin(path: string) {
 function getAdminPanelFromUrl(): AdminPanelId {
   if (window.location.pathname === '/admin/posts') {
     const panel = window.location.search ? new URLSearchParams(window.location.search).get('panel') : null;
+    if (panel === 'starfield') {
+      return 'starfield-generate';
+    }
     return panel && adminPanelIds.has(panel as AdminPanelId) ? (panel as AdminPanelId) : 'posts';
   }
 
@@ -1178,6 +1193,7 @@ function getSafeAdminReturnPath(search: string) {
 
 function AdminPage({
   content,
+  contentStatus,
   colorScheme,
   onLogout,
   settings,
@@ -1186,6 +1202,7 @@ function AdminPage({
   onSettingsChange,
 }: {
   content: SiteContent;
+  contentStatus: 'idle' | 'loading' | 'ready' | 'error';
   colorScheme: ColorScheme;
   onLogout: () => void;
   settings: SiteSettings;
@@ -1200,6 +1217,8 @@ function AdminPage({
   const editPostSlug = getAdminEditPostSlug(window.location.pathname);
   const editingPost = editPostSlug ? getPostBySlug(content.posts, editPostSlug) : undefined;
   const isPostComposerRoute = window.location.pathname === '/admin/posts/new' || Boolean(editPostSlug);
+  const isEditingPostLoading = Boolean(editPostSlug && !editingPost && contentStatus !== 'ready');
+  const isEditingPostMissing = Boolean(editPostSlug && !editingPost && contentStatus === 'ready');
   const adminPostsPage = getAdminPostsPageFromUrl();
   const composerReturnPath = getSafeAdminReturnPath(window.location.search);
   const noteSectionsSaveTimerRef = useRef<number | null>(null);
@@ -1264,7 +1283,7 @@ function AdminPage({
 
   function saveNoteSectionsNow(nextSections: NoteSection[]) {
     clearPendingNoteSectionsSave();
-    void saveAdminNoteSections(nextSections).catch(() => undefined);
+    return saveAdminNoteSections(nextSections);
   }
 
   function updateStylePreset(stylePreset: StylePreset) {
@@ -1549,13 +1568,20 @@ function AdminPage({
       { id: makeClientId('section'), category: '新札记', description: '给这个札记分类写一句说明' },
     ];
     onContentChange({ ...content, noteSections: nextSections });
-    saveNoteSectionsNow(nextSections);
+    void saveNoteSectionsNow(nextSections).catch(() => undefined);
   }
 
   function deleteNoteSection(index: number) {
     const nextSections = content.noteSections.filter((_, sectionIndex) => sectionIndex !== index);
     onContentChange({ ...content, noteSections: nextSections });
-    saveNoteSectionsNow(nextSections);
+    void saveNoteSectionsNow(nextSections)
+      .then((savedSections) => {
+        onContentChange({ ...content, noteSections: normalizeApiNoteSections(savedSections) });
+      })
+      .catch(() => {
+        onContentChange(content);
+        window.alert('删除札记失败，请确认后台服务正在运行并且登录没有过期。');
+      });
   }
 
   function updateSeries(index: number, nextSeries: FeaturedSeries) {
@@ -1899,10 +1925,24 @@ function AdminPage({
         </header>
       )}
 
-      <main className={isPostComposerRoute ? 'admin-main admin-main-composer' : `admin-main${activePanel === 'starfield' ? ' admin-main-starfield' : ''}`}>
-        {isPostComposerRoute ? (
+      <main className={isPostComposerRoute ? 'admin-main admin-main-composer' : 'admin-main'}>
+        {isEditingPostLoading ? (
+          <AdminComposerStatus
+            returnPath={composerReturnPath}
+            siteName={content.homepage.siteName}
+            status="loading"
+            title="正在加载文章..."
+          />
+        ) : isEditingPostMissing ? (
+          <AdminComposerStatus
+            returnPath={composerReturnPath}
+            siteName={content.homepage.siteName}
+            status="missing"
+            title="没有找到这篇文章"
+          />
+        ) : isPostComposerRoute ? (
           <AdminPostComposer
-            key={editingPost?.slug ?? (editPostSlug ? `loading:${editPostSlug}` : 'new')}
+            key={editingPost?.slug ?? 'new'}
             editingPost={editingPost}
             galleryAlbums={content.galleryAlbums}
             noteSections={content.noteSections}
@@ -1945,7 +1985,9 @@ function AdminPage({
                   { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
                   { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
                   { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
-                  { panel: 'starfield', label: '星图管理', Icon: Orbit, meta: '文段关系' },
+                  { panel: 'starfield-generate', label: '星图生成', Icon: Orbit, meta: 'Passage' },
+                  { panel: 'starfield-review', label: '星图审批', Icon: GitBranch, meta: '文段关系' },
+                  { panel: 'tasks', label: '任务管理', Icon: List, meta: '后台任务' },
                   { panel: 'archive', label: '归档管理', Icon: CalendarDays, meta: `${archiveGroups.length} 个月` },
                   { panel: 'commands', label: '快速指令', Icon: SquareTerminal, meta: '指令通道' },
                   { panel: 'llm', label: 'LLM 配置', Icon: Bot, meta: 'deepseek-v4-pro' },
@@ -2038,7 +2080,11 @@ function AdminPage({
                   />
                 )}
 
-                {activePanel === 'starfield' && <AdminStarfieldPanel posts={content.posts} />}
+                {activePanel === 'starfield-generate' && <AdminStarfieldPanel mode="generation" posts={content.posts} />}
+
+                {activePanel === 'starfield-review' && <AdminStarfieldPanel mode="review" posts={content.posts} />}
+
+                {activePanel === 'tasks' && <AdminStarfieldPanel mode="tasks" posts={content.posts} />}
 
                 {activePanel === 'archive' && (
                   <AdminArchivePanel
@@ -2388,6 +2434,47 @@ function AdminCommentsPanel() {
   );
 }
 
+function AdminComposerStatus({
+  returnPath,
+  siteName,
+  status,
+  title,
+}: {
+  returnPath: string;
+  siteName: string;
+  status: 'loading' | 'missing';
+  title: string;
+}) {
+  return (
+    <section className="admin-composer typora-shell composer-status-shell" aria-label="文章编辑状态">
+      <header className="typora-topbar">
+        <div className="typora-brand-group">
+          <a className="brand typora-brand" href="/" aria-label={`返回${siteName}首页`}>
+            <span>{siteName}</span>
+            <small>内容管理</small>
+          </a>
+          <a className="typora-return-link" href="/">
+            返回首页
+          </a>
+          <div className="typora-doc-state">
+            <span>{status === 'loading' ? '加载中' : '不可编辑'}</span>
+            <strong>{title}</strong>
+          </div>
+        </div>
+        <div className="typora-top-actions">
+          <a className="secondary-action" href={returnPath}>
+            返回列表
+          </a>
+        </div>
+      </header>
+      <main className="composer-status-panel">
+        <strong>{title}</strong>
+        <p>{status === 'loading' ? '正在从后台读取文章内容。' : '这篇文章可能已被删除或尚未同步到后台。'}</p>
+      </main>
+    </section>
+  );
+}
+
 function AdminPostComposer({
   colorScheme,
   editingPost,
@@ -2459,8 +2546,10 @@ function AdminPostComposer({
   const [aiAgentSuggestion, setAiAgentSuggestion] = useState<ApiArticleMetadataSuggestion | null>(null);
   const markdownInputRef = useRef<HTMLTextAreaElement>(null);
   const mdxEditorRef = useRef<RichMarkdownEditorHandle>(null);
+  const skipNextWysiwygSyncRef = useRef(false);
   const paperRef = useRef<HTMLElement>(null);
   const savedSnapshotRef = useRef('');
+  const hydratedPostSnapshotRef = useRef('');
   const latestDraftRef = useRef<ComposerDraftData>({
     bodyMarkdown,
     category,
@@ -2593,6 +2682,11 @@ function AdminPostComposer({
   function updateBodyMarkdown(nextMarkdown: string) {
     setBodyMarkdown(nextMarkdown);
     updateDraftField({ bodyMarkdown: nextMarkdown }, { persistImmediately: true });
+  }
+
+  function updateBodyMarkdownFromWysiwyg(nextMarkdown: string) {
+    skipNextWysiwygSyncRef.current = true;
+    updateBodyMarkdown(nextMarkdown);
   }
 
   function updateComposerMode(nextMode: SetStateAction<ComposerMode>) {
@@ -3222,6 +3316,57 @@ function AdminPostComposer({
   }, []);
 
   useEffect(() => {
+    if (!editingPost) {
+      return;
+    }
+
+    const nextBodyMarkdown = getPostMarkdown(editingPost);
+    const nextData: ComposerDraftData = {
+      bodyMarkdown: nextBodyMarkdown,
+      category: editingPost.category || defaultCategory,
+      composerMode,
+      coverImage: editingPost.coverImage || '',
+      date: editingPost.date || formatToday(),
+      excerpt: editingPost.excerpt || '',
+      publishedAt: editingPost.publishedAt ?? null,
+      seoDescription: editingPost.seoDescription || '',
+      seoTitle: editingPost.seoTitle || '',
+      slug: editingPost.slug,
+      status: getPostStatus(editingPost),
+      tags: editingPost.tags,
+      title: editingPost.title,
+      tone: editingPost.tone || 'ink',
+    };
+    const nextPostSnapshot = createComposerSnapshot(nextData);
+    const shouldHydrate =
+      !hydratedPostSnapshotRef.current || currentSnapshot === hydratedPostSnapshotRef.current;
+
+    if (!shouldHydrate || hydratedPostSnapshotRef.current === nextPostSnapshot) {
+      return;
+    }
+
+    hydratedPostSnapshotRef.current = nextPostSnapshot;
+    latestDraftRef.current = nextData;
+    savedSnapshotRef.current = nextPostSnapshot;
+    setTitle(nextData.title);
+    setSlug(nextData.slug);
+    setSlugTouched(true);
+    setCategory(nextData.category);
+    setDate(nextData.date);
+    setPostStatus(nextData.status);
+    setPublishedAt(nextData.publishedAt);
+    setTone(nextData.tone);
+    setExcerpt(nextData.excerpt);
+    setTags(nextData.tags);
+    setBodyMarkdown(nextBodyMarkdown);
+    setSeoTitle(nextData.seoTitle);
+    setSeoDescription(nextData.seoDescription);
+    setCoverImage(nextData.coverImage);
+    setDraftStatus('clean');
+    mdxEditorRef.current?.setMarkdown(nextBodyMarkdown);
+  }, [composerMode, currentSnapshot, defaultCategory, editingPost]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadDraft() {
@@ -3345,9 +3490,16 @@ function AdminPostComposer({
   }, [applyShortcut]);
 
   useEffect(() => {
-    if (composerMode === 'wysiwyg') {
-      mdxEditorRef.current?.setMarkdown(bodyMarkdown);
+    if (composerMode !== 'wysiwyg') {
+      return;
     }
+
+    if (skipNextWysiwygSyncRef.current) {
+      skipNextWysiwygSyncRef.current = false;
+      return;
+    }
+
+    mdxEditorRef.current?.setMarkdown(bodyMarkdown);
   }, [bodyMarkdown, composerMode]);
 
   useEffect(() => {
@@ -3643,7 +3795,7 @@ function AdminPostComposer({
                       if (normalizedMarkdown !== nextMarkdown) {
                         mdxEditorRef.current?.setMarkdown(normalizedMarkdown);
                       }
-                      updateBodyMarkdown(normalizedMarkdown);
+                      updateBodyMarkdownFromWysiwyg(normalizedMarkdown);
                     }
                   }}
                   onInsertFormula={() => openFormulaDialog('block')}

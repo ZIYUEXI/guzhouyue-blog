@@ -88,6 +88,7 @@ export type ApiStarfieldRelationship = {
   relationshipType: 'same_topic' | 'prerequisite' | 'further_reading' | 'problem_solution' | 'comparison';
   relationshipLabel: string;
   rationale: string;
+  evidenceKeywords: string[];
   strength: number;
   status: 'suggested' | 'accepted' | 'hidden';
   isCrossArticle: boolean;
@@ -95,6 +96,16 @@ export type ApiStarfieldRelationship = {
   createdAt: string;
   updatedAt: string;
   reviewedAt?: string | null;
+};
+
+export type ApiStarfieldCanonicalKeyword = {
+  id: string;
+  versionId: string;
+  label: string;
+  aliases: string[];
+  passageIds: string[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ApiStarfieldPayload = {
@@ -111,12 +122,16 @@ export type ApiAdminStarfieldVersionPayload = {
   version: ApiStarfieldVersion;
   passages: ApiStarfieldPassage[];
   relationships: ApiStarfieldRelationship[];
+  canonicalKeywords: ApiStarfieldCanonicalKeyword[];
   jobs: Array<{
     id: string;
     versionId: string;
     phase: 'passages' | 'relationships';
     status: 'pending' | 'running' | 'succeeded' | 'failed';
     selectedArticleIds: string[];
+    progressCurrent: number;
+    progressTotal: number;
+    currentStep: string;
     errorMessage: string;
     createdAt: string;
     updatedAt: string;
@@ -471,10 +486,11 @@ export async function restoreAdminArticle(slug: string) {
 }
 
 export async function saveAdminNoteSections(noteSections: NoteSection[]) {
-  return requestJson<NoteSection[]>('/api/admin/note-sections', {
+  const payload = await requestJson<unknown[] | { items?: unknown[] }>('/api/admin/note-sections', {
     method: 'PUT',
     body: JSON.stringify(noteSections),
   });
+  return Array.isArray(payload) ? payload : payload.items ?? [];
 }
 
 export async function saveAdminFeaturedSeries(featuredSeries: FeaturedSeries[]) {
@@ -618,53 +634,88 @@ export async function fetchAdminStarfieldVersions() {
 }
 
 export async function createAdminStarfieldVersion(name: string) {
-  return requestJson<ApiAdminStarfieldVersionPayload>('/api/admin/starfield/versions', {
+  const payload = await requestJson<unknown>('/api/admin/starfield/versions', {
     method: 'POST',
     body: JSON.stringify({ name }),
   });
+  return normalizeAdminStarfieldVersionPayload(payload);
 }
 
 export async function fetchAdminStarfieldVersion(id: string) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(id)}`);
+  const payload = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(id)}`);
+  return normalizeAdminStarfieldVersionPayload(payload);
 }
 
 export async function generateAdminStarfieldPassages(versionId: string, articleIds: string[]) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-passages`, {
+  const payload = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-passages`, {
     method: 'POST',
     body: JSON.stringify({ articleIds }),
   });
+  return normalizeAdminStarfieldVersionPayload(payload);
 }
 
 export async function generateAdminStarfieldRelationships(versionId: string) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-relationships`, {
+  const payload = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-relationships`, {
     method: 'POST',
   });
+  return normalizeAdminStarfieldVersionPayload(payload);
 }
 
 export async function updateAdminStarfieldPassage(id: string, payload: Partial<ApiStarfieldPassage>) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/passages/${encodeURIComponent(id)}`, {
+  const response = await requestJson<unknown>(`/api/admin/starfield/passages/${encodeURIComponent(id)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+  return normalizeAdminStarfieldVersionPayload(response);
+}
+
+export async function bulkUpdateAdminStarfieldPassages(
+  versionId: string,
+  payload: { status: ApiStarfieldPassage['status']; passageIds?: string[]; sourceStatus?: ApiStarfieldPassage['status'] },
+) {
+  const response = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/passages/bulk`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return normalizeAdminStarfieldVersionPayload(response);
 }
 
 export async function updateAdminStarfieldRelationship(id: string, payload: Partial<ApiStarfieldRelationship>) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/relationships/${encodeURIComponent(id)}`, {
+  const response = await requestJson<unknown>(`/api/admin/starfield/relationships/${encodeURIComponent(id)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+  return normalizeAdminStarfieldVersionPayload(response);
+}
+
+export async function bulkUpdateAdminStarfieldRelationships(
+  versionId: string,
+  payload: {
+    status: ApiStarfieldRelationship['status'];
+    relationshipIds?: string[];
+    sourceStatus?: ApiStarfieldRelationship['status'];
+    crossArticleOnly?: boolean;
+  },
+) {
+  const response = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/relationships/bulk`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return normalizeAdminStarfieldVersionPayload(response);
 }
 
 export async function publishAdminStarfieldVersion(id: string) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(id)}/publish`, {
+  const payload = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(id)}/publish`, {
     method: 'POST',
   });
+  return normalizeAdminStarfieldVersionPayload(payload);
 }
 
 export async function archiveAdminStarfieldVersion(id: string) {
-  return requestJson<ApiAdminStarfieldVersionPayload>(`/api/admin/starfield/versions/${encodeURIComponent(id)}/archive`, {
+  const payload = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(id)}/archive`, {
     method: 'POST',
   });
+  return normalizeAdminStarfieldVersionPayload(payload);
 }
 
 export async function fetchAdminCommandGuide() {
@@ -1018,6 +1069,7 @@ function normalizeStarfieldRelationship(value: unknown): ApiStarfieldRelationshi
     relationshipType: normalizeRelationshipType(asText(value.relationshipType)),
     relationshipLabel: asText(value.relationshipLabel),
     rationale: asText(value.rationale),
+    evidenceKeywords: Array.isArray(value.evidenceKeywords) ? value.evidenceKeywords.map(asText).filter(Boolean) : [],
     strength: asNumber(value.strength, 1),
     status: value.status === 'accepted' || value.status === 'hidden' ? value.status : 'suggested',
     isCrossArticle: asBoolean(value.isCrossArticle, true),
@@ -1025,6 +1077,73 @@ function normalizeStarfieldRelationship(value: unknown): ApiStarfieldRelationshi
     createdAt: asText(value.createdAt),
     updatedAt: asText(value.updatedAt),
     reviewedAt: asText(value.reviewedAt) || null,
+  };
+}
+
+function normalizeStarfieldCanonicalKeyword(value: unknown): ApiStarfieldCanonicalKeyword | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    versionId: asText(value.versionId),
+    label: asText(value.label),
+    aliases: Array.isArray(value.aliases) ? value.aliases.map(asText).filter(Boolean) : [],
+    passageIds: Array.isArray(value.passageIds) ? value.passageIds.map(asText).filter(Boolean) : [],
+    createdAt: asText(value.createdAt),
+    updatedAt: asText(value.updatedAt),
+  };
+}
+
+function normalizeAdminStarfieldVersionPayload(value: unknown): ApiAdminStarfieldVersionPayload {
+  const payload = isRecord(value) ? value : {};
+  return {
+    version: normalizeStarfieldVersion(payload.version) ?? {
+      id: '',
+      name: '',
+      status: 'draft',
+      isActive: false,
+      sourceArticleIds: [],
+      generationModel: '',
+      generationPromptVersion: '',
+      createdAt: '',
+      updatedAt: '',
+      publishedAt: null,
+      passageCount: null,
+      acceptedPassageCount: null,
+      relationshipCount: null,
+      acceptedRelationshipCount: null,
+    },
+    passages: Array.isArray(payload.passages) ? payload.passages.map(normalizeStarfieldPassage).filter((item): item is ApiStarfieldPassage => item !== null) : [],
+    relationships: Array.isArray(payload.relationships) ? payload.relationships.map(normalizeStarfieldRelationship).filter((item): item is ApiStarfieldRelationship => item !== null) : [],
+    canonicalKeywords: Array.isArray(payload.canonicalKeywords) ? payload.canonicalKeywords.map(normalizeStarfieldCanonicalKeyword).filter((item): item is ApiStarfieldCanonicalKeyword => item !== null) : [],
+    jobs: Array.isArray(payload.jobs)
+      ? payload.jobs.map((job) => normalizeStarfieldJob(job))
+      : [],
+  };
+}
+
+function normalizeStarfieldJob(job: unknown): ApiAdminStarfieldVersionPayload['jobs'][number] {
+  const record = isRecord(job) ? job : {};
+  return {
+    id: asText(record.id),
+    versionId: asText(record.versionId),
+    phase: record.phase === 'passages' || record.phase === 'relationships' ? record.phase : 'passages',
+    status: record.status === 'pending' || record.status === 'running' || record.status === 'succeeded' || record.status === 'failed' ? record.status : 'pending',
+    selectedArticleIds: Array.isArray(record.selectedArticleIds) ? record.selectedArticleIds.map(asText).filter(Boolean) : [],
+    progressCurrent: asNumber(record.progressCurrent, 0),
+    progressTotal: asNumber(record.progressTotal, 0),
+    currentStep: asText(record.currentStep),
+    errorMessage: asText(record.errorMessage),
+    createdAt: asText(record.createdAt),
+    updatedAt: asText(record.updatedAt),
+    completedAt: asText(record.completedAt) || null,
   };
 }
 

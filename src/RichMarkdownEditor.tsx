@@ -270,6 +270,7 @@ const mathPlugin = realmPlugin({
 export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkdownEditorProps>(
   function RichMarkdownEditor({ markdown, onChange, onInsertFormula, onInsertGalleryImage }, ref) {
     const editorRef = useRef<MDXEditorMethods>(null);
+    const [parseError, setParseError] = useState('');
     const plugins = useMemo(
       () => [
         headingsPlugin(),
@@ -356,15 +357,27 @@ export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkd
     }));
 
     return (
-      <MDXEditor
-        className="typora-rich-editor"
-        contentEditableClassName="typora-rich-content"
-        markdown={markdown}
-        onChange={onChange}
-        plugins={plugins}
-        ref={editorRef}
-        spellCheck={false}
-      />
+      <>
+        {parseError && (
+          <div className="typora-rich-error" role="alert">
+            {parseError}
+          </div>
+        )}
+        <MDXEditor
+          className="typora-rich-editor"
+          contentEditableClassName="typora-rich-content"
+          markdown={markdown}
+          onChange={(nextMarkdown, initialNormalize) => {
+            setParseError('');
+            onChange(nextMarkdown, initialNormalize);
+          }}
+          onError={(payload) => setParseError(payload.error)}
+          plugins={plugins}
+          ref={editorRef}
+          spellCheck={false}
+          suppressHtmlProcessing
+        />
+      </>
     );
   },
 );
