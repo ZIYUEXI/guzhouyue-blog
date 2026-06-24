@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ClipboardList, Play, Search, ShieldCheck, SquareTerminal } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, ClipboardList, Play, Search, Send, ShieldCheck, SquareTerminal } from 'lucide-react';
 import {
   fetchAdminCommandGuide,
   parseAdminCommand,
   runAdminCommand,
+  runAdminCommandAi,
+  type ApiAdminCommandAiMessage,
+  type ApiAdminCommandAiResult,
   type ApiAdminCommandGuide,
   type ApiAdminCommandDescriptor,
   type ApiAdminCommandInvocation,
@@ -19,8 +22,13 @@ export function AdminCommandPanel() {
   const [commandQuery, setCommandQuery] = useState('');
   const [parseResult, setParseResult] = useState<ApiAdminCommandParseResult | null>(null);
   const [runResult, setRunResult] = useState<ApiAdminCommandRunResult | null>(null);
+  const [naturalInput, setNaturalInput] = useState('');
+  const [naturalHistory, setNaturalHistory] = useState<ApiAdminCommandAiMessage[]>([]);
+  const [naturalResult, setNaturalResult] = useState<ApiAdminCommandAiResult | null>(null);
+  const [recentAiResults, setRecentAiResults] = useState<unknown[]>([]);
   const [status, setStatus] = useState<CommandStatus>('loading');
   const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   const commands = guide?.commands ?? [];
   const commandCount = commands.length;
   const filteredCommands = useMemo(() => {
@@ -39,6 +47,7 @@ export function AdminCommandPanel() {
   }, [commandQuery, commands]);
   const groupedCommands = useMemo(() => groupCommandsByScope(filteredCommands), [filteredCommands]);
   const canSubmit = input.trim().length > 0 && !busy;
+  const canSubmitNatural = naturalInput.trim().length > 0 && !aiBusy;
   const visibleInvocation = useMemo(() => {
     if (runResult && 'invocation' in runResult) {
       return runResult.invocation;
@@ -108,12 +117,80 @@ export function AdminCommandPanel() {
     }
   }
 
+  async function handleNaturalRun() {
+    if (!canSubmitNatural) {
+      return;
+    }
+
+    const message = naturalInput.trim();
+    const nextHistory: ApiAdminCommandAiMessage[] = [...naturalHistory, { role: 'user', content: message }];
+    setAiBusy(true);
+    setNaturalInput('');
+    setNaturalHistory(nextHistory);
+    try {
+      const result = await runAdminCommandAi({
+        message,
+        history: nextHistory,
+        recentResults: recentAiResults,
+      });
+      const commandSummaries = result.results.map((item) => `${item.input} => ${item.status}`).join('\n');
+      setNaturalResult(result);
+      setNaturalHistory([...nextHistory, { role: 'assistant', content: [result.reply, commandSummaries].filter(Boolean).join('\n') }]);
+      setRecentAiResults(result.results);
+      const lastExecuted = [...result.results].reverse().find((item) => item.status === 'executed');
+      if (lastExecuted) {
+        setRunResult(lastExecuted);
+      }
+    } catch {
+      setNaturalResult(null);
+      setNaturalHistory([...nextHistory, { role: 'assistant', content: '自然语言指令暂时不可用，请确认 LLM 配置。' }]);
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
   return (
     <section className="admin-panel admin-command-panel" aria-label="快速指令通道">
       <header className="panel-header">
         <h2>快速指令</h2>
         <span className="admin-command-count">{commandCount} 条已注册</span>
       </header>
+
+      <section className="admin-command-ai" aria-label="自然语言指令助手">
+        <header className="admin-command-console-head">
+          <div>
+            <span>AI Command Planner</span>
+            <h3>自然语言助手</h3>
+          </div>
+          <small>模型只生成后台指令，实际写入仍由指令层执行。</small>
+        </header>
+        <label className="admin-command-natural-input">
+          <Bot size={18} />
+          <textarea
+            onChange={(event) => setNaturalInput(event.target.value)}
+            placeholder="例如：列举今天的文章；把刚才这些文章放到 2026 年 4 月份；把某某文章日期改为 2026.04.18"
+            rows={3}
+            value={naturalInput}
+          />
+        </label>
+        <div className="admin-command-actions">
+          <button className="primary-action" disabled={!canSubmitNatural} type="button" onClick={() => void handleNaturalRun()}>
+            <Send size={16} />
+            让 LLM 生成并执行指令
+          </button>
+        </div>
+        {naturalHistory.length > 0 && (
+          <div className="admin-command-chat-log" aria-label="自然语言指令对话记录">
+            {naturalHistory.slice(-6).map((message, index) => (
+              <p className={`admin-command-chat-message is-${message.role}`} key={`${message.role}-${index}-${message.content.slice(0, 12)}`}>
+                <strong>{message.role === 'user' ? '你' : 'LLM'}</strong>
+                <span>{message.content}</span>
+              </p>
+            ))}
+          </div>
+        )}
+        {naturalResult && <CommandAiResultView result={naturalResult} />}
+      </section>
 
       <div className="admin-command-body">
         <section className="admin-command-console" aria-label="指令输入">
@@ -409,6 +486,73 @@ function CommandResultView({ result }: { result: unknown }) {
       <pre className="admin-command-result-code">{JSON.stringify(result, null, 2)}</pre>
     </section>
   );
+}
+
+function CommandAiResultView({ result }: { result: ApiAdminCommandAiResult }) {
+  return (
+    <section className="admin-command-result" aria-label="自然语言指令执行结果">
+      <header>
+        <span>AI Result</span>
+        <strong>{result.results.length} 条指令</strong>
+      </header>
+      <p className="admin-command-ai-reply">{result.reply}</p>
+      {result.commands.length > 0 && (
+        <div className="admin-command-ai-plan">
+          {result.commands.map((command) => (
+            <div key={`${command.input}-${command.purpose}`}>
+              <code>{command.input}</code>
+              {command.purpose && <span>{command.purpose}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {result.results.map((item, index) => (
+        <div className="admin-command-ai-execution" key={`${item.input}-${index}`}>
+          <div>
+            <code>{item.input}</code>
+            <span>{item.status}</span>
+          </div>
+          {'result' in item && item.result !== undefined && <CommandAiExecutionResultView result={item.result} />}
+          {'errors' in item && Array.isArray(item.errors) && item.errors.length > 0 && <p className="admin-command-notice is-error">{item.errors.join(' ')}</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function CommandAiExecutionResultView({ result }: { result: unknown }) {
+  const normalizedResult = isRecord(result) ? result : null;
+  const articleItems = Array.isArray(normalizedResult?.items) ? normalizedResult.items.filter(isRecord) : [];
+  const article = isRecord(normalizedResult?.article) ? normalizedResult.article : null;
+
+  if (articleItems.length > 0) {
+    return (
+      <div className="admin-command-ai-result-list">
+        {articleItems.slice(0, 8).map((item) => (
+          <div key={asResultText(item.id) || asResultText(item.slug)}>
+            <span>{asResultText(item.title) || asResultText(item.slug)}</span>
+            <code>{asResultText(item.id) || asResultText(item.slug)}</code>
+            <small>{asResultText(item.publishedAt) || asResultText(item.updatedAt)}</small>
+          </div>
+        ))}
+        {articleItems.length > 8 && <small>另有 {articleItems.length - 8} 条结果。</small>}
+      </div>
+    );
+  }
+
+  if (article) {
+    return (
+      <div className="admin-command-ai-result-list">
+        <div>
+          <span>{asResultText(article.title) || '文章'}</span>
+          <code>{asResultText(article.id) || asResultText(article.slug)}</code>
+          <small>{asResultText(article.publishedAt) || asResultText(article.updatedAt)}</small>
+        </div>
+      </div>
+    );
+  }
+
+  return <pre className="admin-command-result-code">{JSON.stringify(result, null, 2)}</pre>;
 }
 
 function groupCommandsByScope(commands: ApiAdminCommandDescriptor[]) {

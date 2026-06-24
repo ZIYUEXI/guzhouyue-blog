@@ -97,7 +97,7 @@ def main() -> None:
         check("admin ops has database quick_check", admin_ops.status_code == 200 and admin_ops.json().get("database", {}).get("ok") is True, admin_ops.text)
         check("admin audit returns list", admin_audit.status_code == 200 and isinstance(admin_audit.json().get("items"), list), admin_audit.text)
         check("admin commands registry is available", admin_commands.status_code == 200 and len(admin_commands.json().get("commands", [])) >= 4, admin_commands.text)
-        check("public starfield has stable empty payload", public_starfield_empty.status_code == 200 and all(key in public_starfield_empty.json() for key in ["version", "passages", "relationships"]), public_starfield_empty.text)
+        check("public starfield has stable empty payload", public_starfield_empty.status_code == 200 and all(key in public_starfield_empty.json() for key in ["version", "passages", "relationships", "deepPaths"]), public_starfield_empty.text)
         check("admin write without csrf is rejected", csrf_missing.status_code in {401, 403}, csrf_missing.text)
 
         settings = client.put("/api/admin/settings", json={"stylePreset": "cyber", "ownerName": "测试站长", "ownerAvatarUrl": "/avatar.png"}, headers=write_headers)
@@ -237,6 +237,49 @@ def main() -> None:
             item.get("label") == "CompatSharedStarfieldKeyword" and len(item.get("passageIds", [])) >= 2
             for item in starfield_canonical_keyword_items
         )
+        starfield_deep_relationships = client.post(
+            f"/api/admin/starfield/versions/{starfield_version_id}/generate-deep-relationships",
+            headers=write_headers,
+        )
+        starfield_deep_relationship_job_id = starfield_deep_relationships.json().get("jobId", "")
+        starfield_deep_relationship_jobs = starfield_deep_relationships.json().get("jobs", [])
+        starfield_deep_relationship_initial_job = next((job for job in starfield_deep_relationship_jobs if job.get("id") == starfield_deep_relationship_job_id), None)
+        starfield_deep_relationship_task_created = (
+            starfield_deep_relationships.status_code == 200
+            and bool(starfield_deep_relationship_job_id)
+            and starfield_deep_relationship_initial_job is not None
+            and starfield_deep_relationship_initial_job.get("phase") == "deep-relationships"
+            and starfield_deep_relationship_initial_job.get("status") in {"pending", "running", "succeeded", "failed"}
+        )
+        starfield_deep_relationship_final_job = starfield_deep_relationship_initial_job
+        for _ in range(30):
+            starfield_deep_relationships = client.get(f"/api/admin/starfield/versions/{starfield_version_id}", headers=write_headers)
+            starfield_deep_relationship_jobs = starfield_deep_relationships.json().get("jobs", [])
+            starfield_deep_relationship_final_job = next((job for job in starfield_deep_relationship_jobs if job.get("id") == starfield_deep_relationship_job_id), None)
+            if starfield_deep_relationship_final_job and starfield_deep_relationship_final_job.get("status") in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        starfield_deep_relationship_requires_llm = (
+            starfield_deep_relationship_final_job is not None
+            and starfield_deep_relationship_final_job.get("status") == "failed"
+            and "LLM" in str(starfield_deep_relationship_final_job.get("errorMessage") or "")
+        )
+        accepted_deep_source_count = len([item for item in starfield_bulk_accept_passages.json().get("passages", []) if item.get("status") == "accepted"])
+        expected_deep_progress_total = ((accepted_deep_source_count + 5) // 6) + 3
+        starfield_deep_relationship_uses_batches = (
+            starfield_deep_relationship_final_job is not None
+            and int(starfield_deep_relationship_final_job.get("progressTotal") or 0) == expected_deep_progress_total
+        )
+        starfield_deep_paths_shape_ok = isinstance(starfield_deep_relationships.json().get("deepPaths"), list)
+        admin_tasks = client.get("/api/admin/tasks", headers=write_headers)
+        admin_task_items = admin_tasks.json().get("items", [])
+        admin_tasks_expose_general_source = any(
+            item.get("id") == starfield_deep_relationship_job_id
+            and item.get("phase") == "deep-relationships"
+            and item.get("sourceType") == "starfield"
+            and item.get("sourceName")
+            for item in admin_task_items
+        )
         starfield_bulk_accept_relationships = client.post(
             f"/api/admin/starfield/versions/{starfield_version_id}/relationships/bulk",
             json={"status": "accepted", "sourceStatus": "suggested", "crossArticleOnly": True},
@@ -259,12 +302,19 @@ def main() -> None:
         starfield_publish = client.post(f"/api/admin/starfield/versions/{starfield_version_id}/publish", headers=write_headers)
         public_starfield_after_publish = client.get("/api/starfield")
         public_starfield_relationships = public_starfield_after_publish.json().get("relationships", [])
+        public_starfield_deep_paths = public_starfield_after_publish.json().get("deepPaths", [])
         public_starfield_relationship_shape_ok = all(
             "status" not in item
             and "reviewNote" not in item
             and "evidenceKeywords" not in item
             and all(key in item for key in ["id", "sourcePassageId", "targetPassageId", "relationshipType", "relationshipLabel", "rationale", "strength", "isCrossArticle"])
             for item in public_starfield_relationships
+        )
+        public_starfield_deep_paths_shape_ok = isinstance(public_starfield_deep_paths, list) and all(
+            "status" not in item
+            and "reviewNote" not in item
+            and all(key in item for key in ["id", "sourcePassageId", "passageIds", "inquiry", "pathType", "title", "rationale", "retrievalNotes", "critique", "strength"])
+            for item in public_starfield_deep_paths
         )
         draft_payload = {
             "title": "草稿兼容测试",
@@ -320,10 +370,16 @@ def main() -> None:
         check("admin starfield same-article relationships default hidden", starfield_relationships.status_code == 200 and starfield_same_article_relationships_hidden, starfield_relationships.text)
         check("admin starfield relationships can be bulk accepted", starfield_bulk_accept_relationships.status_code == 200 and any(item.get("status") == "accepted" and item.get("isCrossArticle") for item in starfield_bulk_accept_relationships.json().get("relationships", [])), starfield_bulk_accept_relationships.text)
         check("admin starfield exposes canonical keywords", starfield_version_with_keywords.status_code == 200 and starfield_canonical_keywords_recorded, starfield_version_with_keywords.text)
+        check("admin starfield deep relationship generation creates progress task", starfield_deep_relationship_task_created, starfield_deep_relationships.text)
+        check("admin starfield deep relationship generation requires LLM agent", starfield_deep_relationship_requires_llm, starfield_deep_relationships.text)
+        check("admin starfield deep relationship generation uses passage batches", starfield_deep_relationship_uses_batches, starfield_deep_relationships.text)
+        check("admin starfield exposes deep path payload shape", starfield_deep_relationships.status_code == 200 and starfield_deep_paths_shape_ok, starfield_deep_relationships.text)
+        check("admin tasks expose generic task sources", admin_tasks.status_code == 200 and admin_tasks_expose_general_source, admin_tasks.text)
         check("admin starfield relationship acceptance is optional and safe", starfield_accept_relationship is None or starfield_accept_relationship.status_code == 200, starfield_accept_relationship.text if starfield_accept_relationship else "")
         check("admin starfield version can be published", starfield_publish.status_code == 200 and starfield_publish.json().get("version", {}).get("isActive") is True, starfield_publish.text)
         check("public starfield exposes accepted passages only", public_starfield_after_publish.status_code == 200 and len(public_starfield_after_publish.json().get("passages", [])) >= 1, public_starfield_after_publish.text)
         check("public starfield exposes reader relationship shape only", public_starfield_after_publish.status_code == 200 and len(public_starfield_relationships) >= 1 and public_starfield_relationship_shape_ok, public_starfield_after_publish.text)
+        check("public starfield exposes reader deep path shape only", public_starfield_after_publish.status_code == 200 and public_starfield_deep_paths_shape_ok, public_starfield_after_publish.text)
         check("draft save/get/delete roundtrip", draft_save.status_code == 200 and draft_get.status_code == 200 and draft_delete.status_code == 200 and draft_missing.status_code == 404, {"save": draft_save.text, "get": draft_get.text, "delete": draft_delete.text, "missing": draft_missing.text})
 
         create_article_payload = {
@@ -358,12 +414,16 @@ def main() -> None:
         command_unknown = client.post("/api/admin/commands/run", json={"input": "content:missing"}, headers=write_headers)
         command_get = client.post("/api/admin/commands/run", json={"input": "article:get-content article_test-markdown-kitchen-sink"}, headers=write_headers)
         command_date = client.post("/api/admin/commands/run", json={"input": "article:set-date test-markdown-kitchen-sink --date=\"2026.06.09 18:30\""}, headers=write_headers)
+        command_today = client.post("/api/admin/commands/run", json={"input": "article:list --date=today"}, headers=write_headers)
+        command_bulk_month = client.post("/api/admin/commands/run", json={"input": "article:set-date-bulk article_test-markdown-kitchen-sink --month=\"2026-04\""}, headers=write_headers)
 
         check("admin command parse works", command_parse.status_code == 200 and command_parse.json().get("ok") is True, command_parse.text)
         check("admin command dry run works", command_dry.status_code == 200 and command_dry.json().get("status") == "dry_run", command_dry.text)
         check("admin command unknown works", command_unknown.status_code == 200 and command_unknown.json().get("status") == "unknown_command", command_unknown.text)
         check("admin command get content works", command_get.status_code == 200 and command_get.json().get("status") == "executed", command_get.text)
         check("admin command date keeps old Beijing parsing", command_date.status_code == 200 and command_date.json().get("result", {}).get("article", {}).get("publishedAt") == "2026-06-09T10:30:00Z", command_date.text)
+        check("admin command can list today's articles", command_today.status_code == 200 and command_today.json().get("status") == "executed" and isinstance(command_today.json().get("result", {}).get("items"), list), command_today.text)
+        check("admin command can bulk move articles to month", command_bulk_month.status_code == 200 and command_bulk_month.json().get("result", {}).get("items", [{}])[0].get("publishedAt", "").startswith("2026-04"), command_bulk_month.text)
 
         admin_comments = client.get("/api/admin/comments?status=pending")
         pending_id = pending_comment.json().get("id")

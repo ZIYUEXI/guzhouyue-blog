@@ -176,6 +176,97 @@ def list_articles(options: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def list_tags() -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.tags_json
+            FROM articles a
+            WHERE a.deleted_at IS NULL
+            """
+        ).fetchall()
+
+    tag_stats: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        seen_in_article: set[str] = set()
+        for tag in normalize_article_tags(json_parse(row["tags_json"], [])):
+            stats = tag_stats.setdefault(
+                tag,
+                {
+                    "name": tag,
+                    "articleCount": 0,
+                    "occurrenceCount": 0,
+                },
+            )
+            stats["occurrenceCount"] += 1
+            if tag not in seen_in_article:
+                stats["articleCount"] += 1
+                seen_in_article.add(tag)
+
+    return sorted(tag_stats.values(), key=lambda item: (-item["articleCount"], item["name"].lower()))
+
+
+def delete_tag(tag_name: Any) -> dict[str, Any]:
+    tag = normalize_tag_value(tag_name)
+    if not tag:
+        raise ValueError("Tag is required")
+
+    return rewrite_article_tags(lambda tags: [item for item in tags if item != tag])
+
+
+def merge_tags(source_tag_name: Any, target_tag_name: Any) -> dict[str, Any]:
+    source_tag = normalize_tag_value(source_tag_name)
+    target_tag = normalize_tag_value(target_tag_name)
+    if not source_tag or not target_tag:
+        raise ValueError("Source and target tags are required")
+    if source_tag == target_tag:
+        raise ValueError("Source and target tags must be different")
+
+    return rewrite_article_tags(
+        lambda tags: normalize_article_tags(target_tag if item == source_tag else item for item in tags)
+    )
+
+
+def rewrite_article_tags(create_next_tags: Any) -> dict[str, Any]:
+    now = now_iso()
+    updated_ids: list[str] = []
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.*
+            FROM articles a
+            WHERE a.deleted_at IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            current_tags = normalize_article_tags(json_parse(row["tags_json"], []))
+            next_tags = normalize_article_tags(create_next_tags(current_tags))
+            if current_tags == next_tags:
+                continue
+            conn.execute(
+                "UPDATE articles SET tags_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(next_tags, ensure_ascii=False), now, row["id"]),
+            )
+            updated_ids.append(row["id"])
+
+        if not updated_ids:
+            return {"updatedCount": 0, "articles": []}
+
+        placeholders = ",".join("?" for _ in updated_ids)
+        updated_rows = conn.execute(
+            f"""
+            SELECT a.*, ns.name AS category_name, ns.slug AS category_slug
+            FROM articles a
+            LEFT JOIN note_sections ns ON ns.id = a.category_id
+            WHERE a.id IN ({placeholders})
+            ORDER BY COALESCE(a.published_at, a.updated_at) DESC
+            """,
+            updated_ids,
+        ).fetchall()
+
+    return {"updatedCount": len(updated_ids), "articles": [to_article(row) for row in updated_rows]}
+
+
 def list_deleted_articles() -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
@@ -593,6 +684,25 @@ def normalize_author_name(value: Any) -> str:
     return (str(value or "").strip()[:40]) or "孤舟月"
 
 
+def normalize_tag_value(value: Any) -> str:
+    return str(value or "").strip().removeprefix("#").strip()
+
+
+def normalize_article_tags(values: Any) -> list[str]:
+    if isinstance(values, (str, bytes)):
+        return []
+    try:
+        iterator = iter(values)
+    except TypeError:
+        return []
+    tags: list[str] = []
+    for value in iterator:
+        tag = normalize_tag_value(value)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
 def bool_from_input(value: Any, fallback: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -636,7 +746,7 @@ def create_article(input_data: dict[str, Any]) -> dict[str, Any] | None:
                 now,
                 now,
                 input_data.get("tone") or "ink",
-                json.dumps(input_data.get("tags") or [], ensure_ascii=False),
+                json.dumps(normalize_article_tags(input_data.get("tags") or []), ensure_ascii=False),
                 body_markdown,
                 input_data.get("seoTitle") or "",
                 input_data.get("seoDescription") or "",
@@ -680,7 +790,7 @@ def update_article(identifier: str, input_data: dict[str, Any]) -> dict[str, Any
                 published_at,
                 now_iso(),
                 input_data.get("tone", existing["tone"]),
-                json.dumps(input_data.get("tags", json_parse(existing["tags_json"], [])), ensure_ascii=False),
+                json.dumps(normalize_article_tags(input_data.get("tags", json_parse(existing["tags_json"], []))), ensure_ascii=False),
                 body_markdown,
                 input_data.get("seoTitle", existing["seo_title"]),
                 input_data.get("seoDescription", existing["seo_description"]),

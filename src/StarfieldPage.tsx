@@ -1,7 +1,7 @@
-import { ChevronRight, ExternalLink, Loader2, Network, Orbit, Search, SlidersHorizontal } from 'lucide-react';
+import { ChevronRight, ExternalLink, Loader2, Network, Orbit, Search, Unlock, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { fetchPublicStarfield, type ApiStarfieldPassage, type ApiStarfieldRelationship } from './apiClient';
+import { fetchPublicStarfield, type ApiStarfieldDeepPath, type ApiStarfieldPassage, type ApiStarfieldRelationship } from './apiClient';
 
 const categoryColors = ['#ffd65a', '#68d7ff', '#ff6f91', '#9aa7ff', '#9ee55b', '#ff9f43', '#c77dff'];
 
@@ -62,6 +62,11 @@ type GalaxyTuning = typeof DEFAULT_GALAXY_TUNING;
 type RelationshipNetworkFilter = {
   showAllSameTopic: boolean;
   topics: string[];
+  relationshipTypes: string[];
+};
+type FocusRequest = {
+  id: string;
+  nonce: number;
 };
 type CameraFlight = {
   active: boolean;
@@ -70,18 +75,22 @@ type CameraFlight = {
   fromPosition: THREE.Vector3;
   toPosition: THREE.Vector3;
   lookAt: THREE.Vector3;
+  targetId?: string;
+  targetOffset?: THREE.Vector3;
 };
 
 export function StarfieldPage() {
   const [passages, setPassages] = useState<ApiStarfieldPassage[]>([]);
   const [relationships, setRelationships] = useState<ApiStarfieldRelationship[]>([]);
+  const [deepPaths, setDeepPaths] = useState<ApiStarfieldDeepPath[]>([]);
   const [versionName, setVersionName] = useState('');
   const [activePassageId, setActivePassageId] = useState('');
+  const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
-  const [tuning, setTuning] = useState<GalaxyTuning>(DEFAULT_GALAXY_TUNING);
   const [relationshipNetwork, setRelationshipNetwork] = useState<RelationshipNetworkFilter>({
     showAllSameTopic: false,
     topics: [],
+    relationshipTypes: [],
   });
 
   useEffect(() => {
@@ -94,6 +103,7 @@ export function StarfieldPage() {
         }
         setPassages(payload.passages);
         setRelationships(payload.relationships);
+        setDeepPaths(payload.deepPaths);
         setVersionName(payload.version?.name ?? '');
         setStatus(payload.passages.length > 0 ? 'ready' : 'empty');
       })
@@ -115,6 +125,15 @@ export function StarfieldPage() {
   const sceneData = useMemo(() => createGalaxyScene(passages, relationships, colorMap), [colorMap, passages, relationships]);
   const activePassage = passages.find((passage) => passage.id === activePassageId) ?? null;
   const related = useMemo(() => getRelatedStars(activePassageId, passages, relationships), [activePassageId, passages, relationships]);
+  const activeDeepPaths = useMemo(() => getDeepPathsForPassage(activePassageId, deepPaths), [activePassageId, deepPaths]);
+  const focusPassage = (id: string) => {
+    setActivePassageId(id);
+    setFocusRequest((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+  };
+  const clearFocus = () => {
+    setActivePassageId('');
+    setFocusRequest(null);
+  };
 
   return (
     <section className="starfield-page" aria-label="星图">
@@ -156,34 +175,79 @@ export function StarfieldPage() {
           <GalaxyViewport
             data={sceneData}
             activePassageId={activePassageId}
+            focusRequest={focusRequest}
             onPickPassage={setActivePassageId}
             relationshipNetwork={relationshipNetwork}
-            tuning={tuning}
           />
 
-          <StarfieldTuningPanel tuning={tuning} onChange={setTuning} />
           <RelationshipNetworkPanel filter={relationshipNetwork} relationships={relationships} onChange={setRelationshipNetwork} />
 
           <aside className="starfield-focus-panel" aria-label="星点详情">
             {activePassage ? (
               <>
-                <span>{activePassage.article.category}</span>
+                <div className="starfield-focus-head">
+                  <span>{activePassage.article.category}</span>
+                  <button className="secondary-action starfield-focus-clear" type="button" onClick={clearFocus}>
+                    <X size={14} />
+                    取消聚焦
+                  </button>
+                </div>
                 <h2>{activePassage.title}</h2>
-                <p>{activePassage.excerpt || activePassage.text.slice(0, 160)}</p>
+                <p className="starfield-focus-excerpt">{activePassage.excerpt || activePassage.text.slice(0, 140)}</p>
                 <div className="starfield-keywords">
-                  {activePassage.keywords.map((keyword) => (
+                  {activePassage.keywords.slice(0, 4).map((keyword) => (
                     <small key={keyword}>{keyword}</small>
                   ))}
+                  {activePassage.keywords.length > 4 && <small>+{activePassage.keywords.length - 4}</small>}
                 </div>
                 <a className="primary-action" href={`/posts/${activePassage.article.slug}#${activePassage.anchor}`}>
                   定位到原文
                   <ExternalLink size={16} />
                 </a>
                 <div className="related-stars-list">
-                  <h3>相关星点</h3>
+                  {activeDeepPaths.length > 0 && (
+                    <>
+                      <h3>深层路径</h3>
+                      {activeDeepPaths.map((path) => {
+                        const currentIndex = path.passageIds.indexOf(activePassage.id);
+                        const nextPassageId = path.passageIds[currentIndex + 1] ?? path.passageIds[0];
+                        const nextPassage = passages.find((passage) => passage.id === nextPassageId) ?? null;
+                        return (
+                          <article className="starfield-deep-path-card" key={path.id}>
+                            <span>{path.pathType} · 强度 {path.strength.toFixed(2)}</span>
+                            <strong>{path.title}</strong>
+                            <p>{path.inquiry.question || path.rationale}</p>
+                            <div>
+                              {path.passageIds.map((passageId, index) => {
+                                const step = passages.find((passage) => passage.id === passageId);
+                                return (
+                                  <button
+                                    aria-current={passageId === activePassage.id ? 'step' : undefined}
+                                    key={`${path.id}-${passageId}`}
+                                    type="button"
+                                    onClick={() => focusPassage(passageId)}
+                                  >
+                                    <small>{index + 1}</small>
+                                    <span>{step?.title ?? '未知星点'}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {nextPassage && nextPassage.id !== activePassage.id && (
+                              <button className="primary-action" type="button" onClick={() => focusPassage(nextPassage.id)}>
+                                沿路径下一步
+                                <ChevronRight size={16} />
+                              </button>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </>
+                  )}
+                  <h3>相关关系</h3>
                   {related.length > 0 ? (
                     related.map(({ passage, relationship }) => (
-                      <button key={`${relationship.id}-${passage.id}`} type="button" onClick={() => setActivePassageId(passage.id)}>
+                      <button key={`${relationship.id}-${passage.id}`} type="button" onClick={() => focusPassage(passage.id)}>
                         <span>{relationship.relationshipLabel}</span>
                         <strong>{passage.title}</strong>
                         <small>{relationship.rationale}</small>
@@ -217,72 +281,20 @@ export function StarfieldPage() {
   );
 }
 
-function StarfieldTuningPanel({
-  tuning,
-  onChange,
-}: {
-  tuning: GalaxyTuning;
-  onChange: (next: GalaxyTuning) => void;
-}) {
-  const [rangeMultiplier, setRangeMultiplier] = useState(1);
-  const update = (key: keyof GalaxyTuning, value: number) => {
-    onChange({ ...tuning, [key]: value });
-  };
-  const max = 3 * rangeMultiplier;
-
-  return (
-    <aside className="starfield-tuning-panel" aria-label="星图调参">
-      <div className="starfield-tuning-head">
-        <div>
-          <SlidersHorizontal size={16} />
-          <span>视觉调参</span>
-        </div>
-        <div className="starfield-tuning-range" aria-label="滑动范围倍率">
-          {[1, 10, 100, 1000].map((multiplier) => (
-            <button
-              aria-pressed={rangeMultiplier === multiplier}
-              key={multiplier}
-              type="button"
-              onClick={() => setRangeMultiplier(multiplier)}
-            >
-              x{multiplier}
-            </button>
-          ))}
-        </div>
-      </div>
-      <TuningSlider label="全局曝光" max={max} value={tuning.exposure} onChange={(value) => update('exposure', value)} />
-      <TuningSlider label="背景亮度" max={max} value={tuning.particleBrightness} onChange={(value) => update('particleBrightness', value)} />
-      <TuningSlider label="背景粒径" max={max} value={tuning.particleSize} onChange={(value) => update('particleSize', value)} />
-      <TuningSlider label="背景锐度" max={max} value={tuning.particleSharpness} onChange={(value) => update('particleSharpness', value)} />
-      <TuningSlider label="远星亮度" max={max} value={tuning.domeBrightness} onChange={(value) => update('domeBrightness', value)} />
-      <TuningSlider label="远星粒径" max={max} value={tuning.domeSize} onChange={(value) => update('domeSize', value)} />
-      <TuningSlider label="星点亮度" max={max} value={tuning.passageBrightness} onChange={(value) => update('passageBrightness', value)} />
-      <TuningSlider label="星点粒径" max={max} value={tuning.passageSize} onChange={(value) => update('passageSize', value)} />
-    </aside>
-  );
-}
-
-function TuningSlider({
-  label,
-  max,
-  onChange,
-  value,
-}: {
-  label: string;
-  max: number;
-  onChange: (value: number) => void;
-  value: number;
-}) {
-  return (
-    <label className="starfield-tuning-control">
-      <span>{label}</span>
-      <input max={max} min={0} step={0.01} type="range" value={value} onChange={(event) => onChange(Number(event.target.value))} />
-      <strong>{value.toFixed(2)}x</strong>
-    </label>
-  );
-}
-
 const UNTITLED_SAME_TOPIC = '未标记主题';
+const relationshipTypeLabels: Record<string, string> = {
+  same_topic: '同一主题',
+  prerequisite: '前置知识',
+  further_reading: '延伸阅读',
+  problem_solution: '问题与解法',
+  comparison: '对比关系',
+  shared_principle: '共同原则',
+  same_problem_shape: '同构问题',
+  method_transfer: '方法迁移',
+  tradeoff_parallel: '取舍相似',
+  case_generalization: '案例与一般化',
+  implementation_echo: '实现呼应',
+};
 
 function getRelationshipTopics(relationship: ApiStarfieldRelationship) {
   const topics = relationship.evidenceKeywords
@@ -300,6 +312,16 @@ function getRelationshipTopics(relationship: ApiStarfieldRelationship) {
   return rationaleTopics.length > 0 ? rationaleTopics : [UNTITLED_SAME_TOPIC];
 }
 
+function getDeepPathsForPassage(activePassageId: string, deepPaths: ApiStarfieldDeepPath[]) {
+  if (!activePassageId) {
+    return [];
+  }
+  return deepPaths
+    .filter((path) => path.passageIds.includes(activePassageId))
+    .sort((left, right) => right.strength - left.strength)
+    .slice(0, 4);
+}
+
 function RelationshipNetworkPanel({
   filter,
   onChange,
@@ -309,6 +331,17 @@ function RelationshipNetworkPanel({
   onChange: (next: RelationshipNetworkFilter) => void;
   relationships: ApiStarfieldRelationship[];
 }) {
+  const relationshipTypes = useMemo(() => {
+    const next = new Map<string, { label: string; count: number }>();
+    relationships.forEach((relationship) => {
+      const current = next.get(relationship.relationshipType);
+      next.set(relationship.relationshipType, {
+        label: relationship.relationshipLabel || relationshipTypeLabels[relationship.relationshipType] || relationship.relationshipType,
+        count: (current?.count ?? 0) + 1,
+      });
+    });
+    return Array.from(next.entries()).sort((left, right) => right[1].count - left[1].count || left[1].label.localeCompare(right[1].label, 'zh-Hans-CN'));
+  }, [relationships]);
   const topics = useMemo(() => {
     const next = new Map<string, number>();
     relationships.forEach((relationship) => {
@@ -324,13 +357,21 @@ function RelationshipNetworkPanel({
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'zh-Hans-CN'))
       .slice(0, 30);
   }, [relationships]);
-  const selected = new Set(filter.topics);
+  const selectedTopics = new Set(filter.topics);
+  const selectedRelationshipTypes = new Set(filter.relationshipTypes);
 
   const toggleTopic = (topic: string) => {
-    const nextTopics = selected.has(topic)
+    const nextTopics = selectedTopics.has(topic)
       ? filter.topics.filter((item) => item !== topic)
       : [...filter.topics, topic];
-    onChange({ showAllSameTopic: false, topics: nextTopics });
+    onChange({ ...filter, showAllSameTopic: false, topics: nextTopics });
+  };
+
+  const toggleRelationshipType = (relationshipType: string) => {
+    const nextTypes = selectedRelationshipTypes.has(relationshipType)
+      ? filter.relationshipTypes.filter((item) => item !== relationshipType)
+      : [...filter.relationshipTypes, relationshipType];
+    onChange({ ...filter, relationshipTypes: nextTypes });
   };
 
   return (
@@ -338,21 +379,35 @@ function RelationshipNetworkPanel({
       <div className="starfield-network-head">
         <div>
           <Network size={16} />
-          <span>同一主题</span>
+          <span>关系分类</span>
         </div>
         <button
-          aria-pressed={filter.showAllSameTopic}
+          aria-pressed={filter.relationshipTypes.length === 0 && filter.topics.length === 0 && !filter.showAllSameTopic}
           type="button"
-          onClick={() => onChange({ showAllSameTopic: !filter.showAllSameTopic, topics: [] })}
+          onClick={() => onChange({ showAllSameTopic: false, topics: [], relationshipTypes: [] })}
         >
-          {filter.showAllSameTopic ? '全显' : '关闭'}
+          清除
         </button>
       </div>
-      <p className="starfield-network-copy">点击主题激活对应关系网。</p>
+      <p className="starfield-network-copy">点击关系类型或主题标签激活对应星线。</p>
+      <div className="starfield-network-types">
+        {relationshipTypes.map(([relationshipType, item]) => (
+          <button
+            aria-pressed={selectedRelationshipTypes.has(relationshipType)}
+            key={relationshipType}
+            type="button"
+            onClick={() => toggleRelationshipType(relationshipType)}
+          >
+            <span>{item.label}</span>
+            <small>{item.count}</small>
+          </button>
+        ))}
+      </div>
+      {topics.length > 0 && <p className="starfield-network-copy">同一主题标签</p>}
       <div className="starfield-network-types">
         {topics.map(([topic, count]) => (
           <button
-            aria-pressed={selected.has(topic)}
+            aria-pressed={selectedTopics.has(topic)}
             key={topic}
             type="button"
             onClick={() => toggleTopic(topic)}
@@ -369,15 +424,15 @@ function RelationshipNetworkPanel({
 function GalaxyViewport({
   activePassageId,
   data,
+  focusRequest,
   onPickPassage,
   relationshipNetwork,
-  tuning,
 }: {
   activePassageId: string;
   data: GalaxySceneData;
+  focusRequest: FocusRequest | null;
   onPickPassage: (id: string) => void;
   relationshipNetwork: RelationshipNetworkFilter;
-  tuning: GalaxyTuning;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -395,31 +450,57 @@ function GalaxyViewport({
   const targetFocusRef = useRef(new THREE.Vector3());
   const currentFocusRef = useRef(new THREE.Vector3());
   const cameraFlightRef = useRef<CameraFlight | null>(null);
+  const cameraLockRef = useRef<{ targetId: string; offset: THREE.Vector3 } | null>(null);
+  const focusPassageRef = useRef<(id: string, shouldLock?: boolean) => void>(() => undefined);
   const hoveredIdRef = useRef('');
   const activePassageIdRef = useRef(activePassageId);
+  const lockedPassageIdRef = useRef('');
   const sceneDataRef = useRef(data);
   const relationshipNetworkRef = useRef(relationshipNetwork);
-  const tuningRef = useRef(tuning);
+  const lastFocusRequestNonceRef = useRef(0);
+  const tuningRef = useRef<GalaxyTuning>(DEFAULT_GALAXY_TUNING);
   const keysRef = useRef<Record<string, boolean>>({});
   const lookRef = useRef({ active: false, lastX: 0, lastY: 0 });
   const cameraAnglesRef = useRef({ yaw: Math.PI, pitch: -0.92 });
+  const movementSpeedMultiplierRef = useRef(1);
+  const [lockedPassageId, setLockedPassageId] = useState('');
+
+  const setCameraLockTarget = (id: string) => {
+    lockedPassageIdRef.current = id;
+    setLockedPassageId(id);
+  };
+
+  const unlockCameraLock = () => {
+    cameraLockRef.current = null;
+    cameraFlightRef.current = null;
+    setCameraLockTarget('');
+  };
 
   useEffect(() => {
     activePassageIdRef.current = activePassageId;
+    if (!activePassageId) {
+      unlockCameraLock();
+    }
   }, [activePassageId]);
 
   useEffect(() => {
+    if (!focusRequest || focusRequest.nonce === lastFocusRequestNonceRef.current) {
+      return;
+    }
+    lastFocusRequestNonceRef.current = focusRequest.nonce;
+    focusPassageRef.current(focusRequest.id, true);
+  }, [focusRequest]);
+
+  useEffect(() => {
     sceneDataRef.current = data;
+    if (lockedPassageIdRef.current && !data.nodesById.has(lockedPassageIdRef.current)) {
+      unlockCameraLock();
+    }
   }, [data]);
 
   useEffect(() => {
     relationshipNetworkRef.current = relationshipNetwork;
   }, [relationshipNetwork]);
-
-  useEffect(() => {
-    tuningRef.current = tuning;
-    applyGalaxyTuning(rendererRef.current, galaxyMaterialRef.current, domeMaterialRef.current, tuning);
-  }, [tuning]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -525,18 +606,35 @@ function GalaxyViewport({
       }
     };
 
-    const startCameraFlightToPassage = (id: string) => {
+    const getPassageWorldPosition = (id: string) => {
       const node = sceneDataRef.current.nodesById.get(id);
-      if (!node || !cameraRef.current || !starGroupRef.current) {
+      if (!node || !starGroupRef.current) {
+        return null;
+      }
+      starGroupRef.current.updateMatrixWorld();
+      return node.position.clone().applyMatrix4(starGroupRef.current.matrixWorld);
+    };
+
+    const syncCameraAnglesToward = (lookAt: THREE.Vector3) => {
+      const direction = lookAt.clone().sub(camera.position).normalize();
+      cameraAnglesRef.current.yaw = Math.atan2(direction.x, direction.z);
+      cameraAnglesRef.current.pitch = Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1));
+    };
+
+    const startCameraFlightToPassage = (id: string, shouldLock = true) => {
+      const lookAt = getPassageWorldPosition(id);
+      if (!lookAt || !cameraRef.current) {
         return;
       }
-      const lookAt = node.position.clone().applyMatrix4(starGroupRef.current.matrixWorld);
       const currentCamera = cameraRef.current;
       const currentViewDirection = currentCamera.position.clone().sub(lookAt).normalize();
       if (currentViewDirection.lengthSq() === 0) {
         currentViewDirection.set(0, 0.42, 1).normalize();
       }
-      const toPosition = lookAt.clone().add(currentViewDirection.multiplyScalar(46)).add(new THREE.Vector3(0, 12, 0));
+      const targetOffset = currentViewDirection.multiplyScalar(46).add(new THREE.Vector3(0, 12, 0));
+      const toPosition = lookAt.clone().add(targetOffset);
+      cameraLockRef.current = shouldLock ? { targetId: id, offset: targetOffset.clone() } : null;
+      setCameraLockTarget(shouldLock ? id : '');
       cameraFlightRef.current = {
         active: true,
         startedAt: performance.now(),
@@ -544,7 +642,14 @@ function GalaxyViewport({
         fromPosition: currentCamera.position.clone(),
         toPosition,
         lookAt,
+        targetId: id,
+        targetOffset,
       };
+    };
+
+    focusPassageRef.current = (id: string, shouldLock = true) => {
+      onPickPassage(id);
+      startCameraFlightToPassage(id, shouldLock);
     };
 
     const handleDoubleClick = (event: MouseEvent) => {
@@ -553,8 +658,7 @@ function GalaxyViewport({
       pointerRef.current.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
       const picked = pickPassage(pointerRef.current, camera, raycasterRef.current, pickablesRef.current);
       if (picked?.id) {
-        onPickPassage(picked.id);
-        startCameraFlightToPassage(picked.id);
+        focusPassageRef.current(picked.id, true);
       }
     };
 
@@ -586,6 +690,16 @@ function GalaxyViewport({
       event.preventDefault();
     };
 
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const speedStep = event.deltaY < 0 ? 1.14 : 1 / 1.14;
+      movementSpeedMultiplierRef.current = THREE.MathUtils.clamp(
+        movementSpeedMultiplierRef.current * speedStep,
+        0.25,
+        8,
+      );
+    };
+
     const isTyping = () => {
       const active = document.activeElement;
       return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement || Boolean(active?.closest('[contenteditable="true"]'));
@@ -609,6 +723,7 @@ function GalaxyViewport({
     host.addEventListener('pointerdown', handleClick);
     host.addEventListener('dblclick', handleDoubleClick);
     host.addEventListener('contextmenu', handleContextMenu);
+    host.addEventListener('wheel', handleWheel, { passive: false });
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
 
@@ -658,23 +773,45 @@ function GalaxyViewport({
       if (keys.ShiftLeft || keys.ShiftRight) {
         move.y -= 1;
       }
+      const activeLock = cameraLockRef.current;
+      const lockedLookAt = activeLock ? getPassageWorldPosition(activeLock.targetId) : null;
+      if (activeLock && !lockedLookAt) {
+        unlockCameraLock();
+      }
       if (move.lengthSq() > 0) {
         cameraFlightRef.current = null;
-        const speed = (keys.ControlLeft || keys.ControlRight ? 62 : 36) * delta;
+        const speed = (keys.ControlLeft || keys.ControlRight ? 62 : 36) * movementSpeedMultiplierRef.current * delta;
         camera.position.add(move.normalize().multiplyScalar(speed));
-        camera.lookAt(camera.position.clone().add(forward));
+        if (activeLock && lockedLookAt) {
+          activeLock.offset.copy(camera.position).sub(lockedLookAt);
+          camera.lookAt(lockedLookAt);
+          syncCameraAnglesToward(lockedLookAt);
+        } else {
+          camera.lookAt(camera.position.clone().add(forward));
+        }
       } else if (cameraFlightRef.current?.active) {
         const flight = cameraFlightRef.current;
         const progress = Math.min(1, (now - flight.startedAt) / flight.duration);
         const eased = easeInOutCubic(progress);
-        camera.position.copy(flight.fromPosition).lerp(flight.toPosition, eased);
-        const direction = flight.lookAt.clone().sub(camera.position).normalize();
-        cameraAnglesRef.current.yaw = Math.atan2(direction.x, direction.z);
-        cameraAnglesRef.current.pitch = Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1));
-        camera.lookAt(flight.lookAt);
+        const liveLookAt = flight.targetId ? getPassageWorldPosition(flight.targetId) ?? flight.lookAt : flight.lookAt;
+        const liveToPosition = flight.targetOffset ? liveLookAt.clone().add(flight.targetOffset) : flight.toPosition;
+        camera.position.copy(flight.fromPosition).lerp(liveToPosition, eased);
+        camera.lookAt(liveLookAt);
+        syncCameraAnglesToward(liveLookAt);
         if (progress >= 1) {
+          if (flight.targetId && flight.targetOffset && cameraLockRef.current?.targetId === flight.targetId) {
+            cameraLockRef.current.offset.copy(camera.position).sub(liveLookAt);
+          }
           cameraFlightRef.current = null;
         }
+      } else if (activeLock && lockedLookAt) {
+        const lockedDistance = THREE.MathUtils.clamp(activeLock.offset.length(), 18, 180);
+        if (lookRef.current.active) {
+          activeLock.offset.copy(forward).multiplyScalar(-lockedDistance);
+        }
+        camera.position.lerp(lockedLookAt.clone().add(activeLock.offset), 0.18);
+        camera.lookAt(lockedLookAt);
+        syncCameraAnglesToward(lockedLookAt);
       } else {
         camera.lookAt(camera.position.clone().add(forward));
       }
@@ -713,7 +850,8 @@ function GalaxyViewport({
         const networkFilter = relationshipNetworkRef.current;
         const relationshipTopics = getRelationshipTopics(payload.relationship);
         const selectedByTopic = networkFilter.topics.some((topic) => relationshipTopics.includes(topic));
-        const selectedByNetwork = payload.relationship.relationshipType === 'same_topic' && (networkFilter.showAllSameTopic || selectedByTopic);
+        const selectedByType = networkFilter.relationshipTypes.includes(payload.relationship.relationshipType);
+        const selectedByNetwork = selectedByType || (payload.relationship.relationshipType === 'same_topic' && (networkFilter.showAllSameTopic || selectedByTopic));
         const selectedByFocus = relationFocusId && (payload.sourceId === relationFocusId || payload.targetId === relationFocusId);
         const selected = selectedByNetwork || selectedByFocus;
         const relationMaterial = line.material as THREE.ShaderMaterial;
@@ -740,6 +878,7 @@ function GalaxyViewport({
       host.removeEventListener('pointerdown', handleClick);
       host.removeEventListener('dblclick', handleDoubleClick);
       host.removeEventListener('contextmenu', handleContextMenu);
+      host.removeEventListener('wheel', handleWheel);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       observer.disconnect();
@@ -796,10 +935,7 @@ function GalaxyViewport({
     });
 
     data.edges.forEach((edge) => {
-      const points = [edge.source.position, edge.target.position].map((point) => point.clone());
-      const distance = points[0].distanceTo(points[1]);
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      geometry.setAttribute('lineDistance', new THREE.BufferAttribute(new Float32Array([0, distance]), 1));
+      const geometry = createRelationshipCurveGeometry(edge);
       const material = createRelationshipPulseMaterial(edge.source.color.clone().lerp(edge.target.color, 0.5));
       const line = new THREE.Line(geometry, material);
       line.userData = {
@@ -832,7 +968,15 @@ function GalaxyViewport({
           <span>3D Galaxy</span>
           <small>{data.nodes.length} 个星点 · {data.edges.length} 条关系</small>
         </div>
-        <div className="starfield-hint">WASD 移动 · 按住右键转动视角 · 点击星点查看关系</div>
+        <div className="starfield-hint">WASD 移动 · 滚轮调速 · 按住右键转动视角 · 双击星点锁定跟踪</div>
+        {(activePassageId || lockedPassageId) && (
+          <div className="starfield-camera-controls" aria-label="摄像机控制">
+            <button disabled={!lockedPassageId} type="button" onClick={unlockCameraLock}>
+              <Unlock size={14} />
+              {lockedPassageId ? '解锁视角锁定' : '未锁定'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1009,6 +1153,49 @@ function applyGalaxyTuning(
     domeMaterial.opacity = GALAXY_BASELINE.domeBrightness * domeBrightness;
     domeMaterial.needsUpdate = true;
   }
+}
+
+function createRelationshipCurveGeometry(edge: StarEdge) {
+  const start = edge.source.position.clone();
+  const end = edge.target.position.clone();
+  const midpoint = start.clone().add(end).multiplyScalar(0.5);
+  const distance = start.distanceTo(end);
+  const seed = stableStringSeed(`${edge.relationship.id}:${edge.source.passage.id}:${edge.target.passage.id}`);
+  const direction = end.clone().sub(start).normalize();
+  const radialDirection = new THREE.Vector3(midpoint.x, 0, midpoint.z);
+  if (radialDirection.lengthSq() < 0.001) {
+    radialDirection.set(-direction.z, 0, direction.x);
+  }
+  radialDirection.normalize();
+
+  const sideDirection = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(0, 1, 0));
+  if (sideDirection.lengthSq() < 0.001) {
+    sideDirection.set(1, 0, 0);
+  }
+  sideDirection.normalize();
+
+  const outwardBend = THREE.MathUtils.clamp(distance * 0.18, 8, 34);
+  const verticalLift = THREE.MathUtils.clamp(distance * (0.07 + seededRandom(seed + 13) * 0.06), 5, 24);
+  const sideBend = (seededRandom(seed + 29) - 0.5) * THREE.MathUtils.clamp(distance * 0.18, 5, 24);
+  const bendSign = seededRandom(seed + 41) < 0.28 ? -1 : 1;
+  const control = midpoint
+    .clone()
+    .add(radialDirection.multiplyScalar(outwardBend * bendSign))
+    .add(sideDirection.multiplyScalar(sideBend))
+    .add(new THREE.Vector3(0, verticalLift, 0));
+
+  const segments = THREE.MathUtils.clamp(Math.ceil(distance / 6), 18, 46);
+  const points = new THREE.QuadraticBezierCurve3(start, control, end).getPoints(segments);
+  const lineDistances = new Float32Array(points.length);
+  let accumulatedDistance = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    accumulatedDistance += points[index - 1].distanceTo(points[index]);
+    lineDistances[index] = accumulatedDistance;
+  }
+
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  geometry.setAttribute('lineDistance', new THREE.BufferAttribute(lineDistances, 1));
+  return geometry;
 }
 
 function createRelationshipPulseMaterial(color: THREE.Color) {
@@ -1483,8 +1670,13 @@ function getRelatedStars(activeId: string, passages: ApiStarfieldPassage[], rela
   }
   return relationships
     .filter((relationship) => relationship.sourcePassageId === activeId || relationship.targetPassageId === activeId)
-    .sort((left, right) => Number(right.isCrossArticle) - Number(left.isCrossArticle) || right.strength - left.strength)
-    .slice(0, 9)
+    .sort(
+      (left, right) =>
+        Number(right.relationshipType !== 'same_topic') - Number(left.relationshipType !== 'same_topic') ||
+        Number(right.isCrossArticle) - Number(left.isCrossArticle) ||
+        right.strength - left.strength,
+    )
+    .slice(0, 18)
     .map((relationship) => {
       const relatedId = relationship.sourcePassageId === activeId ? relationship.targetPassageId : relationship.sourcePassageId;
       const passage = passages.find((item) => item.id === relatedId);

@@ -229,6 +229,26 @@ CREATE TABLE IF NOT EXISTS starfield_canonical_keywords (
   FOREIGN KEY (version_id) REFERENCES starfield_versions(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS starfield_deep_paths (
+  id TEXT PRIMARY KEY,
+  version_id TEXT NOT NULL,
+  source_passage_id TEXT NOT NULL,
+  passage_ids_json TEXT NOT NULL DEFAULT '[]',
+  inquiry_json TEXT NOT NULL DEFAULT '{}',
+  path_type TEXT NOT NULL DEFAULT 'inquiry_path',
+  title TEXT NOT NULL DEFAULT '',
+  rationale TEXT NOT NULL DEFAULT '',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  strength REAL NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'suggested',
+  review_note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  reviewed_at TEXT,
+  FOREIGN KEY (version_id) REFERENCES starfield_versions(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_passage_id) REFERENCES starfield_passages(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS starfield_generation_jobs (
   id TEXT PRIMARY KEY,
   version_id TEXT NOT NULL,
@@ -292,6 +312,7 @@ def ensure_schema() -> None:
         _ensure_column(conn, "starfield_generation_jobs", "progress_current", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "starfield_generation_jobs", "progress_total", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "starfield_generation_jobs", "current_step", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "starfield_deep_paths", "review_note", "TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

@@ -37,6 +37,15 @@
 - `problem_solution`：问题与解法
 - `comparison`：对比关系
 
+深度关系挖掘额外使用抽象关系类型：
+
+- `shared_principle`：共同原则
+- `same_problem_shape`：同构问题
+- `method_transfer`：方法迁移
+- `tradeoff_parallel`：取舍相似
+- `case_generalization`：案例与一般化
+- `implementation_echo`：实现呼应
+
 ## 4. 产品流程
 
 ### 4.1 后台生成
@@ -55,6 +64,15 @@
 3. 共享同一个 Canonical Passage Keyword 的 Passage 形成 Keyword-Derived Relationship 候选边。
 4. Keyword-Derived Relationship 默认先作为 `same_topic` 候选关系。
 5. AI-agent 可在二次判断中读取两端 Passage Text，把 `same_topic` 升级为 `prerequisite`、`further_reading`、`problem_solution` 或 `comparison`。
+
+后台另设“深度关系挖掘”按钮，作为独立任务运行。它不替代普通关系生成，而是在已接受 Passage 之间寻找更抽象的跨文章关系：
+
+1. 复用 Passage Keyword 和 Canonical Passage Keyword 作为初始证据。
+2. 提取每个 Passage 背后的原则、问题结构、方法模式和取舍维度。
+3. 只为跨文章 Passage 生成深度候选边。
+4. AI-agent 只能在候选边内选择抽象关系类型，不能自由创造 Passage pair。
+5. 关系说明必须能落回两端 Passage 的内容证据，避免空泛关联。
+6. 生成结果仍为候选关系，需要管理员审核后才公开。
 
 约束：
 
@@ -330,6 +348,10 @@ CREATE TABLE IF NOT EXISTS starfield_generation_jobs (
 `POST /api/admin/starfield/versions/:id/generate-relationships`
 
 基于 accepted Passage 生成关系候选。
+
+`POST /api/admin/starfield/versions/:id/generate-deep-relationships`
+
+基于 accepted Passage 生成抽象关系候选，用于深度关系挖掘。
 
 `GET /api/admin/starfield/versions/:id`
 

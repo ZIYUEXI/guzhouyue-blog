@@ -84,6 +84,50 @@ _Avoid_: Keyword node, concept node, reader-facing tag
 A Passage Relationship proposed because multiple Passages share the same normalized Passage Keyword or highly similar Passage Keywords. The normalized keyword is evidence for the edge, not a graph node.
 _Avoid_: Keyword node, tag node, concept star
 
+**Concrete Relationship Mining**:
+The discovery of Passage Relationships whose usefulness can be explained by explicit topics, tools, named concepts, or direct semantic continuity between two Passages.
+_Avoid_: Tag matching, broad same-topic grouping
+
+**Deep Relationship Mining**:
+The discovery of Passage Relationships whose usefulness comes from shared problem structure, transferable method, underlying principle, recurring trade-off, or implementation pattern rather than obvious shared keywords.
+_Avoid_: Same-topic mining, keyword expansion, tag similarity
+
+**Deep Relationship Path**:
+A directional discovery path across multiple Passages where each step answers, extends, reframes, or transfers the Reader's understanding from the previous Passage. A Deep Relationship Path can make a distant Passage meaningful through an intermediate Passage even when the endpoints do not have a direct Passage Relationship.
+_Avoid_: Multi-tag match, undirected cluster, simple edge
+
+**Inquiry-Driven Exploration**:
+A Deep Relationship Mining approach where each source Passage first produces Reader-like inquiries, then searches for other Passages that answer, extend, challenge, or transfer those inquiries into a meaningful path.
+_Avoid_: Keyword search, tag expansion, pairwise similarity scoring
+
+**Inquiry**:
+A Reader-like question, curiosity, gap, or next-step intent that naturally emerges from a Passage and can guide discovery toward another Passage.
+_Avoid_: Search keyword, tag, relationship label
+
+**Cognitive Exploration Agent**:
+An LLM-mediated role in Inquiry-Driven Exploration that performs one part of the Reader-like discovery process, such as asking, searching, path-building, or challenging a Deep Relationship Path.
+_Avoid_: Local rule, scoring function, batch script
+
+**Inquirer Agent**:
+A Cognitive Exploration Agent that reads a source Passage and produces Reader-like Inquiries that can drive further discovery.
+_Avoid_: Keyword extractor, tag generator
+
+**Retriever Agent**:
+A Cognitive Exploration Agent that uses LLM-Led Retrieval to find Passages that may satisfy an Inquiry.
+_Avoid_: Search index, keyword matcher
+
+**Path-Builder Agent**:
+A Cognitive Exploration Agent that organizes a source Passage, candidate Passages, and possible intermediate Passages into a directional Deep Relationship Path.
+_Avoid_: Pair scorer, edge classifier
+
+**Critic Agent**:
+A Cognitive Exploration Agent that challenges whether a proposed Deep Relationship Path is grounded, useful, non-trivial, and not merely a same-topic connection.
+_Avoid_: Confidence score, validation script
+
+**LLM-Led Retrieval**:
+A retrieval step where an LLM decides the search perspectives, relevance, and inquiry fit, while tools may perform mechanical recall, ranking, deduplication, storage, or lookup.
+_Avoid_: Keyword-only retrieval, embedding-only retrieval, rule-led candidate generation
+
 **Passage Relationship**:
 A reader-facing connection between two Passages, including connections across different Articles.
 _Avoid_: Article relationship, backlink

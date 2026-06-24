@@ -1,25 +1,32 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Eye, GitBranch, Loader2, Orbit, Plus, Rocket, Sparkles, X } from 'lucide-react';
+import { Check, Eye, GitBranch, Loader2, Orbit, Plus, Rocket, Sparkles, Trash2, X } from 'lucide-react';
 import {
+  bulkUpdateAdminStarfieldDeepPaths,
   bulkUpdateAdminStarfieldPassages,
   bulkUpdateAdminStarfieldRelationships,
   createAdminStarfieldVersion,
+  deleteAdminStarfieldVersion,
+  fetchAdminTasks,
   fetchAdminStarfieldVersion,
   fetchAdminStarfieldVersions,
+  generateAdminStarfieldDeepRelationships,
   generateAdminStarfieldPassages,
   generateAdminStarfieldRelationships,
   publishAdminStarfieldVersion,
+  updateAdminStarfieldDeepPath,
   updateAdminStarfieldPassage,
   updateAdminStarfieldRelationship,
+  type ApiAdminTask,
   type ApiAdminStarfieldVersionPayload,
   type ApiStarfieldCanonicalKeyword,
+  type ApiStarfieldDeepPath,
   type ApiStarfieldPassage,
   type ApiStarfieldRelationship,
   type ApiStarfieldVersion,
 } from './apiClient';
 import type { Post } from './posts';
 
-type ReviewTab = 'passages' | 'relationships';
+type ReviewTab = 'passages' | 'relationships' | 'deepPaths';
 type ReviewFilter = 'all' | 'suggested' | 'accepted' | 'hidden';
 
 const relationshipTypeOptions: Array<{ value: ApiStarfieldRelationship['relationshipType']; label: string }> = [
@@ -28,6 +35,12 @@ const relationshipTypeOptions: Array<{ value: ApiStarfieldRelationship['relation
   { value: 'further_reading', label: '延伸阅读' },
   { value: 'problem_solution', label: '问题与解法' },
   { value: 'comparison', label: '对比关系' },
+  { value: 'shared_principle', label: '共同原则' },
+  { value: 'same_problem_shape', label: '同构问题' },
+  { value: 'method_transfer', label: '方法迁移' },
+  { value: 'tradeoff_parallel', label: '取舍相似' },
+  { value: 'case_generalization', label: '案例与一般化' },
+  { value: 'implementation_echo', label: '实现呼应' },
 ];
 
 const reviewFilters: Array<{ value: ReviewFilter; label: string }> = [
@@ -49,9 +62,12 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('suggested');
   const [selectedPassageId, setSelectedPassageId] = useState('');
   const [selectedRelationshipId, setSelectedRelationshipId] = useState('');
+  const [selectedDeepPathId, setSelectedDeepPathId] = useState('');
   const [selectedCanonicalKeywordId, setSelectedCanonicalKeywordId] = useState('');
   const [passageDrafts, setPassageDrafts] = useState<Record<string, { title: string; keywords: string }>>({});
   const [relationshipDrafts, setRelationshipDrafts] = useState<Record<string, { relationshipType: ApiStarfieldRelationship['relationshipType']; rationale: string; strength: string }>>({});
+  const [taskItems, setTaskItems] = useState<ApiAdminTask[]>([]);
+  const [taskSourceFilter, setTaskSourceFilter] = useState('all');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -60,10 +76,12 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const relationships = activePayload?.relationships ?? [];
   const crossArticleRelationships = relationships.filter((relationship) => relationship.isCrossArticle);
   const canonicalKeywords = activePayload?.canonicalKeywords ?? [];
+  const deepPaths = activePayload?.deepPaths ?? [];
   const acceptedPassages = passages.filter((passage) => passage.status === 'accepted');
   const suggestedPassages = passages.filter((passage) => passage.status === 'suggested');
   const acceptedRelationships = crossArticleRelationships.filter((relationship) => relationship.status === 'accepted');
   const suggestedRelationships = crossArticleRelationships.filter((relationship) => relationship.status === 'suggested');
+  const suggestedDeepPaths = deepPaths.filter((path) => path.status === 'suggested');
   const passageById = useMemo(() => Object.fromEntries(passages.map((passage) => [passage.id, passage])), [passages]);
   const selectedCanonicalKeyword = canonicalKeywords.find((keyword) => keyword.id === selectedCanonicalKeywordId) ?? null;
   const filteredPassages = useMemo(
@@ -74,6 +92,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
     () => filterRelationshipsByCanonicalKeyword(filterByStatus(crossArticleRelationships, reviewFilter), selectedCanonicalKeyword),
     [crossArticleRelationships, reviewFilter, selectedCanonicalKeyword],
   );
+  const filteredDeepPaths = useMemo(() => filterByStatus(deepPaths, reviewFilter), [deepPaths, reviewFilter]);
   const keywordPassages = useMemo(() => filterByCanonicalKeyword(passages, selectedCanonicalKeyword), [passages, selectedCanonicalKeyword]);
   const keywordRelationships = useMemo(
     () => filterRelationshipsByCanonicalKeyword(relationships, selectedCanonicalKeyword),
@@ -81,8 +100,10 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   );
   const visibleSuggestedPassages = filteredPassages.filter((passage) => passage.status === 'suggested');
   const visibleSuggestedRelationships = filteredRelationships.filter((relationship) => relationship.status === 'suggested');
+  const visibleSuggestedDeepPaths = filteredDeepPaths.filter((path) => path.status === 'suggested');
   const selectedPassage = filteredPassages.find((passage) => passage.id === selectedPassageId) ?? filteredPassages[0] ?? null;
   const selectedRelationship = filteredRelationships.find((relationship) => relationship.id === selectedRelationshipId) ?? filteredRelationships[0] ?? null;
+  const selectedDeepPath = filteredDeepPaths.find((path) => path.id === selectedDeepPathId) ?? filteredDeepPaths[0] ?? null;
   const sortedJobs = useMemo(
     () =>
       [...(activePayload?.jobs ?? [])]
@@ -92,6 +113,18 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const activeJobs = sortedJobs.slice(0, 6);
   const runningStarfieldJob = activePayload?.jobs.find((job) => job.status === 'pending' || job.status === 'running') ?? null;
   const passageGenerationBusy = Boolean(runningStarfieldJob && runningStarfieldJob.phase === 'passages');
+  const taskSourceOptions = useMemo(() => {
+    const sources = new Map<string, string>();
+    taskItems.forEach((task) => {
+      const key = task.sourceType || 'unknown';
+      sources.set(key, task.sourceLabel || key);
+    });
+    return Array.from(sources.entries());
+  }, [taskItems]);
+  const filteredTaskItems = useMemo(
+    () => (taskSourceFilter === 'all' ? taskItems : taskItems.filter((task) => (task.sourceType || 'unknown') === taskSourceFilter)),
+    [taskItems, taskSourceFilter],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -124,6 +157,31 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (mode !== 'tasks') {
+      return;
+    }
+    let cancelled = false;
+    const loadTasks = async () => {
+      try {
+        const items = await fetchAdminTasks();
+        if (!cancelled) {
+          setTaskItems(items);
+        }
+      } catch {
+        if (!cancelled) {
+          setNotice('任务管理接口暂时不可用。');
+        }
+      }
+    };
+    void loadTasks();
+    const interval = window.setInterval(() => void loadTasks(), 1600);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [mode]);
 
   useEffect(() => {
     if (!activeVersion || !runningStarfieldJob) {
@@ -162,7 +220,8 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
     );
     setSelectedPassageId((id) => (id && passages.some((passage) => passage.id === id) ? id : passages[0]?.id ?? ''));
     setSelectedRelationshipId((id) => (id && relationships.some((relationship) => relationship.id === id) ? id : relationships[0]?.id ?? ''));
-  }, [passages, relationships]);
+    setSelectedDeepPathId((id) => (id && deepPaths.some((path) => path.id === id) ? id : deepPaths[0]?.id ?? ''));
+  }, [passages, relationships, deepPaths]);
 
   useEffect(() => {
     setSelectedCanonicalKeywordId((id) => (id && canonicalKeywords.some((keyword) => keyword.id === id) ? id : ''));
@@ -208,6 +267,32 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
       setReviewTab('passages');
       return payload;
     }, '已创建新的星图版本。');
+  }
+
+  async function deleteVersion(version: ApiStarfieldVersion) {
+    const confirmed = window.confirm(`确定删除星图版本“${version.name}”吗？此操作会删除它的 Passage、关系和任务记录，无法撤销。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setBusy(true);
+    setNotice('');
+    try {
+      await deleteAdminStarfieldVersion(version.id);
+      const items = await fetchAdminStarfieldVersions();
+      setVersions(items);
+      const nextVersion = items.find((item) => item.isActive) ?? items[0] ?? null;
+      if (nextVersion) {
+        setActivePayload(await fetchAdminStarfieldVersion(nextVersion.id));
+      } else {
+        setActivePayload(null);
+      }
+      setNotice('星图版本已删除。');
+    } catch {
+      setNotice('删除失败，请确认登录状态和后台服务。');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function generatePassages() {
@@ -308,6 +393,37 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
     );
   }
 
+  async function saveDeepPath(path: ApiStarfieldDeepPath, status: ApiStarfieldDeepPath['status'] = path.status) {
+    await runAction(
+      () => updateAdminStarfieldDeepPath(path.id, { status }),
+      status === path.status ? '深层路径已保存。' : status === 'accepted' ? '深层路径已接受。' : '深层路径已隐藏。',
+    );
+  }
+
+  async function bulkUpdateDeepPaths(items: ApiStarfieldDeepPath[], status: ApiStarfieldDeepPath['status']) {
+    if (!activePayload || items.length === 0) {
+      return;
+    }
+    await runAction(
+      () =>
+        bulkUpdateAdminStarfieldDeepPaths(activePayload.version.id, {
+          status,
+          pathIds: items.map((item) => item.id),
+        }),
+      status === 'accepted' ? `已接受 ${items.length} 条深层路径。` : `已隐藏 ${items.length} 条深层路径。`,
+    );
+  }
+
+  async function acceptAllSuggestedDeepPaths() {
+    if (!activePayload || suggestedDeepPaths.length === 0) {
+      return;
+    }
+    await runAction(
+      () => bulkUpdateAdminStarfieldDeepPaths(activePayload.version.id, { status: 'accepted', sourceStatus: 'suggested' }),
+      `已一键接受 ${suggestedDeepPaths.length} 条深层路径。`,
+    );
+  }
+
   const title = mode === 'generation' ? '星图生成' : mode === 'review' ? '星图审批' : '任务管理';
   const subtitle = mode === 'generation' ? 'Passage 切割与标签生成' : mode === 'review' ? '审核 Passage、标签关系与发布星图' : '查看 AI-agent 后台任务状态';
 
@@ -344,15 +460,27 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
             </div>
             <div className="starfield-version-list">
               {versions.map((version) => (
-                <button
-                  aria-pressed={activeVersion?.id === version.id}
-                  key={version.id}
-                  type="button"
-                  onClick={() => void refreshVersion(version.id)}
-                >
-                  <strong>{version.name}</strong>
-                  <small>{version.isActive ? '当前公开' : version.status} · {version.acceptedPassageCount ?? 0} 星点 · {version.acceptedRelationshipCount ?? 0} 关系</small>
-                </button>
+                <div className="starfield-version-row" key={version.id}>
+                  <button
+                    aria-pressed={activeVersion?.id === version.id}
+                    className="starfield-version-select-action"
+                    type="button"
+                    onClick={() => void refreshVersion(version.id)}
+                  >
+                    <strong>{version.name}</strong>
+                    <small>{version.isActive ? '当前公开' : version.status} · {version.acceptedPassageCount ?? 0} 星点 · {version.acceptedRelationshipCount ?? 0} 关系</small>
+                  </button>
+                  <button
+                    aria-label={`删除星图版本 ${version.name}`}
+                    className="secondary-action starfield-version-delete-action"
+                    disabled={busy}
+                    title="删除星图版本"
+                    type="button"
+                    onClick={() => void deleteVersion(version)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               ))}
               {versions.length === 0 && <p>还没有星图版本。</p>}
             </div>
@@ -393,7 +521,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
 
           {activePayload && (
             <section className="starfield-console-card starfield-status-card">
-              <StarfieldMetrics passages={passages} relationships={relationships} canonicalKeywords={canonicalKeywords} />
+              <StarfieldMetrics passages={passages} relationships={relationships} canonicalKeywords={canonicalKeywords} deepPaths={deepPaths} />
               <JobList jobs={activeJobs} />
             </section>
           )}
@@ -422,6 +550,10 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                 关系
                 <span>{suggestedRelationships.length}/{crossArticleRelationships.length}</span>
               </button>
+              <button aria-selected={reviewTab === 'deepPaths'} type="button" onClick={() => setReviewTab('deepPaths')}>
+                深层路径
+                <span>{suggestedDeepPaths.length}/{deepPaths.length}</span>
+              </button>
             </div>
             <div className="starfield-filter-tabs" aria-label="审核状态">
               {reviewFilters.map((filter) => (
@@ -446,7 +578,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                     隐藏候选
                   </button>
                 </>
-              ) : (
+              ) : reviewTab === 'relationships' ? (
                 <>
                   <button className="primary-action" disabled={busy || suggestedRelationships.length === 0 || !activePayload} type="button" onClick={() => void acceptAllSuggestedRelationships()}>
                     <Check size={15} />
@@ -461,10 +593,30 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                     隐藏候选
                   </button>
                 </>
+              ) : (
+                <>
+                  <button className="primary-action" disabled={busy || suggestedDeepPaths.length === 0 || !activePayload} type="button" onClick={() => void acceptAllSuggestedDeepPaths()}>
+                    <Check size={15} />
+                    一键接受全部
+                  </button>
+                  <button className="secondary-action" disabled={busy || visibleSuggestedDeepPaths.length === 0} type="button" onClick={() => void bulkUpdateDeepPaths(visibleSuggestedDeepPaths, 'accepted')}>
+                    <Check size={15} />
+                    接受当前筛选
+                  </button>
+                  <button className="secondary-action" disabled={busy || visibleSuggestedDeepPaths.length === 0} type="button" onClick={() => void bulkUpdateDeepPaths(visibleSuggestedDeepPaths, 'hidden')}>
+                    <X size={15} />
+                    隐藏候选
+                  </button>
+                  <span className="starfield-toolbar-note">相邻星线可在“关系”中审核。</span>
+                </>
               )}
               <button className="primary-action" disabled={busy || acceptedPassages.length < 2 || !activePayload} type="button" onClick={() => void runAction(() => generateAdminStarfieldRelationships(activePayload!.version.id), '关系生成任务已创建，可在任务管理查看进度。')}>
                 <GitBranch size={16} />
                 生成关系
+              </button>
+              <button className="secondary-action" disabled={busy || acceptedPassages.length < 2 || !activePayload} type="button" onClick={() => void runAction(() => generateAdminStarfieldDeepRelationships(activePayload!.version.id), '深度关系挖掘任务已创建，可在任务管理查看进度。')}>
+                <Sparkles size={16} />
+                深度关系挖掘
               </button>
               <button className="primary-action" disabled={busy || acceptedPassages.length < 1 || !activePayload} type="button" onClick={() => void runAction(() => publishAdminStarfieldVersion(activePayload!.version.id), '星图已发布给读者。')}>
                 <Rocket size={16} />
@@ -501,7 +653,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                     <p>{passage.excerpt || passage.text.slice(0, 110)}</p>
                   </button>
                 ))
-              ) : (
+              ) : reviewTab === 'relationships' ? (
                 filteredRelationships.map((relationship) => {
                   const source = passageById[relationship.sourcePassageId];
                   const target = passageById[relationship.targetPassageId];
@@ -521,11 +673,31 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                     </button>
                   );
                 })
+              ) : (
+                filteredDeepPaths.map((path) => (
+                  <button
+                    aria-pressed={selectedDeepPath?.id === path.id}
+                    className="starfield-review-row"
+                    key={path.id}
+                    type="button"
+                    onClick={() => setSelectedDeepPathId(path.id)}
+                  >
+                    <StatusPill status={path.status} />
+                    <strong>{path.title}</strong>
+                    <small>{path.pathType} · {path.passageIds.length} 步 · 强度 {path.strength.toFixed(2)}</small>
+                    <p>{path.inquiry.question || path.rationale}</p>
+                  </button>
+                ))
               )}
               {reviewTab === 'passages' && filteredPassages.length === 0 && <p className="starfield-empty-list">没有符合筛选条件的 Passage。</p>}
               {reviewTab === 'relationships' && filteredRelationships.length === 0 && (
                 <p className="starfield-empty-list">
                   {acceptedPassages.length < 2 ? '至少接受 2 个 Passage 后才能生成关系。' : '还没有关系候选，请点击上方“生成关系”，然后到任务管理查看进度。'}
+                </p>
+              )}
+              {reviewTab === 'deepPaths' && filteredDeepPaths.length === 0 && (
+                <p className="starfield-empty-list">
+                  {acceptedPassages.length < 2 ? '至少接受 2 个 Passage 后才能深层挖掘。' : '还没有深层路径，请点击上方“深度关系挖掘”。'}
                 </p>
               )}
             </div>
@@ -550,7 +722,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                 ) : (
                   <EmptyDetail title="没有 Passage" />
                 )
-              ) : selectedRelationship ? (
+              ) : reviewTab === 'relationships' ? selectedRelationship ? (
                 <RelationshipEditor
                   busy={busy}
                   draft={
@@ -568,6 +740,10 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                 />
               ) : (
                 <EmptyDetail title="没有关系" />
+              ) : selectedDeepPath ? (
+                <DeepPathDetail busy={busy} path={selectedDeepPath} passageById={passageById} onSave={(status) => void saveDeepPath(selectedDeepPath, status)} />
+              ) : (
+                <EmptyDetail title="没有深层路径" />
               )}
             </aside>
           </div>
@@ -579,21 +755,25 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
           <section className="starfield-console-card">
             <div className="starfield-section-head">
               <div>
-                <h3>任务来源</h3>
-                <p>当前先展示星图任务，后续其他后台任务会接入这里。</p>
+                <h3>任务类型</h3>
+                <p>按后台任务来源筛选，不绑定具体星图版本。</p>
               </div>
               {busy && <Loader2 size={16} />}
             </div>
-            <div className="starfield-version-list is-horizontal">
-              {versions.map((version) => (
+            <div className="starfield-task-source-list">
+              <button aria-pressed={taskSourceFilter === 'all'} type="button" onClick={() => setTaskSourceFilter('all')}>
+                <strong>全部任务</strong>
+                <small>{taskItems.length} 个任务</small>
+              </button>
+              {taskSourceOptions.map(([sourceType, label]) => (
                 <button
-                  aria-pressed={activeVersion?.id === version.id}
-                  key={version.id}
+                  aria-pressed={taskSourceFilter === sourceType}
+                  key={sourceType}
                   type="button"
-                  onClick={() => void refreshVersion(version.id)}
+                  onClick={() => setTaskSourceFilter(sourceType)}
                 >
-                  <strong>{version.name}</strong>
-                  <small>{version.isActive ? '当前公开' : version.status}</small>
+                  <strong>{label}</strong>
+                  <small>{taskItems.filter((task) => (task.sourceType || 'unknown') === sourceType).length} 个任务</small>
                 </button>
               ))}
             </div>
@@ -603,10 +783,10 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
             <div className="starfield-section-head">
               <div>
                 <h3>后台任务</h3>
-                <p>{activeVersion ? `星图版本：${activeVersion.name}` : '请选择版本。'}</p>
+                <p>{taskSourceFilter === 'all' ? '所有后台任务' : `来源：${taskSourceOptions.find(([sourceType]) => sourceType === taskSourceFilter)?.[1] ?? taskSourceFilter}`}</p>
               </div>
             </div>
-            <JobList jobs={sortedJobs} large />
+            <JobList jobs={filteredTaskItems} large showSource />
           </section>
         </div>
       )}
@@ -618,10 +798,12 @@ function StarfieldMetrics({
   passages,
   relationships,
   canonicalKeywords,
+  deepPaths,
 }: {
   passages: ApiStarfieldPassage[];
   relationships: ApiStarfieldRelationship[];
   canonicalKeywords: ApiStarfieldCanonicalKeyword[];
+  deepPaths: ApiStarfieldDeepPath[];
 }) {
   const suggestedPassages = passages.filter((passage) => passage.status === 'suggested');
   const suggestedRelationships = relationships.filter((relationship) => relationship.status === 'suggested');
@@ -631,24 +813,34 @@ function StarfieldMetrics({
       <span><strong>{suggestedPassages.length}</strong><small>待审星点</small></span>
       <span><strong>{relationships.length}</strong><small>关系</small></span>
       <span><strong>{suggestedRelationships.length}</strong><small>待审关系</small></span>
+      <span><strong>{deepPaths.length}</strong><small>深层路径</small></span>
       <span><strong>{canonicalKeywords.length}</strong><small>合并标签</small></span>
     </div>
   );
 }
 
-function JobList({ jobs, large = false }: { jobs: ApiAdminStarfieldVersionPayload['jobs']; large?: boolean }) {
+function JobList({ jobs, large = false, showSource = false }: { jobs: ApiAdminTask[]; large?: boolean; showSource?: boolean }) {
   return (
     <div className={`starfield-job-list${large ? ' is-large' : ''}`}>
       {jobs.map((job) => (
         <div className="starfield-job-item" key={job.id}>
-          <small>{job.phase} · {job.status}{job.errorMessage ? ` · ${job.errorMessage}` : ''}</small>
+          <small>{formatTaskPhase(job.phase)} · {job.status}{showSource && job.sourceName ? ` · ${job.sourceLabel || '来源'}：${job.sourceName}` : ''}{job.errorMessage ? ` · ${job.errorMessage}` : ''}</small>
           <span>{job.currentStep || (job.status === 'pending' || job.status === 'running' ? '等待 AI-agent 更新任务状态。' : '任务没有记录详细步骤。')}</span>
           <progress max={Math.max(1, job.progressTotal)} value={Math.min(job.progressCurrent, Math.max(1, job.progressTotal))} />
         </div>
       ))}
-      {jobs.length === 0 && <p>还没有生成任务。</p>}
+      {jobs.length === 0 && <p>还没有后台任务。</p>}
     </div>
   );
+}
+
+function formatTaskPhase(phase: string) {
+  const labels: Record<string, string> = {
+    passages: 'Passage 生成',
+    relationships: '关系生成',
+    'deep-relationships': '深度关系挖掘',
+  };
+  return labels[phase] ?? phase;
 }
 
 function PassageEditor({
@@ -759,6 +951,77 @@ function RelationshipEditor({
         <button className="secondary-action" disabled={busy} type="button" onClick={() => onSave()}>
           保存
         </button>
+        <button className="primary-action" disabled={busy} type="button" onClick={() => onSave('accepted')}>
+          接受
+        </button>
+        <button className="secondary-action" disabled={busy} type="button" onClick={() => onSave('hidden')}>
+          隐藏
+        </button>
+      </div>
+    </>
+  );
+}
+
+function DeepPathDetail({
+  busy,
+  onSave,
+  passageById,
+  path,
+}: {
+  busy: boolean;
+  onSave: (status?: ApiStarfieldDeepPath['status']) => void;
+  passageById: Record<string, ApiStarfieldPassage>;
+  path: ApiStarfieldDeepPath;
+}) {
+  return (
+    <>
+      <div className="starfield-detail-head">
+        <StatusPill status={path.status} />
+        <span>深层路径 · {path.pathType}</span>
+      </div>
+      <section className="starfield-deep-path-section">
+        <small>Inquirer Agent</small>
+        <strong>{path.inquiry.question || path.title}</strong>
+        {path.inquiry.intentType && <span>{path.inquiry.intentType}</span>}
+      </section>
+      <section className="starfield-deep-path-steps">
+        <small>Path-Builder Agent</small>
+        {path.passageIds.map((passageId, index) => {
+          const passage = passageById[passageId];
+          return (
+            <div key={`${path.id}-${passageId}`}>
+              <span>{index + 1}</span>
+              <div>
+                <strong>{passage?.title ?? '未知 Passage'}</strong>
+                <small>{passage?.article.title ?? passageId}</small>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+      <section className="starfield-deep-path-section">
+        <small>路径说明</small>
+        <p>{path.rationale}</p>
+      </section>
+      {path.retrievalNotes.length > 0 && (
+        <section className="starfield-deep-path-section">
+          <small>Retriever Agent</small>
+          <ul>
+            {path.retrievalNotes.map((note, index) => (
+              <li key={`${path.id}-note-${index}`}>{note}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <section className="starfield-deep-path-section">
+        <small>Critic Agent</small>
+        <p>{path.critique || '没有记录质疑说明。'}</p>
+      </section>
+      <section className="starfield-deep-path-section">
+        <small>强度</small>
+        <strong>{path.strength.toFixed(2)}</strong>
+      </section>
+      <div className="starfield-detail-actions">
         <button className="primary-action" disabled={busy} type="button" onClick={() => onSave('accepted')}>
           接受
         </button>

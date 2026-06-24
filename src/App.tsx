@@ -29,6 +29,7 @@ import {
   SquareTerminal,
   Sun,
   Table2,
+  Tags,
   Trash2,
   X,
 } from 'lucide-react';
@@ -45,6 +46,7 @@ import { AdminCommandPanel } from './AdminCommandPanel';
 import { AdminDashboardPanel } from './AdminDashboardPanel';
 import { AdminPostsPanel } from './AdminPostsPanel';
 import { AdminStarfieldPanel } from './AdminStarfieldPanel';
+import { AdminTagsPanel } from './AdminTagsPanel';
 import { useArticleHead } from './articleSeo';
 import { MarkdownBody } from './MarkdownBody';
 import { PublicGalleryPage } from './PublicGalleryPage';
@@ -73,9 +75,11 @@ import {
   clearAdminDraft,
   createAdminArticle,
   deleteAdminArticle,
+  deleteAdminTag,
   fetchAdminContent,
   fetchAdminComments,
   fetchAdminDraft,
+  fetchAdminTags,
   fetchAdminLlmConfig,
   fetchAdminLlmTokenUsage,
   fetchAdminMe,
@@ -90,6 +94,7 @@ import {
   fetchPublicStarfield,
   loginAdmin,
   logoutAdmin,
+  mergeAdminTags,
   normalizeApiFeaturedSeries,
   normalizeApiGalleryAlbum,
   normalizeApiGalleryAlbums,
@@ -762,6 +767,31 @@ function collectExistingTags(posts: Post[]) {
   return normalizeTags(posts.flatMap((post) => post.tags));
 }
 
+function buildLocalAdminTags(posts: Post[]) {
+  const stats = new Map<string, { name: string; articleCount: number; occurrenceCount: number }>();
+  posts.forEach((post) => {
+    const seenTags = new Set<string>();
+    post.tags.forEach((tagName) => {
+      const tag = normalizeTag(tagName);
+      if (!tag) {
+        return;
+      }
+
+      const tagStats = stats.get(tag) ?? { name: tag, articleCount: 0, occurrenceCount: 0 };
+      tagStats.occurrenceCount += 1;
+      if (!seenTags.has(tag)) {
+        tagStats.articleCount += 1;
+        seenTags.add(tag);
+      }
+      stats.set(tag, tagStats);
+    });
+  });
+
+  return Array.from(stats.values()).sort((firstTag, secondTag) =>
+    secondTag.articleCount - firstTag.articleCount || firstTag.name.localeCompare(secondTag.name),
+  );
+}
+
 function getPostMarkdown(post: Post) {
   return post.bodyMarkdown?.trim() || post.body.join('\n\n') || '这里还没有正文。';
 }
@@ -1094,6 +1124,7 @@ type AdminPanelId =
   | 'overview'
   | 'posts'
   | 'trash'
+  | 'tags'
   | 'comments'
   | 'notes'
   | 'series'
@@ -1117,6 +1148,7 @@ const adminPanelIds = new Set<AdminPanelId>([
   'overview',
   'posts',
   'trash',
+  'tags',
   'comments',
   'notes',
   'series',
@@ -1212,6 +1244,7 @@ function AdminPage({
 }) {
   const [activePanel, setActivePanel] = useState<AdminPanelId>(() => getAdminPanelFromUrl());
   const [deletedPosts, setDeletedPosts] = useState<Post[]>([]);
+  const [adminTags, setAdminTags] = useState(() => buildLocalAdminTags(content.posts));
   const [trashNotice, setTrashNotice] = useState('');
   const archiveGroups = buildArchive(content.posts);
   const editPostSlug = getAdminEditPostSlug(window.location.pathname);
@@ -1259,6 +1292,32 @@ function AdminPage({
   }, [isPostComposerRoute]);
 
   useEffect(() => {
+    if (isPostComposerRoute) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadTags() {
+      try {
+        const tags = await fetchAdminTags();
+        if (!cancelled) {
+          setAdminTags(tags);
+        }
+      } catch {
+        if (!cancelled) {
+          setAdminTags(buildLocalAdminTags(content.posts));
+        }
+      }
+    }
+
+    void loadTags();
+    return () => {
+      cancelled = true;
+    };
+  }, [content.posts, isPostComposerRoute]);
+
+  useEffect(() => {
     return () => {
       if (noteSectionsSaveTimerRef.current !== null) {
         window.clearTimeout(noteSectionsSaveTimerRef.current);
@@ -1284,6 +1343,17 @@ function AdminPage({
   function saveNoteSectionsNow(nextSections: NoteSection[]) {
     clearPendingNoteSectionsSave();
     return saveAdminNoteSections(nextSections);
+  }
+
+  function applyUpdatedPosts(updatedPosts: Post[]) {
+    if (updatedPosts.length === 0) {
+      return;
+    }
+
+    const updatedBySlug = new Map(updatedPosts.map((post) => [post.slug, post]));
+    const nextPosts = sortPosts(content.posts.map((post) => updatedBySlug.get(post.slug) ?? post));
+    onContentChange({ ...content, posts: nextPosts });
+    setAdminTags(buildLocalAdminTags(nextPosts));
   }
 
   function updateStylePreset(stylePreset: StylePreset) {
@@ -1552,6 +1622,28 @@ function AdminPage({
     }
 
     return { success: updatedPosts.length, failed: targetSlugs.length - updatedPosts.length };
+  }
+
+  async function removeTagFromPosts(tag: string): Promise<BatchResult> {
+    try {
+      const payload = await deleteAdminTag(tag);
+      const updatedPosts = payload.articles.map(normalizeApiPost).filter((post): post is Post => post !== null);
+      applyUpdatedPosts(updatedPosts);
+      return { success: payload.updatedCount, failed: 0 };
+    } catch {
+      return { success: 0, failed: 1 };
+    }
+  }
+
+  async function mergePostTags(sourceTag: string, targetTag: string): Promise<BatchResult> {
+    try {
+      const payload = await mergeAdminTags(sourceTag, targetTag);
+      const updatedPosts = payload.articles.map(normalizeApiPost).filter((post): post is Post => post !== null);
+      applyUpdatedPosts(updatedPosts);
+      return { success: payload.updatedCount, failed: 0 };
+    } catch {
+      return { success: 0, failed: 1 };
+    }
   }
 
   function updateNoteSection(index: number, nextSection: NoteSection) {
@@ -1980,6 +2072,7 @@ function AdminPage({
                 {[
                   { panel: 'overview', label: '总览', Icon: Columns2, meta: `${content.posts.length} 篇内容` },
                   { panel: 'posts', label: '文章管理', Icon: FileText, meta: `${content.posts.length} 篇` },
+                  { panel: 'tags', label: '标签管理', Icon: Tags, meta: `${adminTags.length} 个` },
                   { panel: 'trash', label: '回收站', Icon: Trash2, meta: `${deletedPosts.length} 篇` },
                   { panel: 'comments', label: '评论审核', Icon: MessageCircle, meta: '待处理' },
                   { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
@@ -2032,6 +2125,15 @@ function AdminPage({
                     onSyncPost={syncPost}
                     onUnpublishPosts={unpublishPosts}
                     posts={content.posts}
+                  />
+                )}
+
+                {activePanel === 'tags' && (
+                  <AdminTagsPanel
+                    onDeleteTag={removeTagFromPosts}
+                    onMergeTags={mergePostTags}
+                    posts={content.posts}
+                    tags={adminTags}
                   />
                 )}
 

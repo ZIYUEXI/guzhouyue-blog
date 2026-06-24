@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import calendar
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .content import list_articles, update_article
@@ -27,6 +28,7 @@ COMMANDS: dict[str, Command] = {}
 COMMAND_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*$")
 OPTION_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 MAX_COMMAND_LENGTH = 2000
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def register(command: Command) -> None:
@@ -178,6 +180,15 @@ def _option_text(invocation: dict[str, Any], key: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _option_values(invocation: dict[str, Any], key: str) -> list[str]:
+    value = invocation["options"].get(key)
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
 def _article_id(invocation: dict[str, Any]) -> str:
     article_id = _option_text(invocation, "id") or (invocation["positional"][0].strip() if invocation["positional"] else "")
     if not article_id:
@@ -185,19 +196,121 @@ def _article_id(invocation: dict[str, Any]) -> str:
     return article_id
 
 
+def _to_utc_iso(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=BEIJING_TZ)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _parse_strict_command_date(value: str) -> str:
     text = value.strip()
     match = re.match(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?$", text)
     if match:
         year, month, day, hour, minute = match.groups()
-        date = datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), tzinfo=timezone.utc)
-        date = date.replace(tzinfo=timezone.utc).timestamp() - 8 * 60 * 60
-        date = datetime.fromtimestamp(date, timezone.utc)
-        return date.isoformat().replace("+00:00", "Z")
+        return _to_utc_iso(datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), tzinfo=BEIJING_TZ))
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat().replace("+00:00", "Z")
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=BEIJING_TZ)
+        return _to_utc_iso(parsed)
     except ValueError as error:
         raise ValueError(f"日期无效：{value}") from error
+
+
+def _parse_command_month(value: str, context: dict[str, Any] | None = None) -> tuple[int, int]:
+    text = value.strip().lower()
+    now = _context_local_datetime(context or {})
+    match = re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月", text)
+    if not match:
+        match = re.search(r"(\d{4})[.-](\d{1,2})", text)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+    else:
+        match = re.search(r"(\d{1,2})\s*月", text)
+        if not match:
+            raise ValueError(f"月份无效：{value}")
+        year = now.year
+        month = int(match.group(1))
+    if month < 1 or month > 12:
+        raise ValueError(f"月份无效：{value}")
+    return year, month
+
+
+def _parse_local_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=BEIJING_TZ)
+    return parsed.astimezone(BEIJING_TZ)
+
+
+def _context_local_datetime(context: dict[str, Any]) -> datetime:
+    return _parse_local_datetime(str(context.get("requestedAt") or "")) or datetime.now(BEIJING_TZ)
+
+
+def _article_brief(article: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": article["id"],
+        "slug": article["slug"],
+        "title": article["title"],
+        "status": article["status"],
+        "date": article["date"],
+        "publishedAt": article["publishedAt"],
+        "updatedAt": article["updatedAt"],
+    }
+
+
+def _list_all_admin_articles() -> list[dict[str, Any]]:
+    return list_articles({"page": 1, "pageSize": 1000, "includeDrafts": True})["items"]
+
+
+def _matches_date_filter(article: dict[str, Any], target_date: datetime.date) -> bool:
+    local_date = _parse_local_datetime(article.get("publishedAt") or article.get("createdAt"))
+    return bool(local_date and local_date.date() == target_date)
+
+
+def _matches_month_filter(article: dict[str, Any], year: int, month: int) -> bool:
+    local_date = _parse_local_datetime(article.get("publishedAt") or article.get("createdAt"))
+    return bool(local_date and local_date.year == year and local_date.month == month)
+
+
+def _collect_article_targets(invocation: dict[str, Any]) -> list[str]:
+    targets: list[str] = []
+    for value in [*invocation["positional"], *_option_values(invocation, "id"), *_option_values(invocation, "article"), *_option_values(invocation, "slug")]:
+        for part in str(value).split(","):
+            target = part.strip()
+            if target and target not in targets:
+                targets.append(target)
+    ids_text = _option_text(invocation, "ids")
+    if ids_text:
+        for part in ids_text.split(","):
+            target = part.strip()
+            if target and target not in targets:
+                targets.append(target)
+    return targets
+
+
+def _resolve_unique_article_target(target: str, items: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    articles = items or _list_all_admin_articles()
+    direct = [item for item in articles if item["id"] == target or item["slug"] == target]
+    if direct:
+        return direct[0]
+    titled = [item for item in articles if item["title"] == target]
+    if len(titled) > 1:
+        raise ValueError(f"标题匹配到多篇文章，请改用 ID 或 slug：{target}")
+    return titled[0] if titled else None
+
+
+def _apply_month_to_published_at(current_value: str | None, year: int, month: int) -> str:
+    current = _parse_local_datetime(current_value) or datetime(year, month, 1, 0, 0, tzinfo=BEIJING_TZ)
+    last_day = calendar.monthrange(year, month)[1]
+    day = min(max(1, current.day), last_day)
+    return _to_utc_iso(current.replace(year=year, month=month, day=day))
 
 
 def _register_defaults() -> None:
@@ -214,6 +327,55 @@ def _register_defaults() -> None:
                     for item in list_articles({"page": 1, "pageSize": 1000, "includeDrafts": True})["items"]
                 ],
             },
+        )
+    )
+
+    def list_filtered_articles(invocation: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        items = _list_all_admin_articles()
+        status = _option_text(invocation, "status")
+        if status:
+            items = [item for item in items if item["status"] == status]
+        keyword = _option_text(invocation, "q")
+        if keyword:
+            lowered = keyword.lower()
+            items = [item for item in items if lowered in item["title"].lower() or lowered in item["slug"].lower() or lowered in item["excerpt"].lower()]
+        date_text = _option_text(invocation, "date")
+        if date_text:
+            if date_text.lower() in {"today", "今天"}:
+                target_date = _context_local_datetime(context).date()
+            else:
+                parsed = _parse_local_datetime(_parse_strict_command_date(date_text))
+                if not parsed:
+                    raise ValueError(f"日期无效：{date_text}")
+                target_date = parsed.date()
+            items = [item for item in items if _matches_date_filter(item, target_date)]
+        month_text = _option_text(invocation, "month")
+        if month_text:
+            year, month = _parse_command_month(month_text, context)
+            items = [item for item in items if _matches_month_filter(item, year, month)]
+        limit_text = _option_text(invocation, "limit")
+        limit = 1000
+        if limit_text:
+            try:
+                limit = min(1000, max(1, int(limit_text)))
+            except ValueError as error:
+                raise ValueError("limit 必须是数字。") from error
+        limited_items = items[:limit]
+        return {"count": len(items), "items": [_article_brief(item) for item in limited_items]}
+
+    register(
+        Command(
+            name="article:list",
+            summary="按标题、发布日期、月份或状态筛选文章，适合自然语言助手先定位文章。",
+            scope="articles",
+            risk="low",
+            arguments=[
+                {"name": "date", "description": "发布日期筛选，支持 today、今天、2026.04.22 或 ISO 日期。", "required": False, "type": "string"},
+                {"name": "month", "description": "发布月份筛选，支持 2026-04、2026年4月 或 4月。", "required": False, "type": "string"},
+                {"name": "q", "description": "按标题、slug、摘要模糊搜索。", "required": False, "type": "string"},
+                {"name": "status", "description": "按 published、draft、archived 筛选。", "required": False, "type": "string"},
+            ],
+            execute=list_filtered_articles,
         )
     )
 
@@ -275,10 +437,19 @@ def _register_defaults() -> None:
         target = _option_text(invocation, "article") or _option_text(invocation, "slug") or (invocation["positional"][0].strip() if invocation["positional"] else "")
         if not target:
             raise ValueError('缺少文章标识，请使用 article:set-date <slug-or-id> --date="2026.06.09 18:30"。')
+        month_text = _option_text(invocation, "month")
         date_text = _option_text(invocation, "date") or " ".join(invocation["positional"][1:]).strip()
-        if not date_text:
-            raise ValueError('缺少目标日期，请使用 --date="2026.06.09 18:30"。')
-        article = update_article(target, {"publishedAt": _parse_strict_command_date(date_text)})
+        if not date_text and not month_text:
+            raise ValueError('缺少目标日期，请使用 --date="2026.06.09 18:30" 或 --month="2026-04"。')
+        existing_items = _list_all_admin_articles()
+        existing = _resolve_unique_article_target(target, existing_items)
+        if not existing:
+            raise ValueError(f"没有找到文章：{target}")
+        published_at = _parse_strict_command_date(date_text) if date_text else None
+        if month_text:
+            year, month = _parse_command_month(month_text, _context)
+            published_at = _apply_month_to_published_at(existing.get("publishedAt"), year, month)
+        article = update_article(existing["id"], {"publishedAt": published_at})
         if not article:
             raise ValueError(f"没有找到文章：{target}")
         return {"ok": True, "article": {"id": article["id"], "slug": article["slug"], "title": article["title"], "date": article["date"], "publishedAt": article["publishedAt"], "updatedAt": article["updatedAt"]}}
@@ -291,9 +462,55 @@ def _register_defaults() -> None:
             risk="medium",
             arguments=[
                 {"name": "target", "description": "文章 slug 或 id，作为第一个位置参数，也可用 --article 指定。", "required": True, "type": "string"},
-                {"name": "date", "description": "目标日期，未带时区时按北京时间解析，支持 2026.06.09、2026.06.09 18:30 或 ISO 日期。", "required": True, "type": "string"},
+                {"name": "date", "description": "目标日期，未带时区时按北京时间解析，支持 2026.06.09、2026.06.09 18:30 或 ISO 日期。", "required": False, "type": "string"},
+                {"name": "month", "description": "目标月份，支持 2026-04、2026年4月 或 4月；未给具体日时保留原文章日时并切到该月份。", "required": False, "type": "string"},
             ],
             execute=set_date,
+        )
+    )
+
+    def set_date_bulk(invocation: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        targets = _collect_article_targets(invocation)
+        if not targets:
+            raise ValueError('缺少文章标识，请使用 article:set-date-bulk <id1> <id2> --month="2026-04"。')
+        date_text = _option_text(invocation, "date")
+        month_text = _option_text(invocation, "month")
+        if not date_text and not month_text:
+            raise ValueError('缺少目标日期，请使用 --date="2026.04.22" 或 --month="2026-04"。')
+        existing_items = _list_all_admin_articles()
+        existing_by_target = {item["id"]: item for item in existing_items} | {item["slug"]: item for item in existing_items}
+        updated = []
+        missing = []
+        for target in targets:
+            existing = existing_by_target.get(target) or _resolve_unique_article_target(target, existing_items)
+            if not existing:
+                missing.append(target)
+                continue
+            published_at = _parse_strict_command_date(date_text) if date_text else ""
+            if month_text:
+                year, month = _parse_command_month(month_text, context)
+                published_at = _apply_month_to_published_at(existing.get("publishedAt"), year, month)
+            article = update_article(existing["id"], {"publishedAt": published_at})
+            if article:
+                updated.append({"id": article["id"], "slug": article["slug"], "title": article["title"], "date": article["date"], "publishedAt": article["publishedAt"], "updatedAt": article["updatedAt"]})
+            else:
+                missing.append(target)
+        if missing:
+            raise ValueError("以下文章未找到：" + ", ".join(missing))
+        return {"ok": True, "count": len(updated), "items": updated}
+
+    register(
+        Command(
+            name="article:set-date-bulk",
+            summary="批量修改多篇文章的发布日期；月份模式会保留每篇文章原来的日和时间。",
+            scope="articles",
+            risk="medium",
+            arguments=[
+                {"name": "targets", "description": "一个或多个文章 id/slug，可作为多个位置参数，也可用 --ids=id1,id2。", "required": True, "type": "string"},
+                {"name": "date", "description": "所有目标文章统一设置为这个具体日期。", "required": False, "type": "string"},
+                {"name": "month", "description": "把目标文章移动到该月份，支持 2026-04、2026年4月 或 4月。", "required": False, "type": "string"},
+            ],
+            execute=set_date_bulk,
         )
     )
 

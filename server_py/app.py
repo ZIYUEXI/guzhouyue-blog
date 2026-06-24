@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from . import admin_commands
-from .ai_agent import AiAgentError, generate_article_metadata, test_llm_connection
+from .ai_agent import AiAgentError, generate_article_metadata, plan_admin_commands, test_llm_connection
 from .almanac import get_today_almanac
 from .config import config
 from .content import (
@@ -44,6 +44,9 @@ from .content import (
     list_gallery_albums,
     list_gallery_images_page,
     list_note_sections,
+    list_tags,
+    delete_tag,
+    merge_tags,
     parse_date_label,
     resolve_article_id,
     resolve_gallery_album_id,
@@ -59,15 +62,21 @@ from .db import get_db, now_iso
 from .starfield import (
     archive_version,
     create_version as create_starfield_version,
+    delete_version as delete_starfield_version,
+    enqueue_deep_relationship_generation as enqueue_starfield_deep_relationship_generation,
     generate_relationships as generate_starfield_relationships,
     get_admin_version as get_admin_starfield_version,
     get_public_starfield,
+    list_admin_tasks,
     enqueue_passage_generation as enqueue_starfield_passage_generation,
     enqueue_relationship_generation as enqueue_starfield_relationship_generation,
     list_versions as list_starfield_versions,
     publish_version as publish_starfield_version,
+    run_deep_relationship_generation_job as run_starfield_deep_relationship_generation_job,
     run_passage_generation_job as run_starfield_passage_generation_job,
     run_relationship_generation_job as run_starfield_relationship_generation_job,
+    update_deep_path as update_starfield_deep_path,
+    update_deep_paths_bulk as update_starfield_deep_paths_bulk,
     update_passage as update_starfield_passage,
     update_passages_bulk as update_starfield_passages_bulk,
     update_relationship as update_starfield_relationship,
@@ -428,6 +437,11 @@ async def admin_audit_log(_token: str = Depends(require_admin)):
     return {"items": read_audit_log(50)}
 
 
+@app.get("/api/admin/tasks")
+async def admin_tasks(limit: int = 80, _token: str = Depends(require_admin)):
+    return {"items": list_admin_tasks(limit)}
+
+
 def starfield_error(error_value: ValueError) -> HTTPException:
     message = str(error_value) or "Starfield request failed"
     if "not found" in message.lower():
@@ -479,6 +493,16 @@ async def admin_generate_starfield_relationships(version_id: str, background_tas
         raise starfield_error(error_value) from error_value
 
 
+@app.post("/api/admin/starfield/versions/{version_id}/generate-deep-relationships")
+async def admin_generate_starfield_deep_relationships(version_id: str, background_tasks: BackgroundTasks, _token: str = Depends(require_admin)):
+    try:
+        result = enqueue_starfield_deep_relationship_generation(version_id)
+        background_tasks.add_task(run_starfield_deep_relationship_generation_job, result["jobId"])
+        return result
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
 @app.put("/api/admin/starfield/passages/{passage_id}")
 async def admin_update_starfield_passage(passage_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
     try:
@@ -511,6 +535,22 @@ async def admin_bulk_update_starfield_relationships(version_id: str, payload: di
         raise starfield_error(error_value) from error_value
 
 
+@app.put("/api/admin/starfield/deep-paths/{path_id}")
+async def admin_update_starfield_deep_path(path_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return update_starfield_deep_path(path_id, payload)
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
+@app.post("/api/admin/starfield/versions/{version_id}/deep-paths/bulk")
+async def admin_bulk_update_starfield_deep_paths(version_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return update_starfield_deep_paths_bulk(version_id, payload)
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
 @app.post("/api/admin/starfield/versions/{version_id}/publish")
 async def admin_publish_starfield_version(version_id: str, _token: str = Depends(require_admin)):
     try:
@@ -523,6 +563,14 @@ async def admin_publish_starfield_version(version_id: str, _token: str = Depends
 async def admin_archive_starfield_version(version_id: str, _token: str = Depends(require_admin)):
     try:
         return archive_version(version_id)
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
+@app.delete("/api/admin/starfield/versions/{version_id}")
+async def admin_delete_starfield_version(version_id: str, _token: str = Depends(require_admin)):
+    try:
+        return delete_starfield_version(version_id)
     except ValueError as error_value:
         raise starfield_error(error_value) from error_value
 
@@ -554,6 +602,30 @@ async def admin_command_parse(payload: dict[str, Any], _token: str = Depends(req
 @app.post("/api/admin/commands/run")
 async def admin_command_run(payload: dict[str, Any], request: Request, _token: str = Depends(require_admin)):
     return admin_commands.run_admin_command(payload, {"requestedAt": now_iso(), "requestId": getattr(request.state, "request_id", "")})
+
+
+@app.post("/api/admin/commands/ai")
+async def admin_command_ai(payload: dict[str, Any], request: Request, _token: str = Depends(require_admin)):
+    requested_at = now_iso()
+    context = {"requestedAt": requested_at, "requestId": getattr(request.state, "request_id", "")}
+    try:
+        plan = await plan_admin_commands({**payload, "guide": admin_commands.get_guide(), "requestedAt": requested_at})
+    except AiAgentError as error_value:
+        raise error(error_value.status_code, str(error_value)) from error_value
+    results = []
+    for command in plan["commands"]:
+        result = admin_commands.run_admin_command(
+            {
+                "input": command["input"],
+                "dryRun": command.get("dryRun") is True,
+                "confirm": command.get("confirm") is True,
+            },
+            context,
+        )
+        results.append({"input": command["input"], "purpose": command.get("purpose", ""), **result})
+        if result.get("status") in {"invalid", "unknown_command", "failed", "confirmation_required"}:
+            break
+    return {"reply": plan["reply"], "commands": plan["commands"], "results": results}
 
 
 @app.get("/api/admin/gallery")
@@ -812,6 +884,27 @@ async def admin_delete_article(id_or_slug: str, _token: str = Depends(require_ad
     with get_db() as conn:
         conn.execute("UPDATE articles SET deleted_at = ?, updated_at = ? WHERE id = ?", (now_iso(), now_iso(), article_id))
     return {"ok": True}
+
+
+@app.get("/api/admin/tags")
+async def admin_tags(_token: str = Depends(require_admin)):
+    return {"items": list_tags()}
+
+
+@app.delete("/api/admin/tags/{tag_name}")
+async def admin_delete_tag(tag_name: str, _token: str = Depends(require_admin)):
+    try:
+        return delete_tag(tag_name)
+    except ValueError as error_value:
+        raise error(400, str(error_value)) from error_value
+
+
+@app.post("/api/admin/tags/merge")
+async def admin_merge_tags(payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return merge_tags(payload.get("sourceTag"), payload.get("targetTag"))
+    except ValueError as error_value:
+        raise error(400, str(error_value)) from error_value
 
 
 @app.get("/api/admin/trash/articles")

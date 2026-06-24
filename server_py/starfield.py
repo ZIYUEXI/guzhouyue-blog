@@ -9,23 +9,44 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .ai_agent import AiAgentError, generate_starfield_canonical_keywords as generate_ai_starfield_canonical_keywords
+from .ai_agent import generate_starfield_deep_paths as generate_ai_starfield_deep_paths
 from .ai_agent import generate_starfield_passages as generate_ai_starfield_passages
 from .ai_agent import generate_starfield_relationships as generate_ai_starfield_relationships
 from .content import base36, slugify
 from .db import get_db, json_parse, now_iso
 
 
-RELATIONSHIP_TYPES = {"same_topic", "prerequisite", "further_reading", "problem_solution", "comparison"}
+CONCRETE_RELATIONSHIP_TYPES = {"same_topic", "prerequisite", "further_reading", "problem_solution", "comparison"}
+ABSTRACT_RELATIONSHIP_TYPES = {
+    "shared_principle",
+    "same_problem_shape",
+    "method_transfer",
+    "tradeoff_parallel",
+    "case_generalization",
+    "implementation_echo",
+}
+RELATIONSHIP_TYPES = CONCRETE_RELATIONSHIP_TYPES | ABSTRACT_RELATIONSHIP_TYPES
 RELATIONSHIP_LABELS = {
     "same_topic": "同一主题",
     "prerequisite": "前置知识",
     "further_reading": "延伸阅读",
     "problem_solution": "问题与解法",
     "comparison": "对比关系",
+    "shared_principle": "共同原则",
+    "same_problem_shape": "同构问题",
+    "method_transfer": "方法迁移",
+    "tradeoff_parallel": "取舍相似",
+    "case_generalization": "案例与一般化",
+    "implementation_echo": "实现呼应",
 }
 PASSAGE_STATUS = {"suggested", "accepted", "hidden"}
 RELATIONSHIP_STATUS = {"suggested", "accepted", "hidden"}
+DEEP_PATH_STATUS = {"suggested", "accepted", "hidden"}
 STALE_JOB_SECONDS = 30 * 60
+DEEP_PATH_SOURCE_BATCH_SIZE = 6
+DEEP_PATH_CORPUS_LIMIT = 260
+DEEP_PATH_MAX_PATHS_PER_BATCH = 24
+DEEP_PATH_MAX_TOTAL_PATHS = 500
 
 
 def make_id(prefix: str) -> str:
@@ -49,6 +70,22 @@ def list_versions() -> list[dict[str, Any]]:
             """
         ).fetchall()
     return [_version_row(row) for row in rows]
+
+
+def list_admin_tasks(limit: int = 80) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(200, int(limit or 80)))
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.*, v.name AS source_name
+            FROM starfield_generation_jobs j
+            LEFT JOIN starfield_versions v ON v.id = j.version_id
+            ORDER BY j.created_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [_admin_task_row(row) for row in rows]
 
 
 def create_version(input_data: dict[str, Any]) -> dict[str, Any]:
@@ -104,6 +141,15 @@ def get_admin_version(version_id: str) -> dict[str, Any]:
             """,
             (version_id,),
         ).fetchall()
+        deep_paths = conn.execute(
+            """
+            SELECT *
+            FROM starfield_deep_paths
+            WHERE version_id = ?
+            ORDER BY strength DESC, created_at ASC
+            """,
+            (version_id,),
+        ).fetchall()
         jobs = conn.execute(
             """
             SELECT * FROM starfield_generation_jobs
@@ -118,6 +164,7 @@ def get_admin_version(version_id: str) -> dict[str, Any]:
         "passages": [_passage_row(row) for row in passages],
         "relationships": [_relationship_row(row) for row in relationships],
         "canonicalKeywords": [_canonical_keyword_row(row) for row in canonical_keywords],
+        "deepPaths": [_deep_path_row(row) for row in deep_paths],
         "jobs": [_job_row(row) for row in jobs],
     }
 
@@ -128,7 +175,7 @@ def get_public_starfield() -> dict[str, Any]:
             "SELECT * FROM starfield_versions WHERE is_active = 1 AND status = 'published' ORDER BY published_at DESC LIMIT 1"
         ).fetchone()
         if not version:
-            return {"version": None, "passages": [], "relationships": []}
+            return {"version": None, "passages": [], "relationships": [], "deepPaths": []}
         passages = conn.execute(
             """
             SELECT p.*, a.slug AS article_slug, a.title AS article_title, ns.name AS article_category
@@ -150,10 +197,24 @@ def get_public_starfield() -> dict[str, Any]:
             """,
             (version["id"],),
         ).fetchall()
+        deep_path_rows = conn.execute(
+            """
+            SELECT *
+            FROM starfield_deep_paths
+            WHERE version_id = ? AND status = 'accepted'
+            ORDER BY strength DESC, created_at ASC
+            """,
+            (version["id"],),
+        ).fetchall()
     relationships = [
         _public_relationship_row(row)
         for row in relationship_rows
         if row["source_passage_id"] in accepted_passage_ids and row["target_passage_id"] in accepted_passage_ids
+    ]
+    deep_paths = [
+        _public_deep_path_row(row)
+        for row in deep_path_rows
+        if all(passage_id in accepted_passage_ids for passage_id in json_parse(row["passage_ids_json"], []))
     ]
     public_passages = [_public_passage_row(row, relationships) for row in passages]
     return {
@@ -164,6 +225,7 @@ def get_public_starfield() -> dict[str, Any]:
         },
         "passages": public_passages,
         "relationships": relationships,
+        "deepPaths": deep_paths,
     }
 
 
@@ -373,7 +435,21 @@ async def generate_relationships(version_id: str) -> dict[str, Any]:
     return {"ok": True, **get_admin_version(version_id)}
 
 
+async def generate_deep_relationships(version_id: str) -> dict[str, Any]:
+    payload = enqueue_deep_relationship_generation(version_id)
+    await run_deep_relationship_generation_job(payload["jobId"])
+    return {"ok": True, **get_admin_version(version_id)}
+
+
 def enqueue_relationship_generation(version_id: str) -> dict[str, Any]:
+    return _enqueue_relationship_generation(version_id, "relationships", "任务已创建，等待 AI-agent 开始生成关系。")
+
+
+def enqueue_deep_relationship_generation(version_id: str) -> dict[str, Any]:
+    return _enqueue_relationship_generation(version_id, "deep-relationships", "任务已创建，等待 AI-agent 开始深度关系挖掘。")
+
+
+def _enqueue_relationship_generation(version_id: str, phase: str, step: str) -> dict[str, Any]:
     now = now_iso()
     job_id = make_id("starfield_job")
     with get_db() as conn:
@@ -396,9 +472,9 @@ def enqueue_relationship_generation(version_id: str) -> dict[str, Any]:
               id, version_id, phase, status, selected_article_ids_json,
               progress_current, progress_total, current_step, created_at, updated_at
             )
-            VALUES (?, ?, 'relationships', 'pending', '[]', 0, 5, '任务已创建，等待 AI-agent 开始生成关系。', ?, ?)
+            VALUES (?, ?, ?, 'pending', '[]', 0, 5, ?, ?, ?)
             """,
-            (job_id, version_id, now, now),
+            (job_id, version_id, phase, step, now, now),
         )
     return {"ok": True, "created": 0, "jobId": job_id, **get_admin_version(version_id)}
 
@@ -442,6 +518,45 @@ async def run_relationship_generation_job(job_id: str) -> None:
             )
 
 
+async def run_deep_relationship_generation_job(job_id: str) -> None:
+    try:
+        with get_db() as conn:
+            job = conn.execute("SELECT * FROM starfield_generation_jobs WHERE id = ?", (job_id,)).fetchone()
+            if not job:
+                return
+            version_id = job["version_id"]
+            passages = conn.execute(
+                """
+                SELECT p.*, a.title AS article_title, ns.name AS article_category
+                FROM starfield_passages p
+                JOIN articles a ON a.id = p.article_id
+                LEFT JOIN note_sections ns ON ns.id = a.category_id
+                WHERE p.version_id = ? AND p.status = 'accepted'
+                ORDER BY p.sort_order ASC, p.created_at ASC
+                """,
+                (version_id,),
+            ).fetchall()
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'running', progress_current = 0, progress_total = 5, current_step = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("AI-agent 正在读取已接受 Passage，准备深度关系挖掘。", now_iso(), job_id),
+            )
+        await _execute_deep_relationship_generation(version_id, job_id, passages)
+    except Exception as error_value:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'failed', error_message = ?, current_step = '深度关系挖掘失败。', updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (str(error_value)[:500], now_iso(), now_iso(), job_id),
+            )
+
+
 async def _execute_relationship_generation(version_id: str, job_id: str, passages: list[Any]) -> None:
     now = now_iso()
     rows = [_passage_like(row) for row in passages]
@@ -476,7 +591,14 @@ async def _execute_relationship_generation(version_id: str, job_id: str, passage
         created = 0
         seen_pairs: set[tuple[str, str]] = set()
         per_passage_cross_count: dict[str, int] = {}
-        conn.execute("DELETE FROM starfield_relationships WHERE version_id = ? AND status = 'suggested'", (version_id,))
+        conn.execute(
+            f"""
+            DELETE FROM starfield_relationships
+            WHERE version_id = ? AND status = 'suggested'
+              AND relationship_type IN ({','.join(['?'] * len(CONCRETE_RELATIONSHIP_TYPES))})
+            """,
+            [version_id, *sorted(CONCRETE_RELATIONSHIP_TYPES)],
+        )
         conn.execute("DELETE FROM starfield_canonical_keywords WHERE version_id = ?", (version_id,))
         for group in canonical_keyword_groups:
             keyword_id = make_id("canonical_keyword")
@@ -543,6 +665,154 @@ async def _execute_relationship_generation(version_id: str, job_id: str, passage
             WHERE id = ?
             """,
             (f"关系生成完成，共创建 {created} 条候选关系。", _fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
+        )
+        conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now_iso(), version_id))
+
+
+async def _execute_deep_relationship_generation(version_id: str, job_id: str, passages: list[Any]) -> None:
+    now = now_iso()
+    rows = [_passage_like(row) for row in passages]
+    source_batches = _chunk_list(rows, DEEP_PATH_SOURCE_BATCH_SIZE)
+    progress_total = max(3, len(source_batches) + 3)
+    _update_job_progress(job_id, 1, progress_total, f"Inquirer Agent 准备覆盖 {len(rows)} 个 Passage，分 {len(source_batches)} 批深挖。")
+    existing_relationships = _existing_accepted_relationship_payload(version_id)
+    paths: list[dict[str, Any]] = []
+    batch_errors: list[str] = []
+    for index, source_rows in enumerate(source_batches):
+        batch_number = index + 1
+        _update_job_progress(
+            job_id,
+            batch_number + 1,
+            progress_total,
+            f"第 {batch_number}/{len(source_batches)} 批：{len(source_rows)} 个 Passage 正在由 Inquirer/Retriever/Path-Builder/Critic 多轮探索。",
+        )
+        try:
+            batch_paths = await _generate_ai_deep_paths(rows, source_rows, existing_relationships)
+            paths.extend(batch_paths)
+        except Exception as error_value:
+            batch_errors.append(f"第 {batch_number} 批：{str(error_value)[:180]}")
+            continue
+
+    if not paths:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE starfield_generation_jobs
+                SET status = 'failed', progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    min(progress_total, len(source_batches) + 1),
+                    progress_total,
+                    "深层关系挖掘需要 LLM 代理完成，当前未生成可用路径。",
+                    (f"LLM 多批次深层关系挖掘未生成可用路径。{_fallback_message(batch_errors)}")[:500],
+                    now_iso(),
+                    now_iso(),
+                    job_id,
+                ),
+            )
+        return
+
+    _update_job_progress(job_id, progress_total - 1, progress_total, f"Path-Builder Agent 已累计组织 {len(paths)} 条路径，正在全局去重和 Critic 收敛。")
+    valid_paths = _filter_deep_paths(paths, rows)
+    _update_job_progress(job_id, progress_total, progress_total, f"正在写入 {len(valid_paths)} 条深层路径，并物化相邻抽象关系。")
+    created_paths = 0
+    created_relationships = 0
+    with get_db() as conn:
+        conn.execute(
+            f"""
+            DELETE FROM starfield_relationships
+            WHERE version_id = ? AND status = 'suggested'
+              AND relationship_type IN ({','.join(['?'] * len(ABSTRACT_RELATIONSHIP_TYPES))})
+            """,
+            [version_id, *sorted(ABSTRACT_RELATIONSHIP_TYPES)],
+        )
+        conn.execute("DELETE FROM starfield_deep_paths WHERE version_id = ? AND status = 'suggested'", (version_id,))
+        materialized_pairs: set[tuple[str, str]] = set()
+        for item in valid_paths:
+            path_id = make_id("deep_path")
+            passage_ids = item["passage_ids"]
+            conn.execute(
+                """
+                INSERT INTO starfield_deep_paths (
+                  id, version_id, source_passage_id, passage_ids_json, inquiry_json, path_type,
+                  title, rationale, evidence_json, strength, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suggested', ?, ?)
+                """,
+                (
+                    path_id,
+                    version_id,
+                    item["source_passage_id"],
+                    json.dumps(passage_ids, ensure_ascii=False),
+                    json.dumps(item["inquiry"], ensure_ascii=False),
+                    item["path_type"],
+                    item["title"],
+                    item["rationale"],
+                    json.dumps(
+                        {
+                            "retrievalNotes": item.get("retrieval_notes", []),
+                            "critique": item.get("critique", ""),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    item["strength"],
+                    now,
+                    now,
+                ),
+            )
+            created_paths += 1
+            for index in range(len(passage_ids) - 1):
+                source_id = passage_ids[index]
+                target_id = passage_ids[index + 1]
+                pair = tuple(sorted([source_id, target_id]))
+                if pair in materialized_pairs:
+                    continue
+                materialized_pairs.add(pair)
+                source = next((row for row in rows if row["id"] == source_id), None)
+                target = next((row for row in rows if row["id"] == target_id), None)
+                if not source or not target or source["article_id"] == target["article_id"]:
+                    continue
+                relationship_id = make_id("relationship")
+                relationship_type = _deep_path_relationship_type(item["path_type"])
+                rationale = f"深层路径：{item['title']}。{item['rationale']}"
+                conn.execute(
+                    """
+                    INSERT INTO starfield_relationships (
+                      id, version_id, source_passage_id, target_passage_id, relationship_type,
+                      rationale, evidence_keywords_json, strength, status, is_cross_article, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'suggested', 1, ?, ?)
+                    """,
+                    (
+                        relationship_id,
+                        version_id,
+                        source_id,
+                        target_id,
+                        relationship_type,
+                        rationale[:500],
+                        json.dumps([item["inquiry"].get("intentType", ""), item["path_type"]], ensure_ascii=False),
+                        item["strength"],
+                        now,
+                        now,
+                    ),
+                )
+                created_relationships += 1
+        conn.execute(
+            """
+            UPDATE starfield_generation_jobs
+            SET status = 'succeeded', progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (
+                progress_total,
+                progress_total,
+                f"深度关系挖掘完成，覆盖 {len(rows)} 个 Passage，共创建 {created_paths} 条深层路径、{created_relationships} 条相邻候选关系。",
+                _fallback_message(batch_errors),
+                now_iso(),
+                now_iso(),
+                job_id,
+            ),
         )
         conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now_iso(), version_id))
 
@@ -704,6 +974,76 @@ def update_relationships_bulk(version_id: str, input_data: dict[str, Any]) -> di
     return get_admin_version(version_id)
 
 
+def update_deep_path(path_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    now = now_iso()
+    with get_db() as conn:
+        existing = conn.execute("SELECT * FROM starfield_deep_paths WHERE id = ?", (path_id,)).fetchone()
+        if not existing:
+            raise ValueError("Deep path not found")
+        status = input_data.get("status", existing["status"])
+        if status not in DEEP_PATH_STATUS:
+            raise ValueError("Invalid deep path status")
+        conn.execute(
+            """
+            UPDATE starfield_deep_paths
+            SET status = ?, review_note = ?, updated_at = ?,
+              reviewed_at = CASE WHEN ? IN ('accepted', 'hidden') THEN ? ELSE reviewed_at END
+            WHERE id = ?
+            """,
+            (
+                status,
+                str(input_data.get("reviewNote", existing["review_note"]))[:500],
+                now,
+                status,
+                now,
+                path_id,
+            ),
+        )
+        version_id = existing["version_id"]
+        conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now, version_id))
+    return get_admin_version(version_id)
+
+
+def update_deep_paths_bulk(version_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    now = now_iso()
+    status = input_data.get("status")
+    if status not in DEEP_PATH_STATUS:
+        raise ValueError("Invalid deep path status")
+    path_ids = input_data.get("pathIds")
+    source_status = input_data.get("sourceStatus")
+    if source_status is not None and source_status not in DEEP_PATH_STATUS:
+        raise ValueError("Invalid deep path source status")
+
+    with get_db() as conn:
+        version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+        if not version:
+            raise ValueError("Starfield version not found")
+
+        params: list[Any] = [status, now, status, now, version_id]
+        where_parts = ["version_id = ?"]
+        if isinstance(path_ids, list):
+            safe_ids = [str(path_id) for path_id in path_ids if str(path_id).strip()]
+            if not safe_ids:
+                return get_admin_version(version_id)
+            where_parts.append(f"id IN ({','.join(['?'] * len(safe_ids))})")
+            params.extend(safe_ids)
+        if source_status:
+            where_parts.append("status = ?")
+            params.append(source_status)
+
+        conn.execute(
+            f"""
+            UPDATE starfield_deep_paths
+            SET status = ?, updated_at = ?,
+              reviewed_at = CASE WHEN ? IN ('accepted', 'hidden') THEN ? ELSE reviewed_at END
+            WHERE {' AND '.join(where_parts)}
+            """,
+            params,
+        )
+        conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now, version_id))
+    return get_admin_version(version_id)
+
+
 def publish_version(version_id: str) -> dict[str, Any]:
     now = now_iso()
     with get_db() as conn:
@@ -733,6 +1073,15 @@ def archive_version(version_id: str) -> dict[str, Any]:
             raise ValueError("Starfield version not found")
         conn.execute("UPDATE starfield_versions SET status = 'archived', is_active = 0, updated_at = ? WHERE id = ?", (now, version_id))
     return get_admin_version(version_id)
+
+
+def delete_version(version_id: str) -> dict[str, Any]:
+    with get_db() as conn:
+        version = conn.execute("SELECT * FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+        if not version:
+            raise ValueError("Starfield version not found")
+        conn.execute("DELETE FROM starfield_versions WHERE id = ?", (version_id,))
+    return {"ok": True}
 
 
 def _version_row(row: Any) -> dict[str, Any]:
@@ -831,9 +1180,24 @@ def _public_relationship_row(row: Any) -> dict[str, Any]:
         "relationshipType": relationship_type,
         "relationshipLabel": RELATIONSHIP_LABELS.get(relationship_type, relationship_type),
         "rationale": row["rationale"],
-        "evidenceKeywords": json_parse(row["evidence_keywords_json"] if "evidence_keywords_json" in row.keys() else None, []),
         "strength": row["strength"],
         "isCrossArticle": bool(row["is_cross_article"]),
+    }
+
+
+def _public_deep_path_row(row: Any) -> dict[str, Any]:
+    item = _deep_path_row(row)
+    return {
+        "id": item["id"],
+        "sourcePassageId": item["sourcePassageId"],
+        "passageIds": item["passageIds"],
+        "inquiry": item["inquiry"],
+        "pathType": item["pathType"],
+        "title": item["title"],
+        "rationale": item["rationale"],
+        "retrievalNotes": item["retrievalNotes"],
+        "critique": item["critique"],
+        "strength": item["strength"],
     }
 
 
@@ -846,6 +1210,28 @@ def _canonical_keyword_row(row: Any) -> dict[str, Any]:
         "passageIds": json_parse(row["passage_ids_json"], []),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
+    }
+
+
+def _deep_path_row(row: Any) -> dict[str, Any]:
+    evidence = json_parse(row["evidence_json"] if "evidence_json" in row.keys() else None, {})
+    return {
+        "id": row["id"],
+        "versionId": row["version_id"],
+        "sourcePassageId": row["source_passage_id"],
+        "passageIds": json_parse(row["passage_ids_json"], []),
+        "inquiry": json_parse(row["inquiry_json"], {}),
+        "pathType": row["path_type"],
+        "title": row["title"],
+        "rationale": row["rationale"],
+        "retrievalNotes": evidence.get("retrievalNotes", []) if isinstance(evidence, dict) else [],
+        "critique": evidence.get("critique", "") if isinstance(evidence, dict) else "",
+        "strength": row["strength"],
+        "status": row["status"],
+        "reviewNote": row["review_note"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "reviewedAt": row["reviewed_at"],
     }
 
 
@@ -864,6 +1250,19 @@ def _job_row(row: Any) -> dict[str, Any]:
         "updatedAt": row["updated_at"],
         "completedAt": row["completed_at"],
     }
+
+
+def _admin_task_row(row: Any) -> dict[str, Any]:
+    task = _job_row(row)
+    task.update(
+        {
+            "sourceType": "starfield",
+            "sourceLabel": "星图",
+            "sourceId": row["version_id"],
+            "sourceName": row["source_name"] if "source_name" in row.keys() and row["source_name"] else "星图版本",
+        }
+    )
+    return task
 
 
 async def _generate_ai_passages_for_article(article: Any) -> list[dict[str, Any]]:
@@ -914,7 +1313,7 @@ async def _generate_ai_canonical_keyword_groups(rows: list[dict[str, Any]]) -> l
     return groups
 
 
-async def _generate_ai_relationships(rows: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _generate_ai_relationships(rows: list[dict[str, Any]], candidates: list[dict[str, Any]], mode: str = "concrete") -> list[dict[str, Any]]:
     if not candidates:
         return []
     payload = await generate_ai_starfield_relationships(
@@ -943,16 +1342,18 @@ async def _generate_ai_relationships(rows: list[dict[str, Any]], candidates: lis
                 }
                 for item in candidates[:500]
             ],
+            "mode": mode,
         }
     )
     by_id = {row["id"]: row for row in rows}
     by_pair = {tuple(sorted([item["source"]["id"], item["target"]["id"]])): item for item in candidates}
+    allowed_types = ABSTRACT_RELATIONSHIP_TYPES if mode == "deep" else CONCRETE_RELATIONSHIP_TYPES
     upgraded_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
     for item in payload.get("relationships", []):
         source = by_id.get(item.get("sourcePassageId"))
         target = by_id.get(item.get("targetPassageId"))
         relationship_type = item.get("relationshipType")
-        if not source or not target or source["id"] == target["id"] or relationship_type not in RELATIONSHIP_TYPES:
+        if not source or not target or source["id"] == target["id"] or relationship_type not in allowed_types:
             continue
         pair = tuple(sorted([source["id"], target["id"]]))
         base_candidate = by_pair.get(pair)
@@ -971,6 +1372,145 @@ async def _generate_ai_relationships(rows: list[dict[str, Any]], candidates: lis
         raise AiAgentError(502, "LLM did not return usable relationships")
     scored = [upgraded_by_pair.get(tuple(sorted([item["source"]["id"], item["target"]["id"]])), item) for item in candidates]
     return sorted(scored, key=lambda item: (item["source"]["article_id"] != item["target"]["article_id"], item["strength"]), reverse=True)
+
+
+async def _generate_ai_deep_paths(rows: list[dict[str, Any]], source_rows: list[dict[str, Any]], existing_relationships: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    corpus_rows = _deep_path_corpus_for_sources(rows, source_rows)
+    payload = await generate_ai_starfield_deep_paths(
+        {
+            "sourcePassages": [_deep_path_passage_payload(row) for row in source_rows],
+            "corpusPassages": [_deep_path_passage_payload(row) for row in corpus_rows],
+            "existingRelationships": existing_relationships,
+            "maxPaths": DEEP_PATH_MAX_PATHS_PER_BATCH,
+            "coverageMode": "batch_all_sources",
+        }
+    )
+    return [
+        {
+            "source_passage_id": str(item.get("sourcePassageId") or ""),
+            "passage_ids": [str(passage_id) for passage_id in item.get("passageIds", []) if str(passage_id)],
+            "path_type": str(item.get("pathType") or "inquiry_path"),
+            "title": str(item.get("title") or "")[:120],
+            "inquiry": item.get("inquiry") if isinstance(item.get("inquiry"), dict) else {},
+            "retrieval_notes": [str(note)[:220] for note in item.get("retrievalNotes", []) if str(note)],
+            "rationale": str(item.get("rationale") or "")[:700],
+            "critique": str(item.get("critique") or "")[:500],
+            "strength": _safe_float(item.get("strength"), 0.5),
+        }
+        for item in payload.get("paths", [])
+        if isinstance(item, dict)
+    ]
+
+
+def _deep_path_passage_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "articleId": row["article_id"],
+        "title": row["title"],
+        "text": row["text"],
+        "excerpt": _excerpt(row["text"]),
+        "keywords": row["keywords"],
+        "articleTitle": row["article_title"],
+        "articleCategory": row["article_category"],
+    }
+
+
+def _deep_path_corpus_for_sources(rows: list[dict[str, Any]], source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_ids = {row["id"] for row in source_rows}
+    source_article_ids = {row["article_id"] for row in source_rows}
+    sources = [row for row in rows if row["id"] in source_ids]
+    cross_article = [row for row in rows if row["id"] not in source_ids and row["article_id"] not in source_article_ids]
+    same_article = [row for row in rows if row["id"] not in source_ids and row["article_id"] in source_article_ids]
+    ordered = sources + sorted(cross_article, key=lambda row: (len(row["keywords"]), len(row["text"])), reverse=True) + same_article
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in ordered:
+        if row["id"] in seen:
+            continue
+        seen.add(row["id"])
+        result.append(row)
+        if len(result) >= DEEP_PATH_CORPUS_LIMIT:
+            break
+    return result
+
+
+def _existing_accepted_relationship_payload(version_id: str) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT source_passage_id, target_passage_id, relationship_type, rationale
+            FROM starfield_relationships
+            WHERE version_id = ? AND status = 'accepted'
+            ORDER BY strength DESC, created_at ASC
+            LIMIT 500
+            """,
+            (version_id,),
+        ).fetchall()
+    return [
+        {
+            "sourcePassageId": row["source_passage_id"],
+            "targetPassageId": row["target_passage_id"],
+            "relationshipType": row["relationship_type"],
+            "rationale": row["rationale"],
+        }
+        for row in rows
+    ]
+
+
+def _filter_deep_paths(paths: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {row["id"]: row for row in rows}
+    seen: set[tuple[str, ...]] = set()
+    result = []
+    for item in paths:
+        source_id = item.get("source_passage_id", "")
+        passage_ids = [passage_id for passage_id in item.get("passage_ids", []) if passage_id in by_id]
+        if source_id not in by_id or len(passage_ids) < 2:
+            continue
+        if passage_ids[0] != source_id:
+            passage_ids = [source_id, *[passage_id for passage_id in passage_ids if passage_id != source_id]]
+        passage_ids = list(dict.fromkeys(passage_ids))[:4]
+        if len(passage_ids) < 2:
+            continue
+        if not any(by_id[passage_id]["article_id"] != by_id[source_id]["article_id"] for passage_id in passage_ids[1:]):
+            continue
+        if not item.get("rationale") or not item.get("critique"):
+            continue
+        key = tuple(passage_ids)
+        if key in seen:
+            continue
+        seen.add(key)
+        item["passage_ids"] = passage_ids
+        item["source_passage_id"] = source_id
+        item["title"] = item.get("title") or _deep_path_title(item, by_id)
+        result.append(item)
+    return sorted(result, key=lambda path: path.get("strength", 0), reverse=True)[:DEEP_PATH_MAX_TOTAL_PATHS]
+
+
+def _chunk_list(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    safe_size = max(1, size)
+    return [items[index : index + safe_size] for index in range(0, len(items), safe_size)]
+
+
+def _deep_path_title(path: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> str:
+    passage_ids = path.get("passage_ids", [])
+    if not passage_ids:
+        return "深层探索路径"
+    source = by_id.get(passage_ids[0], {})
+    target = by_id.get(passage_ids[-1], {})
+    return f"{source.get('title', '源文段')} → {target.get('title', '目标文段')}"[:120]
+
+
+def _deep_path_relationship_type(path_type: str) -> str:
+    mapping = {
+        "question_answer": "case_generalization",
+        "gap_fill": "shared_principle",
+        "method_transfer": "method_transfer",
+        "principle_path": "shared_principle",
+        "tradeoff_path": "tradeoff_parallel",
+        "challenge_path": "same_problem_shape",
+        "application_path": "case_generalization",
+    }
+    return mapping.get(path_type, "shared_principle")
 
 
 def _normalize_ai_passages(article: Any, passages: list[Any]) -> list[dict[str, Any]]:

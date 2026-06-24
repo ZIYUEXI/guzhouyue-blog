@@ -29,6 +29,17 @@ export type ApiArticlesPayload = {
   items?: unknown[];
 };
 
+export type ApiAdminTag = {
+  name: string;
+  articleCount: number;
+  occurrenceCount: number;
+};
+
+export type ApiAdminTagMutationPayload = {
+  updatedCount: number;
+  articles: unknown[];
+};
+
 export type ApiGalleryImagesPayload = {
   items?: unknown[];
   page?: number;
@@ -85,7 +96,18 @@ export type ApiStarfieldRelationship = {
   versionId: string;
   sourcePassageId: string;
   targetPassageId: string;
-  relationshipType: 'same_topic' | 'prerequisite' | 'further_reading' | 'problem_solution' | 'comparison';
+  relationshipType:
+    | 'same_topic'
+    | 'prerequisite'
+    | 'further_reading'
+    | 'problem_solution'
+    | 'comparison'
+    | 'shared_principle'
+    | 'same_problem_shape'
+    | 'method_transfer'
+    | 'tradeoff_parallel'
+    | 'case_generalization'
+    | 'implementation_echo';
   relationshipLabel: string;
   rationale: string;
   evidenceKeywords: string[];
@@ -108,6 +130,28 @@ export type ApiStarfieldCanonicalKeyword = {
   updatedAt: string;
 };
 
+export type ApiStarfieldDeepPath = {
+  id: string;
+  versionId: string;
+  sourcePassageId: string;
+  passageIds: string[];
+  inquiry: {
+    question: string;
+    intentType: string;
+  };
+  pathType: string;
+  title: string;
+  rationale: string;
+  retrievalNotes: string[];
+  critique: string;
+  strength: number;
+  status: 'suggested' | 'accepted' | 'hidden';
+  reviewNote: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string | null;
+};
+
 export type ApiStarfieldPayload = {
   version?: {
     id: string;
@@ -116,6 +160,7 @@ export type ApiStarfieldPayload = {
   } | null;
   passages?: unknown[];
   relationships?: unknown[];
+  deepPaths?: unknown[];
 };
 
 export type ApiAdminStarfieldVersionPayload = {
@@ -123,20 +168,27 @@ export type ApiAdminStarfieldVersionPayload = {
   passages: ApiStarfieldPassage[];
   relationships: ApiStarfieldRelationship[];
   canonicalKeywords: ApiStarfieldCanonicalKeyword[];
-  jobs: Array<{
-    id: string;
-    versionId: string;
-    phase: 'passages' | 'relationships';
-    status: 'pending' | 'running' | 'succeeded' | 'failed';
-    selectedArticleIds: string[];
-    progressCurrent: number;
-    progressTotal: number;
-    currentStep: string;
-    errorMessage: string;
-    createdAt: string;
-    updatedAt: string;
-    completedAt?: string | null;
-  }>;
+  deepPaths: ApiStarfieldDeepPath[];
+  jobs: ApiAdminTask[];
+};
+
+export type ApiAdminTask = {
+  id: string;
+  versionId: string;
+  phase: 'passages' | 'relationships' | 'deep-relationships' | string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed';
+  selectedArticleIds: string[];
+  progressCurrent: number;
+  progressTotal: number;
+  currentStep: string;
+  errorMessage: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+  sourceType?: string;
+  sourceLabel?: string;
+  sourceId?: string;
+  sourceName?: string;
 };
 
 export type ApiComment = {
@@ -266,6 +318,11 @@ export type ApiAdminCommandGuide = {
   commands: ApiAdminCommandDescriptor[];
 };
 
+export type ApiAdminCommandAiMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 export type ApiAdminCommandParseResult =
   | {
       ok: true;
@@ -303,6 +360,22 @@ export type ApiAdminCommandRunResult =
       command: ApiAdminCommandDescriptor;
       result?: unknown;
     };
+
+export type ApiAdminCommandAiResult = {
+  reply: string;
+  commands: Array<{
+    input: string;
+    purpose: string;
+    dryRun?: boolean;
+    confirm?: boolean;
+  }>;
+  results: Array<
+    {
+      input: string;
+      purpose: string;
+    } & ApiAdminCommandRunResult
+  >;
+};
 
 export type ApiComposerDraft = {
   title: string;
@@ -376,6 +449,7 @@ export async function fetchPublicStarfield() {
     version: payload.version ?? null,
     passages: (payload.passages ?? []).map(normalizeStarfieldPassage).filter((passage): passage is ApiStarfieldPassage => passage !== null),
     relationships: (payload.relationships ?? []).map(normalizeStarfieldRelationship).filter((relationship): relationship is ApiStarfieldRelationship => relationship !== null),
+    deepPaths: (payload.deepPaths ?? []).map(normalizeStarfieldDeepPath).filter((path): path is ApiStarfieldDeepPath => path !== null),
   };
 }
 
@@ -472,6 +546,24 @@ export async function deleteAdminArticle(slug: string) {
   await requestJson<void>(`/api/admin/articles/${encodeURIComponent(slug)}`, {
     method: 'DELETE',
   });
+}
+
+export async function fetchAdminTags() {
+  const payload = await requestJson<{ items?: unknown[] }>('/api/admin/tags');
+  return (payload.items ?? []).map(normalizeAdminTag).filter((tag): tag is ApiAdminTag => tag !== null);
+}
+
+export async function deleteAdminTag(tag: string) {
+  return normalizeAdminTagMutationPayload(await requestJson<unknown>(`/api/admin/tags/${encodeURIComponent(tag)}`, {
+    method: 'DELETE',
+  }));
+}
+
+export async function mergeAdminTags(sourceTag: string, targetTag: string) {
+  return normalizeAdminTagMutationPayload(await requestJson<unknown>('/api/admin/tags/merge', {
+    method: 'POST',
+    body: JSON.stringify({ sourceTag, targetTag }),
+  }));
 }
 
 export async function fetchAdminDeletedArticles() {
@@ -661,6 +753,13 @@ export async function generateAdminStarfieldRelationships(versionId: string) {
   return normalizeAdminStarfieldVersionPayload(payload);
 }
 
+export async function generateAdminStarfieldDeepRelationships(versionId: string) {
+  const payload = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/generate-deep-relationships`, {
+    method: 'POST',
+  });
+  return normalizeAdminStarfieldVersionPayload(payload);
+}
+
 export async function updateAdminStarfieldPassage(id: string, payload: Partial<ApiStarfieldPassage>) {
   const response = await requestJson<unknown>(`/api/admin/starfield/passages/${encodeURIComponent(id)}`, {
     method: 'PUT',
@@ -688,6 +787,14 @@ export async function updateAdminStarfieldRelationship(id: string, payload: Part
   return normalizeAdminStarfieldVersionPayload(response);
 }
 
+export async function updateAdminStarfieldDeepPath(id: string, payload: Partial<ApiStarfieldDeepPath>) {
+  const response = await requestJson<unknown>(`/api/admin/starfield/deep-paths/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+  return normalizeAdminStarfieldVersionPayload(response);
+}
+
 export async function bulkUpdateAdminStarfieldRelationships(
   versionId: string,
   payload: {
@@ -698,6 +805,21 @@ export async function bulkUpdateAdminStarfieldRelationships(
   },
 ) {
   const response = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/relationships/bulk`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return normalizeAdminStarfieldVersionPayload(response);
+}
+
+export async function bulkUpdateAdminStarfieldDeepPaths(
+  versionId: string,
+  payload: {
+    status: ApiStarfieldDeepPath['status'];
+    pathIds?: string[];
+    sourceStatus?: ApiStarfieldDeepPath['status'];
+  },
+) {
+  const response = await requestJson<unknown>(`/api/admin/starfield/versions/${encodeURIComponent(versionId)}/deep-paths/bulk`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -718,6 +840,17 @@ export async function archiveAdminStarfieldVersion(id: string) {
   return normalizeAdminStarfieldVersionPayload(payload);
 }
 
+export async function deleteAdminStarfieldVersion(id: string) {
+  await requestJson<void>(`/api/admin/starfield/versions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function fetchAdminTasks() {
+  const payload = await requestJson<{ items?: unknown[] }>('/api/admin/tasks');
+  return (payload.items ?? []).map(normalizeStarfieldJob);
+}
+
 export async function fetchAdminCommandGuide() {
   return requestJson<ApiAdminCommandGuide>('/api/admin/commands');
 }
@@ -733,6 +866,17 @@ export async function runAdminCommand(input: string, options: { confirm?: boolea
   return requestJson<ApiAdminCommandRunResult>('/api/admin/commands/run', {
     method: 'POST',
     body: JSON.stringify({ input, ...options }),
+  });
+}
+
+export async function runAdminCommandAi(payload: {
+  message: string;
+  history: ApiAdminCommandAiMessage[];
+  recentResults: unknown[];
+}) {
+  return requestJson<ApiAdminCommandAiResult>('/api/admin/commands/ai', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 
@@ -963,6 +1107,31 @@ function normalizeComment(value: unknown): ApiComment | null {
   };
 }
 
+function normalizeAdminTag(value: unknown): ApiAdminTag | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const name = asText(value.name);
+  if (!name) {
+    return null;
+  }
+
+  return {
+    name,
+    articleCount: asNumber(value.articleCount, 0),
+    occurrenceCount: asNumber(value.occurrenceCount, 0),
+  };
+}
+
+function normalizeAdminTagMutationPayload(value: unknown): ApiAdminTagMutationPayload {
+  const record = isRecord(value) ? value : {};
+  return {
+    updatedCount: asNumber(record.updatedCount, 0),
+    articles: Array.isArray(record.articles) ? record.articles : [],
+  };
+}
+
 function normalizeAdminComment(value: unknown): ApiAdminComment | null {
   if (!isRecord(value)) {
     return null;
@@ -1101,6 +1270,40 @@ function normalizeStarfieldCanonicalKeyword(value: unknown): ApiStarfieldCanonic
   };
 }
 
+function normalizeStarfieldDeepPath(value: unknown): ApiStarfieldDeepPath | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  if (!id) {
+    return null;
+  }
+  const inquiry = isRecord(value.inquiry) ? value.inquiry : {};
+
+  return {
+    id,
+    versionId: asText(value.versionId),
+    sourcePassageId: asText(value.sourcePassageId),
+    passageIds: Array.isArray(value.passageIds) ? value.passageIds.map(asText).filter(Boolean) : [],
+    inquiry: {
+      question: asText(inquiry.question),
+      intentType: asText(inquiry.intentType),
+    },
+    pathType: asText(value.pathType) || 'inquiry_path',
+    title: asText(value.title) || '深层探索路径',
+    rationale: asText(value.rationale),
+    retrievalNotes: Array.isArray(value.retrievalNotes) ? value.retrievalNotes.map(asText).filter(Boolean) : [],
+    critique: asText(value.critique),
+    strength: asNumber(value.strength, 1),
+    status: value.status === 'accepted' || value.status === 'hidden' ? value.status : 'suggested',
+    reviewNote: asText(value.reviewNote),
+    createdAt: asText(value.createdAt),
+    updatedAt: asText(value.updatedAt),
+    reviewedAt: asText(value.reviewedAt) || null,
+  };
+}
+
 function normalizeAdminStarfieldVersionPayload(value: unknown): ApiAdminStarfieldVersionPayload {
   const payload = isRecord(value) ? value : {};
   return {
@@ -1123,18 +1326,19 @@ function normalizeAdminStarfieldVersionPayload(value: unknown): ApiAdminStarfiel
     passages: Array.isArray(payload.passages) ? payload.passages.map(normalizeStarfieldPassage).filter((item): item is ApiStarfieldPassage => item !== null) : [],
     relationships: Array.isArray(payload.relationships) ? payload.relationships.map(normalizeStarfieldRelationship).filter((item): item is ApiStarfieldRelationship => item !== null) : [],
     canonicalKeywords: Array.isArray(payload.canonicalKeywords) ? payload.canonicalKeywords.map(normalizeStarfieldCanonicalKeyword).filter((item): item is ApiStarfieldCanonicalKeyword => item !== null) : [],
+    deepPaths: Array.isArray(payload.deepPaths) ? payload.deepPaths.map(normalizeStarfieldDeepPath).filter((item): item is ApiStarfieldDeepPath => item !== null) : [],
     jobs: Array.isArray(payload.jobs)
       ? payload.jobs.map((job) => normalizeStarfieldJob(job))
       : [],
   };
 }
 
-function normalizeStarfieldJob(job: unknown): ApiAdminStarfieldVersionPayload['jobs'][number] {
+function normalizeStarfieldJob(job: unknown): ApiAdminTask {
   const record = isRecord(job) ? job : {};
   return {
     id: asText(record.id),
     versionId: asText(record.versionId),
-    phase: record.phase === 'passages' || record.phase === 'relationships' ? record.phase : 'passages',
+    phase: record.phase === 'passages' || record.phase === 'relationships' || record.phase === 'deep-relationships' ? record.phase : asText(record.phase) || 'task',
     status: record.status === 'pending' || record.status === 'running' || record.status === 'succeeded' || record.status === 'failed' ? record.status : 'pending',
     selectedArticleIds: Array.isArray(record.selectedArticleIds) ? record.selectedArticleIds.map(asText).filter(Boolean) : [],
     progressCurrent: asNumber(record.progressCurrent, 0),
@@ -1144,6 +1348,10 @@ function normalizeStarfieldJob(job: unknown): ApiAdminStarfieldVersionPayload['j
     createdAt: asText(record.createdAt),
     updatedAt: asText(record.updatedAt),
     completedAt: asText(record.completedAt) || null,
+    sourceType: asText(record.sourceType),
+    sourceLabel: asText(record.sourceLabel),
+    sourceId: asText(record.sourceId),
+    sourceName: asText(record.sourceName),
   };
 }
 
@@ -1187,6 +1395,12 @@ function normalizeRelationshipType(value: string): ApiStarfieldRelationship['rel
     value === 'further_reading' ||
     value === 'problem_solution' ||
     value === 'comparison' ||
+    value === 'shared_principle' ||
+    value === 'same_problem_shape' ||
+    value === 'method_transfer' ||
+    value === 'tradeoff_parallel' ||
+    value === 'case_generalization' ||
+    value === 'implementation_echo' ||
     value === 'same_topic'
     ? value
     : 'same_topic';
