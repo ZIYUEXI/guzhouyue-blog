@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS starfield_versions (
   name TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
   is_active INTEGER NOT NULL DEFAULT 0,
+  parent_version_id TEXT NOT NULL DEFAULT '',
+  change_mode TEXT NOT NULL DEFAULT 'full',
   source_article_ids_json TEXT NOT NULL DEFAULT '[]',
   generation_model TEXT NOT NULL DEFAULT '',
   generation_prompt_version TEXT NOT NULL DEFAULT '',
@@ -188,6 +190,7 @@ CREATE TABLE IF NOT EXISTS starfield_passages (
   anchor TEXT NOT NULL,
   keywords_json TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'suggested',
+  origin_passage_id TEXT NOT NULL DEFAULT '',
   sort_order INTEGER NOT NULL DEFAULT 0,
   review_note TEXT NOT NULL DEFAULT '',
   embedding_ref TEXT NOT NULL DEFAULT '',
@@ -208,6 +211,8 @@ CREATE TABLE IF NOT EXISTS starfield_relationships (
   evidence_keywords_json TEXT NOT NULL DEFAULT '[]',
   strength REAL NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'suggested',
+  origin_relationship_id TEXT NOT NULL DEFAULT '',
+  change_state TEXT NOT NULL DEFAULT 'new',
   is_cross_article INTEGER NOT NULL DEFAULT 1,
   review_note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -308,7 +313,12 @@ def ensure_schema() -> None:
         _ensure_column(conn, "site_settings", "owner_name", "TEXT NOT NULL DEFAULT '孤舟月'")
         _ensure_column(conn, "site_settings", "owner_avatar_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "articles", "author_name", "TEXT NOT NULL DEFAULT '孤舟月'")
+        _ensure_column(conn, "starfield_versions", "parent_version_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "starfield_versions", "change_mode", "TEXT NOT NULL DEFAULT 'full'")
+        _ensure_column(conn, "starfield_passages", "origin_passage_id", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "starfield_relationships", "evidence_keywords_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(conn, "starfield_relationships", "origin_relationship_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "starfield_relationships", "change_state", "TEXT NOT NULL DEFAULT 'new'")
         _ensure_column(conn, "starfield_generation_jobs", "progress_current", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "starfield_generation_jobs", "progress_total", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "starfield_generation_jobs", "current_step", "TEXT NOT NULL DEFAULT ''")

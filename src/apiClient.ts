@@ -53,6 +53,8 @@ export type ApiStarfieldVersion = {
   name: string;
   status: 'draft' | 'published' | 'archived';
   isActive: boolean;
+  parentVersionId: string;
+  changeMode: 'full' | 'incremental' | string;
   sourceArticleIds: string[];
   generationModel: string;
   generationPromptVersion: string;
@@ -81,6 +83,7 @@ export type ApiStarfieldPassage = {
   anchor: string;
   keywords: string[];
   status: 'suggested' | 'accepted' | 'hidden';
+  originPassageId: string;
   sortOrder: number;
   reviewNote: string;
   embeddingRef: string;
@@ -113,6 +116,8 @@ export type ApiStarfieldRelationship = {
   evidenceKeywords: string[];
   strength: number;
   status: 'suggested' | 'accepted' | 'hidden';
+  originRelationshipId: string;
+  changeState: 'inherited' | 'reconfirmed' | 'new' | 'changed' | 'removed' | string;
   isCrossArticle: boolean;
   reviewNote: string;
   createdAt: string;
@@ -241,6 +246,7 @@ export type ApiLlmConfig = {
   model: string;
   baseUrl: string;
   apiKey: string;
+  apiKeyConfigured?: boolean;
   temperature: number;
   enabled: boolean;
   updatedAt?: string;
@@ -272,6 +278,10 @@ export type ApiLlmTokenUsageItem = {
 export type ApiLlmTokenUsagePayload = {
   summary: ApiLlmTokenUsageSummary;
   items: ApiLlmTokenUsageItem[];
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  total: number;
 };
 
 export type ApiLlmConnectionTestResult = {
@@ -690,8 +700,12 @@ export async function fetchAdminLlmConfig() {
   return requestJson<ApiLlmConfig>('/api/admin/llm-config');
 }
 
-export async function fetchAdminLlmTokenUsage() {
-  return requestJson<ApiLlmTokenUsagePayload>('/api/admin/llm-token-usage');
+export async function fetchAdminLlmTokenUsage(page = 1, pageSize = 10) {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  return requestJson<ApiLlmTokenUsagePayload>(`/api/admin/llm-token-usage?${params.toString()}`);
 }
 
 export async function saveAdminLlmConfig(config: ApiLlmConfig) {
@@ -729,6 +743,14 @@ export async function createAdminStarfieldVersion(name: string) {
   const payload = await requestJson<unknown>('/api/admin/starfield/versions', {
     method: 'POST',
     body: JSON.stringify({ name }),
+  });
+  return normalizeAdminStarfieldVersionPayload(payload);
+}
+
+export async function createIncrementalAdminStarfieldVersion(name: string, parentVersionId?: string) {
+  const payload = await requestJson<unknown>('/api/admin/starfield/versions/incremental', {
+    method: 'POST',
+    body: JSON.stringify({ name, parentVersionId }),
   });
   return normalizeAdminStarfieldVersionPayload(payload);
 }
@@ -1169,6 +1191,8 @@ function normalizeStarfieldVersion(value: unknown): ApiStarfieldVersion | null {
     name: asText(value.name) || '星空版本',
     status: value.status === 'published' || value.status === 'archived' ? value.status : 'draft',
     isActive: asBoolean(value.isActive, false),
+    parentVersionId: asText(value.parentVersionId),
+    changeMode: asText(value.changeMode) || 'full',
     sourceArticleIds: Array.isArray(value.sourceArticleIds) ? value.sourceArticleIds.map(asText).filter(Boolean) : [],
     generationModel: asText(value.generationModel),
     generationPromptVersion: asText(value.generationPromptVersion),
@@ -1209,6 +1233,7 @@ function normalizeStarfieldPassage(value: unknown): ApiStarfieldPassage | null {
     anchor: asText(value.anchor),
     keywords: Array.isArray(value.keywords) ? value.keywords.map(asText).filter(Boolean) : [],
     status: value.status === 'accepted' || value.status === 'hidden' ? value.status : 'suggested',
+    originPassageId: asText(value.originPassageId),
     sortOrder: asNumber(value.sortOrder, 0),
     reviewNote: asText(value.reviewNote),
     embeddingRef: asText(value.embeddingRef),
@@ -1241,6 +1266,8 @@ function normalizeStarfieldRelationship(value: unknown): ApiStarfieldRelationshi
     evidenceKeywords: Array.isArray(value.evidenceKeywords) ? value.evidenceKeywords.map(asText).filter(Boolean) : [],
     strength: asNumber(value.strength, 1),
     status: value.status === 'accepted' || value.status === 'hidden' ? value.status : 'suggested',
+    originRelationshipId: asText(value.originRelationshipId),
+    changeState: normalizeRelationshipChangeState(asText(value.changeState)),
     isCrossArticle: asBoolean(value.isCrossArticle, true),
     reviewNote: asText(value.reviewNote),
     createdAt: asText(value.createdAt),
@@ -1312,6 +1339,8 @@ function normalizeAdminStarfieldVersionPayload(value: unknown): ApiAdminStarfiel
       name: '',
       status: 'draft',
       isActive: false,
+      parentVersionId: '',
+      changeMode: 'full',
       sourceArticleIds: [],
       generationModel: '',
       generationPromptVersion: '',
@@ -1404,6 +1433,12 @@ function normalizeRelationshipType(value: string): ApiStarfieldRelationship['rel
     value === 'same_topic'
     ? value
     : 'same_topic';
+}
+
+function normalizeRelationshipChangeState(value: string): ApiStarfieldRelationship['changeState'] {
+  return value === 'inherited' || value === 'reconfirmed' || value === 'changed' || value === 'removed' || value === 'new'
+    ? value
+    : 'new';
 }
 
 function formatApiDate(value: string) {

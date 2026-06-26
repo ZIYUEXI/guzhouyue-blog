@@ -137,6 +137,12 @@ export function StarfieldPage() {
 
   return (
     <section className="starfield-page" aria-label="星图">
+      <div className="starfield-orientation-gate" role="status" aria-live="polite">
+        <Orbit size={28} />
+        <strong>请横屏浏览星图</strong>
+        <span>横向视野会保留星图、筛选和方向键控制。</span>
+      </div>
+
       {status === 'loading' && (
         <div className="starfield-empty">
           <Loader2 size={22} />
@@ -464,6 +470,16 @@ function GalaxyViewport({
   const cameraAnglesRef = useRef({ yaw: Math.PI, pitch: -0.92 });
   const movementSpeedMultiplierRef = useRef(1);
   const [lockedPassageId, setLockedPassageId] = useState('');
+
+  const setVirtualKey = (code: string, isPressed: boolean) => {
+    keysRef.current[code] = isPressed;
+  };
+
+  const releaseVirtualKeys = () => {
+    ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft'].forEach((code) => {
+      keysRef.current[code] = false;
+    });
+  };
 
   const setCameraLockTarget = (id: string) => {
     lockedPassageIdRef.current = id;
@@ -897,6 +913,17 @@ function GalaxyViewport({
   }, [onPickPassage]);
 
   useEffect(() => {
+    window.addEventListener('pointerup', releaseVirtualKeys);
+    window.addEventListener('pointercancel', releaseVirtualKeys);
+    window.addEventListener('blur', releaseVirtualKeys);
+    return () => {
+      window.removeEventListener('pointerup', releaseVirtualKeys);
+      window.removeEventListener('pointercancel', releaseVirtualKeys);
+      window.removeEventListener('blur', releaseVirtualKeys);
+    };
+  }, []);
+
+  useEffect(() => {
     const scene = sceneRef.current;
     if (!scene || !starGroupRef.current || !edgeGroupRef.current || !dustGroupRef.current) {
       return;
@@ -977,6 +1004,36 @@ function GalaxyViewport({
             </button>
           </div>
         )}
+      </div>
+      <div className="starfield-mobile-controls" aria-label="移动控制">
+        {[
+          ['KeyW', '前进', 'W'],
+          ['KeyA', '左移', 'A'],
+          ['KeyS', '后退', 'S'],
+          ['KeyD', '右移', 'D'],
+        ].map(([code, label, key]) => (
+          <button
+            aria-label={label}
+            className={`starfield-mobile-key is-${key.toLowerCase()}`}
+            key={code}
+            type="button"
+            onContextMenu={(event) => event.preventDefault()}
+            onPointerCancel={() => setVirtualKey(code, false)}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setVirtualKey(code, true);
+              try {
+                event.currentTarget.setPointerCapture(event.pointerId);
+              } catch {
+                // Pointer capture is best-effort on mobile browsers.
+              }
+            }}
+            onPointerLeave={() => setVirtualKey(code, false)}
+            onPointerUp={() => setVirtualKey(code, false)}
+          >
+            {key}
+          </button>
+        ))}
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Bot, ChevronRight, FileText, Image as ImageIcon, Orbit, Plus, Settings, SquareTerminal, Sun } from 'lucide-react';
 import { fetchAdminOps, type ApiAdminOps } from './apiClient';
 import type { SiteContent } from './contentStore';
+import { sortPosts, type ArchiveGroup } from './lib/postUtils';
 import type { Post } from './posts';
 import type { ColorScheme } from './siteSettings';
 
@@ -23,11 +24,6 @@ type AdminPanelId =
   | 'llm'
   | 'homepage'
   | 'appearance';
-
-type ArchiveGroup = {
-  month: string;
-  entries: Post[];
-};
 
 export function AdminDashboardPanel({
   archiveGroups,
@@ -215,17 +211,6 @@ export function AdminDashboardPanel({
       </div>
     </section>
   );
-}
-
-function sortPosts(posts: Post[]) {
-  return [...posts].sort((firstPost, secondPost) => parsePostDate(secondPost.date) - parsePostDate(firstPost.date));
-}
-
-function parsePostDate(date: string) {
-  const [datePart = '', timePart = '00:00'] = date.trim().split(/\s+/);
-  const [year = '0', month = '1', day = '1'] = datePart.split('.');
-  const [hour = '0', minute = '0'] = timePart.split(':');
-  return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)).getTime();
 }
 
 function formatDateTime(value: string) {

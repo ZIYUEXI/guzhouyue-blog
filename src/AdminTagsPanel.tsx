@@ -1,12 +1,8 @@
 import { GitMerge, Search, Tags, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { ApiAdminTag } from './apiClient';
+import type { BatchResult } from './lib/adminTypes';
 import type { Post } from './posts';
-
-type BatchResult = {
-  success: number;
-  failed: number;
-};
 
 export function AdminTagsPanel({
   onDeleteTag,

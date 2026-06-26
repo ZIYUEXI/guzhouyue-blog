@@ -5,6 +5,7 @@ import {
   bulkUpdateAdminStarfieldPassages,
   bulkUpdateAdminStarfieldRelationships,
   createAdminStarfieldVersion,
+  createIncrementalAdminStarfieldVersion,
   deleteAdminStarfieldVersion,
   fetchAdminTasks,
   fetchAdminStarfieldVersion,
@@ -28,6 +29,7 @@ import type { Post } from './posts';
 
 type ReviewTab = 'passages' | 'relationships' | 'deepPaths';
 type ReviewFilter = 'all' | 'suggested' | 'accepted' | 'hidden';
+type RelationshipChangeFilter = 'all' | 'new' | 'changed' | 'removed' | 'reconfirmed' | 'inherited';
 
 const relationshipTypeOptions: Array<{ value: ApiStarfieldRelationship['relationshipType']; label: string }> = [
   { value: 'same_topic', label: '同一主题' },
@@ -50,6 +52,15 @@ const reviewFilters: Array<{ value: ReviewFilter; label: string }> = [
   { value: 'hidden', label: '已隐藏' },
 ];
 
+const relationshipChangeFilters: Array<{ value: RelationshipChangeFilter; label: string }> = [
+  { value: 'all', label: '全部变更' },
+  { value: 'new', label: '新增' },
+  { value: 'changed', label: '变更' },
+  { value: 'removed', label: '移除' },
+  { value: 'reconfirmed', label: '重确认' },
+  { value: 'inherited', label: '继承' },
+];
+
 type StarfieldPanelMode = 'generation' | 'review' | 'tasks';
 
 export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode; posts: Post[] }) {
@@ -60,6 +71,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const [newVersionName, setNewVersionName] = useState('星空版本');
   const [reviewTab, setReviewTab] = useState<ReviewTab>('passages');
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('suggested');
+  const [relationshipChangeFilter, setRelationshipChangeFilter] = useState<RelationshipChangeFilter>('all');
   const [selectedPassageId, setSelectedPassageId] = useState('');
   const [selectedRelationshipId, setSelectedRelationshipId] = useState('');
   const [selectedDeepPathId, setSelectedDeepPathId] = useState('');
@@ -72,6 +84,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const [busy, setBusy] = useState(false);
 
   const activeVersion = activePayload?.version ?? versions[0] ?? null;
+  const activePublishedVersion = versions.find((version) => version.isActive && version.status === 'published') ?? null;
   const passages = activePayload?.passages ?? [];
   const relationships = activePayload?.relationships ?? [];
   const crossArticleRelationships = relationships.filter((relationship) => relationship.isCrossArticle);
@@ -89,8 +102,12 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
     [passages, reviewFilter, selectedCanonicalKeyword],
   );
   const filteredRelationships = useMemo(
-    () => filterRelationshipsByCanonicalKeyword(filterByStatus(crossArticleRelationships, reviewFilter), selectedCanonicalKeyword),
-    [crossArticleRelationships, reviewFilter, selectedCanonicalKeyword],
+    () =>
+      filterRelationshipsByChangeState(
+        filterRelationshipsByCanonicalKeyword(filterByStatus(crossArticleRelationships, reviewFilter), selectedCanonicalKeyword),
+        relationshipChangeFilter,
+      ),
+    [crossArticleRelationships, reviewFilter, selectedCanonicalKeyword, relationshipChangeFilter],
   );
   const filteredDeepPaths = useMemo(() => filterByStatus(deepPaths, reviewFilter), [deepPaths, reviewFilter]);
   const keywordPassages = useMemo(() => filterByCanonicalKeyword(passages, selectedCanonicalKeyword), [passages, selectedCanonicalKeyword]);
@@ -113,6 +130,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const activeJobs = sortedJobs.slice(0, 6);
   const runningStarfieldJob = activePayload?.jobs.find((job) => job.status === 'pending' || job.status === 'running') ?? null;
   const passageGenerationBusy = Boolean(runningStarfieldJob && runningStarfieldJob.phase === 'passages');
+  const activeVersionIsPublished = Boolean(activeVersion?.isActive && activeVersion.status === 'published');
   const taskSourceOptions = useMemo(() => {
     const sources = new Map<string, string>();
     taskItems.forEach((task) => {
@@ -267,6 +285,24 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
       setReviewTab('passages');
       return payload;
     }, '已创建新的星图版本。');
+  }
+
+  async function createIncrementalVersion() {
+    if (!activePublishedVersion) {
+      setNotice('当前还没有可派生的公开星图。');
+      return;
+    }
+    await runAction(async () => {
+      const requestedName = newVersionName.trim() && newVersionName.trim() !== '星空版本'
+        ? newVersionName
+        : `${activePublishedVersion.name} 增量版本`;
+      const payload = await createIncrementalAdminStarfieldVersion(requestedName, activePublishedVersion.id);
+      setSelectedArticleIds([]);
+      setReviewTab('passages');
+      setReviewFilter('suggested');
+      setRelationshipChangeFilter('all');
+      return payload;
+    }, `已从“${activePublishedVersion.name}”派生增量星图。`);
   }
 
   async function deleteVersion(version: ApiStarfieldVersion) {
@@ -457,6 +493,16 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
               <button aria-label="新建星图版本" className="primary-action icon-only-action" disabled={busy} title="新建星图版本" type="button" onClick={() => void createVersion()}>
                 <Plus size={16} />
               </button>
+              <button
+                aria-label="从当前公开星图派生增量版本"
+                className="secondary-action icon-only-action"
+                disabled={busy || !activePublishedVersion}
+                title="从当前公开星图派生增量版本"
+                type="button"
+                onClick={() => void createIncrementalVersion()}
+              >
+                <GitBranch size={16} />
+              </button>
             </div>
             <div className="starfield-version-list">
               {versions.map((version) => (
@@ -468,7 +514,12 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                     onClick={() => void refreshVersion(version.id)}
                   >
                     <strong>{version.name}</strong>
-                    <small>{version.isActive ? '当前公开' : version.status} · {version.acceptedPassageCount ?? 0} 星点 · {version.acceptedRelationshipCount ?? 0} 关系</small>
+                    <small>
+                      {version.isActive ? '当前公开' : version.status}
+                      {version.changeMode === 'incremental' ? ' · 增量' : ''}
+                      {version.parentVersionId ? ' · 有父版本' : ''}
+                      {' '}· {version.acceptedPassageCount ?? 0} 星点 · {version.acceptedRelationshipCount ?? 0} 关系
+                    </small>
                   </button>
                   <button
                     aria-label={`删除星图版本 ${version.name}`}
@@ -492,11 +543,14 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                 <h3>Passage 切割</h3>
                 <p>选择已发布文章后创建 AI-agent 后台任务。</p>
               </div>
-              <button className="primary-action" disabled={busy || passageGenerationBusy || !activeVersion || selectedArticleIds.length === 0} type="button" onClick={() => void generatePassages()}>
+              <button className="primary-action" disabled={busy || passageGenerationBusy || !activeVersion || activeVersionIsPublished || selectedArticleIds.length === 0} type="button" onClick={() => void generatePassages()}>
                 {passageGenerationBusy ? <Loader2 size={16} /> : <Sparkles size={16} />}
                 生成 Passage
               </button>
             </div>
+            {activeVersionIsPublished && (
+              <p className="starfield-toolbar-note">当前版本正在公开展示。追加新文章前，请先从当前公开星图派生增量版本。</p>
+            )}
             <div className="starfield-article-tools">
               <small>已选 {selectedArticleIds.length} / {publishedPosts.length}</small>
               <button className="secondary-action" type="button" onClick={() => setSelectedArticleIds(publishedPosts.map((post) => (post as Post & { id?: string }).id ?? post.slug))}>
@@ -562,6 +616,15 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                 </button>
               ))}
             </div>
+            {reviewTab === 'relationships' && (
+              <div className="starfield-filter-tabs" aria-label="关系变更状态">
+                {relationshipChangeFilters.map((filter) => (
+                  <button aria-pressed={relationshipChangeFilter === filter.value} key={filter.value} type="button" onClick={() => setRelationshipChangeFilter(filter.value)}>
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="starfield-toolbar-actions">
               {reviewTab === 'passages' ? (
                 <>
@@ -610,11 +673,11 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                   <span className="starfield-toolbar-note">相邻星线可在“关系”中审核。</span>
                 </>
               )}
-              <button className="primary-action" disabled={busy || acceptedPassages.length < 2 || !activePayload} type="button" onClick={() => void runAction(() => generateAdminStarfieldRelationships(activePayload!.version.id), '关系生成任务已创建，可在任务管理查看进度。')}>
+              <button className="primary-action" disabled={busy || acceptedPassages.length < 2 || !activePayload || activeVersionIsPublished} type="button" onClick={() => void runAction(() => generateAdminStarfieldRelationships(activePayload!.version.id), '关系生成任务已创建，可在任务管理查看进度。')}>
                 <GitBranch size={16} />
-                生成关系
+                {activeVersion?.changeMode === 'incremental' ? '重建关系' : '生成关系'}
               </button>
-              <button className="secondary-action" disabled={busy || acceptedPassages.length < 2 || !activePayload} type="button" onClick={() => void runAction(() => generateAdminStarfieldDeepRelationships(activePayload!.version.id), '深度关系挖掘任务已创建，可在任务管理查看进度。')}>
+              <button className="secondary-action" disabled={busy || acceptedPassages.length < 2 || !activePayload || activeVersionIsPublished} type="button" onClick={() => void runAction(() => generateAdminStarfieldDeepRelationships(activePayload!.version.id), '深度关系挖掘任务已创建，可在任务管理查看进度。')}>
                 <Sparkles size={16} />
                 深度关系挖掘
               </button>
@@ -667,7 +730,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                     >
                       <StatusPill status={relationship.status} />
                       <strong>{source?.title ?? '未知星点'} → {target?.title ?? '未知星点'}</strong>
-                      <small>{relationship.relationshipLabel} · {relationship.isCrossArticle ? '跨文章' : '同文章'}</small>
+                      <small>{relationship.relationshipLabel} · {relationship.isCrossArticle ? '跨文章' : '同文章'} · {relationshipChangeStateLabel(relationship.changeState)}</small>
                       {relationship.evidenceKeywords.length > 0 && <small>证据：{relationship.evidenceKeywords.slice(0, 3).join('，')}</small>}
                       <p>{relationship.rationale}</p>
                     </button>
@@ -910,7 +973,7 @@ function RelationshipEditor({
     <>
       <div className="starfield-detail-head">
         <StatusPill status={relationship.status} />
-        <span>{relationship.isCrossArticle ? '跨文章关系' : '同文章关系'}</span>
+        <span>{relationship.isCrossArticle ? '跨文章关系' : '同文章关系'} · {relationshipChangeStateLabel(relationship.changeState)}</span>
       </div>
       <div className="starfield-edge-summary">
         <strong>{source?.title ?? '未知星点'}</strong>
@@ -1097,6 +1160,21 @@ function filterRelationshipsByCanonicalKeyword(items: ApiStarfieldRelationship[]
   }
 
   return items.filter((relationship) => relationshipMatchesCanonicalKeyword(relationship, keyword));
+}
+
+function filterRelationshipsByChangeState(items: ApiStarfieldRelationship[], filter: RelationshipChangeFilter) {
+  return filter === 'all' ? items : items.filter((relationship) => relationship.changeState === filter);
+}
+
+function relationshipChangeStateLabel(value: string) {
+  const labels: Record<string, string> = {
+    inherited: '继承',
+    reconfirmed: '重确认',
+    new: '新增',
+    changed: '变更',
+    removed: '移除',
+  };
+  return labels[value] ?? '新增';
 }
 
 function relationshipMatchesCanonicalKeyword(relationship: ApiStarfieldRelationship, keyword: ApiStarfieldCanonicalKeyword) {

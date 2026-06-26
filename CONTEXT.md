@@ -44,6 +44,14 @@ _Avoid_: One-shot graph generation
 An administrator-triggered action that creates a new candidate or published starfield version without destroying the previous usable version.
 _Avoid_: Destructive rebuild
 
+**Incremental Starfield Version**:
+A draft Starfield Version derived from the current Published Starfield so new Articles can be added without re-cutting or re-reviewing existing Visible Passages.
+_Avoid_: Mutating active starfield, full rebuild by default
+
+**Parent Starfield Version**:
+The Starfield Version that an Incremental Starfield Version was derived from. It remains usable and can be restored even after a child version is published.
+_Avoid_: Overwritten version, backup copy
+
 **Starfield Version**:
 An administrator-managed snapshot of the Published Starfield. Administrators decide which Starfield Version is visible to Readers.
 _Avoid_: Reader-selectable timeline
@@ -131,6 +139,14 @@ _Avoid_: Keyword-only retrieval, embedding-only retrieval, rule-led candidate ge
 **Passage Relationship**:
 A reader-facing connection between two Passages, including connections across different Articles.
 _Avoid_: Article relationship, backlink
+
+**Relationship Rebuild Diff**:
+The comparison between a Parent Starfield Version's reviewed Passage Relationships and a regenerated relationship set in an Incremental Starfield Version. It classifies relationships as reconfirmed, new, changed, or removed so administrators review only meaningful relationship changes.
+_Avoid_: Full relationship re-approval, append-only edge patch
+
+**Reconfirmed Relationship**:
+A Passage Relationship that existed in the Parent Starfield Version and is still produced by relationship regeneration with the same Passage pair and Relationship Type. It can remain accepted while retaining the previously reviewed Relationship Rationale.
+_Avoid_: Unreviewed rewritten relationship, duplicate candidate
 
 **Cross-Article Relationship**:
 A Passage Relationship where the connected Passages come from different Source Articles. Cross-Article Relationships are the primary discovery value of the Starfield Knowledge Map.

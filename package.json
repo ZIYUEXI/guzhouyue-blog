@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite --host 0.0.0.0 --port 5173 --strictPort",
     "dev:server": "python -m server_py.app",
     "seed:server": "python -m server_py.seed",
     "seed:test-articles": "python -m server_py.seed_test_articles",
     "test:server": "python -m server_py.smoke_test && python -m server_py.compat_test",
     "test:theme": "node scripts/audit-theme-vars.mjs",
     "build": "node scripts/audit-theme-vars.mjs && tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 0.0.0.0 --port 4173 --strictPort"
   },
   "dependencies": {
     "@mdxeditor/editor": "^4.0.0",

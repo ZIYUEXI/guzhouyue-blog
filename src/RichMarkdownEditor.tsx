@@ -90,8 +90,17 @@ function renderFormulaHtml(formula: string, mode: FormulaMode) {
       throwOnError: false,
     });
   } catch {
-    return formula;
+    return escapeHtml(formula);
   }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function FormulaEditor({ formula, mode, nodeKey, parentEditor }: FormulaEditorProps) {

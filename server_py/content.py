@@ -822,19 +822,20 @@ def restore_article(identifier: str) -> dict[str, Any] | None:
     return to_article(article) if article else None
 
 
-def get_llm_settings() -> dict[str, Any]:
+def get_llm_settings(redact_api_key: bool = False) -> dict[str, Any]:
     with get_db() as conn:
         row = conn.execute("SELECT * FROM llm_settings WHERE id = ?", ("default",)).fetchone()
     if not row:
         defaults = LLM_PROVIDER_DEFAULTS["deepseek"]
-        return {"provider": "deepseek", "model": defaults["model"], "baseUrl": defaults["baseUrl"], "apiKey": "", "temperature": 0.7, "enabled": True, "updatedAt": now_iso()}
+        return {"provider": "deepseek", "model": defaults["model"], "baseUrl": defaults["baseUrl"], "apiKey": "", "apiKeyConfigured": False, "temperature": 0.7, "enabled": True, "updatedAt": now_iso()}
     provider = row["provider"] if row["provider"] in LLM_PROVIDER_DEFAULTS else "deepseek"
     defaults = LLM_PROVIDER_DEFAULTS[provider]
     return {
         "provider": provider,
         "model": row["model"] or defaults["model"],
         "baseUrl": row["base_url"] or defaults["baseUrl"],
-        "apiKey": row["api_key"],
+        "apiKey": "" if redact_api_key else row["api_key"],
+        "apiKeyConfigured": bool(row["api_key"]),
         "temperature": max(0, min(2, float(row["temperature"] or 0.7))),
         "enabled": bool(row["enabled"]),
         "updatedAt": row["updated_at"],
@@ -849,7 +850,8 @@ def save_llm_settings(input_data: dict[str, Any]) -> dict[str, Any]:
     defaults = LLM_PROVIDER_DEFAULTS[provider]
     model = str(input_data.get("model") or (existing["model"] if existing["provider"] == provider else defaults["model"]))[:120]
     base_url = str(input_data.get("baseUrl") or (existing["baseUrl"] if existing["provider"] == provider else defaults["baseUrl"]))[:500]
-    api_key = str(input_data.get("apiKey", existing["apiKey"])).strip()[:1000]
+    submitted_api_key = str(input_data.get("apiKey") or "").strip()
+    api_key = submitted_api_key[:1000] if submitted_api_key else existing["apiKey"]
     temperature = max(0, min(2, float(input_data.get("temperature", existing["temperature"]))))
     enabled = bool_from_input(input_data.get("enabled"), bool(existing["enabled"]))
     now = now_iso()
@@ -865,7 +867,7 @@ def save_llm_settings(input_data: dict[str, Any]) -> dict[str, Any]:
             """,
             (provider, model, base_url, api_key, temperature, 128000, 1 if enabled else 0, now),
         )
-    return get_llm_settings()
+    return get_llm_settings(redact_api_key=True)
 
 
 def record_llm_token_usage(input_data: dict[str, Any]) -> None:
@@ -919,20 +921,24 @@ def get_llm_token_usage_summary() -> dict[str, Any]:
     return {key: int(row[key] or 0) for key in ["totalCalls", "successCalls", "failedCalls", "promptTokens", "completionTokens", "totalTokens", "unknownTokenRecords"]}
 
 
-def list_llm_token_usage(limit: int = 50) -> list[dict[str, Any]]:
-    safe_limit = min(max(int(limit), 1), 200)
+def list_llm_token_usage_page(page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    safe_page_size = min(max(int(page_size), 1), 100)
     with get_db() as conn:
+        total = conn.execute("SELECT COUNT(*) AS count FROM llm_token_usage").fetchone()["count"]
+        page_count = max(1, math.ceil(total / safe_page_size))
+        safe_page = min(max(1, int(page)), page_count)
         rows = conn.execute(
             """
             SELECT id, feature, provider, model, prompt_tokens, completion_tokens,
               total_tokens, status, error_message, created_at
             FROM llm_token_usage
             ORDER BY created_at DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (safe_limit,),
+            (safe_page_size, (safe_page - 1) * safe_page_size),
         ).fetchall()
-    return [
+    return {
+        "items": [
         {
             "id": row["id"],
             "feature": row["feature"],
@@ -946,8 +952,14 @@ def list_llm_token_usage(limit: int = 50) -> list[dict[str, Any]]:
             "createdAt": row["created_at"],
         }
         for row in rows
-    ]
+        ],
+        "page": safe_page,
+        "pageSize": safe_page_size,
+        "pageCount": page_count,
+        "total": total,
+    }
 
 
-def get_llm_token_usage_payload(limit: int = 50) -> dict[str, Any]:
-    return {"summary": get_llm_token_usage_summary(), "items": list_llm_token_usage(limit)}
+def get_llm_token_usage_payload(page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    page_payload = list_llm_token_usage_page(page, page_size)
+    return {"summary": get_llm_token_usage_summary(), **page_payload}

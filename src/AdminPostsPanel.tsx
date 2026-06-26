@@ -2,19 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { NoteSection } from './contentStore';
 import type { Post, PostStatus } from './posts';
-
-type BatchResult = {
-  success: number;
-  failed: number;
-};
+import type { BatchResult } from './lib/adminTypes';
+import { formatBatchResult } from './lib/formatUtils';
+import { getPostStatus, getPostStatusLabel } from './lib/postUtils';
 
 const adminPostsPerPage = 8;
-
-const postStatusLabels: Record<PostStatus, string> = {
-  draft: '草稿',
-  published: '已发布',
-  archived: '已归档',
-};
 
 export function AdminPostsPanel({
   currentPage,
@@ -524,16 +516,4 @@ function getAdminPostsScrollFromUrl() {
   }
 
   return scroll;
-}
-
-function getPostStatus(post: Post): PostStatus {
-  return post.status ?? 'published';
-}
-
-function getPostStatusLabel(post: Post) {
-  return postStatusLabels[getPostStatus(post)];
-}
-
-function formatBatchResult(action: string, result: BatchResult) {
-  return `${action}完成：成功 ${result.success} 项，失败 ${result.failed} 项。`;
 }

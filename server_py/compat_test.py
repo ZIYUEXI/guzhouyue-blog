@@ -303,6 +303,59 @@ def main() -> None:
         public_starfield_after_publish = client.get("/api/starfield")
         public_starfield_relationships = public_starfield_after_publish.json().get("relationships", [])
         public_starfield_deep_paths = public_starfield_after_publish.json().get("deepPaths", [])
+        parent_accepted_relationships = [
+            item
+            for item in starfield_bulk_accept_relationships.json().get("relationships", [])
+            if item.get("status") == "accepted" and item.get("isCrossArticle")
+        ]
+        parent_accepted_relationship_by_id = {item.get("id"): item for item in parent_accepted_relationships}
+        active_starfield_generation_blocked = client.post(
+            f"/api/admin/starfield/versions/{starfield_version_id}/generate-passages",
+            json={"articleIds": starfield_article_ids or [first_article_id]},
+            headers=write_headers,
+        )
+        incremental_starfield = client.post(
+            "/api/admin/starfield/versions/incremental",
+            json={"name": "兼容增量星图", "parentVersionId": starfield_version_id},
+            headers=write_headers,
+        )
+        incremental_version_id = incremental_starfield.json().get("version", {}).get("id", "")
+        incremental_passages = incremental_starfield.json().get("passages", [])
+        incremental_relationships = incremental_starfield.json().get("relationships", [])
+        incremental_inherits_passages = (
+            incremental_starfield.status_code == 201
+            and incremental_starfield.json().get("version", {}).get("parentVersionId") == starfield_version_id
+            and incremental_starfield.json().get("version", {}).get("changeMode") == "incremental"
+            and len(incremental_passages) >= 1
+            and all(item.get("status") == "accepted" and item.get("originPassageId") for item in incremental_passages)
+        )
+        incremental_inherits_relationships = (
+            incremental_starfield.status_code == 201
+            and any(item.get("status") == "accepted" and item.get("changeState") == "inherited" and item.get("originRelationshipId") for item in incremental_relationships)
+        )
+        incremental_relationships_rebuild = client.post(
+            f"/api/admin/starfield/versions/{incremental_version_id}/generate-relationships",
+            headers=write_headers,
+        )
+        incremental_relationship_job_id = incremental_relationships_rebuild.json().get("jobId", "")
+        incremental_relationship_final = incremental_relationships_rebuild
+        incremental_relationship_final_job = None
+        for _ in range(30):
+            incremental_relationship_final = client.get(f"/api/admin/starfield/versions/{incremental_version_id}", headers=write_headers)
+            incremental_relationship_jobs = incremental_relationship_final.json().get("jobs", [])
+            incremental_relationship_final_job = next((job for job in incremental_relationship_jobs if job.get("id") == incremental_relationship_job_id), None)
+            if incremental_relationship_final_job and incremental_relationship_final_job.get("status") in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        incremental_reconfirmed_relationships = [
+            item
+            for item in incremental_relationship_final.json().get("relationships", [])
+            if item.get("changeState") == "reconfirmed" and item.get("status") == "accepted" and item.get("originRelationshipId")
+        ]
+        incremental_reconfirmed_keeps_parent_rationale = any(
+            parent_accepted_relationship_by_id.get(item.get("originRelationshipId"), {}).get("rationale") == item.get("rationale")
+            for item in incremental_reconfirmed_relationships
+        )
         public_starfield_relationship_shape_ok = all(
             "status" not in item
             and "reviewNote" not in item
@@ -380,6 +433,17 @@ def main() -> None:
         check("public starfield exposes accepted passages only", public_starfield_after_publish.status_code == 200 and len(public_starfield_after_publish.json().get("passages", [])) >= 1, public_starfield_after_publish.text)
         check("public starfield exposes reader relationship shape only", public_starfield_after_publish.status_code == 200 and len(public_starfield_relationships) >= 1 and public_starfield_relationship_shape_ok, public_starfield_after_publish.text)
         check("public starfield exposes reader deep path shape only", public_starfield_after_publish.status_code == 200 and public_starfield_deep_paths_shape_ok, public_starfield_after_publish.text)
+        check("admin starfield blocks generation on active published version", active_starfield_generation_blocked.status_code == 400, active_starfield_generation_blocked.text)
+        check("admin starfield incremental version inherits accepted passages", incremental_inherits_passages, incremental_starfield.text)
+        check("admin starfield incremental version inherits accepted relationships", incremental_inherits_relationships, incremental_starfield.text)
+        check(
+            "admin starfield incremental relationship rebuild reconfirms parent relationships",
+            incremental_relationship_final_job is not None
+            and incremental_relationship_final_job.get("status") == "succeeded"
+            and bool(incremental_reconfirmed_relationships)
+            and incremental_reconfirmed_keeps_parent_rationale,
+            incremental_relationship_final.text,
+        )
         check("draft save/get/delete roundtrip", draft_save.status_code == 200 and draft_get.status_code == 200 and draft_delete.status_code == 200 and draft_missing.status_code == 404, {"save": draft_save.text, "get": draft_get.text, "delete": draft_delete.text, "missing": draft_missing.text})
 
         create_article_payload = {
@@ -440,6 +504,7 @@ def main() -> None:
         private_album = client.post("/api/admin/gallery/albums", json={"slug": "compat-private", "title": "私有相册", "description": "兼容", "isPublic": False}, headers=write_headers)
         admin_gallery_after_create = client.get("/api/admin/gallery")
         public_gallery_after_create = client.get("/api/gallery")
+        system_album_rename = client.put("/api/admin/gallery/albums/album-moonlight", json={"slug": "system-renamed", "title": "重命名系统图库"}, headers=write_headers)
         album_update = client.put("/api/admin/gallery/albums/compat-private", json={"slug": "compat-public", "title": "公开相册", "description": "兼容更新", "isPublic": True}, headers=write_headers)
         png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 32)
         image_upload = client.post(
@@ -455,7 +520,8 @@ def main() -> None:
         image_delete = client.delete(f"/api/admin/gallery/images/{image_id}", headers=write_headers) if image_id else None
 
         check("admin gallery private album visible only to admin", private_album.status_code == 201 and any(item.get("slug") == "compat-private" for item in admin_gallery_after_create.json().get("items", [])) and not any(item.get("slug") == "compat-private" for item in public_gallery_after_create.json().get("items", [])), {"admin": admin_gallery_after_create.text, "public": public_gallery_after_create.text})
-        check("gallery album update works", album_update.status_code == 200 and album_update.json().get("slug") == "compat-public", album_update.text)
+        check("system gallery album cannot be renamed", system_album_rename.status_code == 400, system_album_rename.text)
+        check("gallery album update works", album_update.status_code == 200 and album_update.json().get("slug") == "compat-public" and album_update.json().get("title") == "公开相册", album_update.text)
         check("gallery image upload/serve/update works", image_upload.status_code == 201 and image_file is not None and image_file.status_code == 200 and image_update is not None and image_update.status_code == 200, {"upload": image_upload.text, "file": image_file.status_code if image_file else None, "update": image_update.text if image_update else None})
         check("gallery album delete works", album_delete.status_code == 200, album_delete.text)
         check("deleted album cascades image delete", image_delete is not None and image_delete.status_code == 404, image_delete.text if image_delete else None)

@@ -7,9 +7,15 @@ cd /d "%~dp0"
 set "CONDA_ENV=py313"
 set "BACKEND_URL=http://127.0.0.1:4174"
 set "FRONTEND_URL=http://127.0.0.1:5173"
+set "FRONTEND_HOST=0.0.0.0"
+set "FRONTEND_PORT=5173"
+set "LAN_IP="
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.AddressState -eq 'Preferred' } | Sort-Object InterfaceMetric | Select-Object -First 1 -ExpandProperty IPAddress)"`) do set "LAN_IP=%%I"
+if not "%LAN_IP%"=="" set "FRONTEND_LAN_URL=http://%LAN_IP%:%FRONTEND_PORT%"
 
 if /I "%CONDA_DEFAULT_ENV%"=="%CONDA_ENV%" (
   echo Conda env already active: %CONDA_ENV%
@@ -75,8 +81,12 @@ start "Guzhouyue Blog Frontend" /D "%~dp0" cmd /k "chcp 65001 >nul && npm run de
 
 echo.
 echo Started frontend and backend.
-echo Frontend: %FRONTEND_URL%
+echo Frontend local: %FRONTEND_URL%
+if not "%LAN_IP%"=="" echo Frontend phone: %FRONTEND_LAN_URL%
 echo Backend:  %BACKEND_URL%
+echo.
+echo To open from a phone, connect it to the same Wi-Fi and visit the phone URL above.
+echo If it still cannot open, allow Node.js through Windows Defender Firewall for private networks.
 echo Configure admin password in server\config.json.
 pause
 

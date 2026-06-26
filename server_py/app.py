@@ -61,6 +61,7 @@ from .content import (
 from .db import get_db, now_iso
 from .starfield import (
     archive_version,
+    create_incremental_version as create_incremental_starfield_version,
     create_version as create_starfield_version,
     delete_version as delete_starfield_version,
     enqueue_deep_relationship_generation as enqueue_starfield_deep_relationship_generation,
@@ -106,6 +107,18 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["x-content-type-options"] = "nosniff"
     response.headers["x-frame-options"] = "DENY"
+    response.headers["content-security-policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'"
+    )
     response.headers["referrer-policy"] = "strict-origin-when-cross-origin"
     response.headers["permissions-policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["cross-origin-opener-policy"] = "same-origin"
@@ -462,6 +475,14 @@ async def admin_create_starfield_version(payload: dict[str, Any], _token: str = 
         raise starfield_error(error_value) from error_value
 
 
+@app.post("/api/admin/starfield/versions/incremental", status_code=201)
+async def admin_create_incremental_starfield_version(payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return create_incremental_starfield_version(payload)
+    except ValueError as error_value:
+        raise starfield_error(error_value) from error_value
+
+
 @app.get("/api/admin/starfield/versions/{version_id}")
 async def admin_starfield_version(version_id: str, _token: str = Depends(require_admin)):
     try:
@@ -640,6 +661,14 @@ async def admin_create_gallery_album(payload: dict[str, Any], _token: str = Depe
 
 @app.put("/api/admin/gallery/albums/{id_or_slug}")
 async def admin_update_gallery_album(id_or_slug: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+    existing_album = get_gallery_album(id_or_slug, True)
+    if not existing_album:
+        raise error(404, "Gallery album not found")
+    if existing_album["id"] == SYSTEM_GALLERY_ALBUM_ID and (
+        ("title" in payload and str(payload.get("title") or "").strip() != "系统图库")
+        or ("slug" in payload and str(payload.get("slug") or "").strip() != SYSTEM_GALLERY_ALBUM_SLUG)
+    ):
+        raise error(400, "System gallery cannot be renamed")
     album = update_gallery_album(id_or_slug, payload)
     if not album:
         raise error(404, "Gallery album not found")
@@ -811,12 +840,12 @@ async def admin_save_settings(payload: dict[str, Any], _token: str = Depends(req
 
 @app.get("/api/admin/llm-config")
 async def admin_llm_config(_token: str = Depends(require_admin)):
-    return get_llm_settings()
+    return get_llm_settings(redact_api_key=True)
 
 
 @app.get("/api/admin/llm-token-usage")
-async def admin_llm_token_usage(_token: str = Depends(require_admin)):
-    return get_llm_token_usage_payload(50)
+async def admin_llm_token_usage(page: int = 1, pageSize: int = 10, _token: str = Depends(require_admin)):
+    return get_llm_token_usage_payload(page, pageSize)
 
 
 @app.put("/api/admin/llm-config")

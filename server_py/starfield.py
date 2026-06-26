@@ -42,6 +42,7 @@ RELATIONSHIP_LABELS = {
 PASSAGE_STATUS = {"suggested", "accepted", "hidden"}
 RELATIONSHIP_STATUS = {"suggested", "accepted", "hidden"}
 DEEP_PATH_STATUS = {"suggested", "accepted", "hidden"}
+RELATIONSHIP_CHANGE_STATES = {"inherited", "reconfirmed", "new", "changed", "removed"}
 STALE_JOB_SECONDS = 30 * 60
 DEEP_PATH_SOURCE_BATCH_SIZE = 6
 DEEP_PATH_CORPUS_LIMIT = 260
@@ -51,6 +52,11 @@ DEEP_PATH_MAX_TOTAL_PATHS = 500
 
 def make_id(prefix: str) -> str:
     return f"{prefix}_{base36(int(time.time() * 1000))}_{secrets.token_hex(4)}"
+
+
+def _ensure_generation_version_is_draft(version: Any) -> None:
+    if bool(version["is_active"]) and version["status"] == "published":
+        raise ValueError("Create an Incremental Starfield Version before generating on the active Published Starfield")
 
 
 def list_versions() -> list[dict[str, Any]]:
@@ -96,13 +102,194 @@ def create_version(input_data: dict[str, Any]) -> dict[str, Any]:
         conn.execute(
             """
             INSERT INTO starfield_versions (
-              id, name, status, is_active, source_article_ids_json,
+              id, name, status, is_active, parent_version_id, change_mode, source_article_ids_json,
               generation_model, generation_prompt_version, created_at, updated_at
             )
-            VALUES (?, ?, 'draft', 0, '[]', ?, ?, ?, ?)
+            VALUES (?, ?, 'draft', 0, '', 'full', '[]', ?, ?, ?, ?)
             """,
             (version_id, name, str(input_data.get("generationModel") or "local-rule"), "rule-v1", now, now),
         )
+    return get_admin_version(version_id)
+
+
+def create_incremental_version(input_data: dict[str, Any]) -> dict[str, Any]:
+    now = now_iso()
+    name = str(input_data.get("name") or "").strip()[:80]
+    parent_version_id = str(input_data.get("parentVersionId") or "").strip()
+    with get_db() as conn:
+        if parent_version_id:
+            parent = conn.execute("SELECT * FROM starfield_versions WHERE id = ?", (parent_version_id,)).fetchone()
+        else:
+            parent = conn.execute(
+                "SELECT * FROM starfield_versions WHERE is_active = 1 AND status = 'published' ORDER BY published_at DESC LIMIT 1"
+            ).fetchone()
+        if not parent:
+            raise ValueError("Parent Starfield version not found")
+        version_id = make_id("starfield_version")
+        child_name = name or f"{parent['name']} 增量版本"
+        conn.execute(
+            """
+            INSERT INTO starfield_versions (
+              id, name, status, is_active, parent_version_id, change_mode, source_article_ids_json,
+              generation_model, generation_prompt_version, created_at, updated_at
+            )
+            VALUES (?, ?, 'draft', 0, ?, 'incremental', ?, ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                child_name,
+                parent["id"],
+                parent["source_article_ids_json"],
+                parent["generation_model"],
+                parent["generation_prompt_version"],
+                now,
+                now,
+            ),
+        )
+
+        parent_passages = conn.execute(
+            """
+            SELECT *
+            FROM starfield_passages
+            WHERE version_id = ? AND status = 'accepted'
+            ORDER BY sort_order ASC, created_at ASC
+            """,
+            (parent["id"],),
+        ).fetchall()
+        passage_id_map: dict[str, str] = {}
+        for row in parent_passages:
+            passage_id = make_id("passage")
+            passage_id_map[row["id"]] = passage_id
+            conn.execute(
+                """
+                INSERT INTO starfield_passages (
+                  id, version_id, article_id, title, text, excerpt, anchor, keywords_json,
+                  status, origin_passage_id, sort_order, review_note, embedding_ref,
+                  created_at, updated_at, reviewed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    passage_id,
+                    version_id,
+                    row["article_id"],
+                    row["title"],
+                    row["text"],
+                    row["excerpt"],
+                    row["anchor"],
+                    row["keywords_json"],
+                    row["id"],
+                    row["sort_order"],
+                    row["review_note"],
+                    row["embedding_ref"],
+                    now,
+                    now,
+                    row["reviewed_at"] or now,
+                ),
+            )
+
+        parent_relationships = conn.execute(
+            """
+            SELECT *
+            FROM starfield_relationships
+            WHERE version_id = ? AND status = 'accepted'
+            ORDER BY is_cross_article DESC, strength DESC, created_at ASC
+            """,
+            (parent["id"],),
+        ).fetchall()
+        for row in parent_relationships:
+            source_id = passage_id_map.get(row["source_passage_id"])
+            target_id = passage_id_map.get(row["target_passage_id"])
+            if not source_id or not target_id:
+                continue
+            relationship_id = make_id("relationship")
+            conn.execute(
+                """
+                INSERT INTO starfield_relationships (
+                  id, version_id, source_passage_id, target_passage_id, relationship_type,
+                  rationale, evidence_keywords_json, strength, status, origin_relationship_id,
+                  change_state, is_cross_article, review_note, created_at, updated_at, reviewed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, 'inherited', ?, ?, ?, ?, ?)
+                """,
+                (
+                    relationship_id,
+                    version_id,
+                    source_id,
+                    target_id,
+                    row["relationship_type"],
+                    row["rationale"],
+                    row["evidence_keywords_json"] if "evidence_keywords_json" in row.keys() else "[]",
+                    row["strength"],
+                    row["id"],
+                    row["is_cross_article"],
+                    row["review_note"],
+                    now,
+                    now,
+                    row["reviewed_at"] or now,
+                ),
+            )
+
+        parent_keywords = conn.execute(
+            "SELECT * FROM starfield_canonical_keywords WHERE version_id = ? ORDER BY label ASC, created_at ASC",
+            (parent["id"],),
+        ).fetchall()
+        for row in parent_keywords:
+            mapped_passage_ids = [passage_id_map[passage_id] for passage_id in json_parse(row["passage_ids_json"], []) if passage_id in passage_id_map]
+            if len(mapped_passage_ids) < 2:
+                continue
+            conn.execute(
+                """
+                INSERT INTO starfield_canonical_keywords (
+                  id, version_id, label, aliases_json, passage_ids_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    make_id("canonical_keyword"),
+                    version_id,
+                    row["label"],
+                    row["aliases_json"],
+                    json.dumps(mapped_passage_ids, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+
+        parent_deep_paths = conn.execute(
+            "SELECT * FROM starfield_deep_paths WHERE version_id = ? AND status = 'accepted' ORDER BY strength DESC, created_at ASC",
+            (parent["id"],),
+        ).fetchall()
+        for row in parent_deep_paths:
+            mapped_passage_ids = [passage_id_map[passage_id] for passage_id in json_parse(row["passage_ids_json"], []) if passage_id in passage_id_map]
+            source_id = passage_id_map.get(row["source_passage_id"])
+            if not source_id or len(mapped_passage_ids) < 2:
+                continue
+            conn.execute(
+                """
+                INSERT INTO starfield_deep_paths (
+                  id, version_id, source_passage_id, passage_ids_json, inquiry_json, path_type,
+                  title, rationale, evidence_json, strength, status, review_note, created_at, updated_at, reviewed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)
+                """,
+                (
+                    make_id("deep_path"),
+                    version_id,
+                    source_id,
+                    json.dumps(mapped_passage_ids, ensure_ascii=False),
+                    row["inquiry_json"],
+                    row["path_type"],
+                    row["title"],
+                    row["rationale"],
+                    row["evidence_json"],
+                    row["strength"],
+                    row["review_note"] if "review_note" in row.keys() else "",
+                    now,
+                    now,
+                    row["reviewed_at"] or now,
+                ),
+            )
     return get_admin_version(version_id)
 
 
@@ -236,9 +423,10 @@ def enqueue_passage_generation(version_id: str, article_ids: list[str]) -> dict[
     now = now_iso()
     job_id = make_id("starfield_job")
     with get_db() as conn:
-        version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+        version = conn.execute("SELECT * FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
         if not version:
             raise ValueError("Starfield version not found")
+        _ensure_generation_version_is_draft(version)
         selected_count = conn.execute(
             f"""
             SELECT COUNT(*) AS count
@@ -453,9 +641,10 @@ def _enqueue_relationship_generation(version_id: str, phase: str, step: str) -> 
     now = now_iso()
     job_id = make_id("starfield_job")
     with get_db() as conn:
-        version = conn.execute("SELECT id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+        version = conn.execute("SELECT * FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
         if not version:
             raise ValueError("Starfield version not found")
+        _ensure_generation_version_is_draft(version)
         passage_count = conn.execute(
             """
             SELECT COUNT(*) AS count
@@ -557,6 +746,51 @@ async def run_deep_relationship_generation_job(job_id: str) -> None:
             )
 
 
+def _relationship_diff_context(conn: Any, version_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    version = conn.execute("SELECT parent_version_id FROM starfield_versions WHERE id = ?", (version_id,)).fetchone()
+    parent_version_id = version["parent_version_id"] if version and "parent_version_id" in version.keys() else ""
+    if not parent_version_id:
+        return {
+            "parentVersionId": "",
+            "byTypedKey": {},
+            "byPairKey": {},
+            "childIdByParentPassageId": {},
+        }
+
+    parent_rows = conn.execute(
+        f"""
+        SELECT *
+        FROM starfield_relationships
+        WHERE version_id = ? AND status = 'accepted'
+          AND relationship_type IN ({','.join(['?'] * len(CONCRETE_RELATIONSHIP_TYPES))})
+        """,
+        [parent_version_id, *sorted(CONCRETE_RELATIONSHIP_TYPES)],
+    ).fetchall()
+    by_typed_key: dict[tuple[tuple[str, str], str], Any] = {}
+    by_pair_key: dict[tuple[str, str], list[Any]] = {}
+    for row in parent_rows:
+        pair_key = _relationship_pair_key_from_ids(row["source_passage_id"], row["target_passage_id"])
+        by_typed_key[(pair_key, row["relationship_type"])] = row
+        by_pair_key.setdefault(pair_key, []).append(row)
+
+    return {
+        "parentVersionId": parent_version_id,
+        "byTypedKey": by_typed_key,
+        "byPairKey": by_pair_key,
+        "childIdByParentPassageId": {row["origin_passage_id"]: row["id"] for row in rows if row.get("origin_passage_id")},
+    }
+
+
+def _relationship_pair_key_from_ids(source_id: str, target_id: str) -> tuple[str, str]:
+    return tuple(sorted([source_id, target_id]))  # type: ignore[return-value]
+
+
+def _relationship_pair_key(source: dict[str, Any], target: dict[str, Any]) -> tuple[str, str]:
+    source_id = source.get("origin_passage_id") or source["id"]
+    target_id = target.get("origin_passage_id") or target["id"]
+    return _relationship_pair_key_from_ids(source_id, target_id)
+
+
 async def _execute_relationship_generation(version_id: str, job_id: str, passages: list[Any]) -> None:
     now = now_iso()
     rows = [_passage_like(row) for row in passages]
@@ -585,20 +819,40 @@ async def _execute_relationship_generation(version_id: str, job_id: str, passage
 
     _update_job_progress(job_id, 4, 5, f"关系判断完成，正在写入 {len(scored)} 条候选关系。")
     created = 0
+    reconfirmed = 0
+    changed = 0
+    removed = 0
     seen_pairs: set[tuple[str, str]] = set()
+    generated_typed_keys: set[tuple[tuple[str, str], str]] = set()
     per_passage_cross_count: dict[str, int] = {}
     with get_db() as conn:
         created = 0
+        reconfirmed = 0
+        changed = 0
+        removed = 0
         seen_pairs: set[tuple[str, str]] = set()
+        generated_typed_keys: set[tuple[tuple[str, str], str]] = set()
         per_passage_cross_count: dict[str, int] = {}
-        conn.execute(
-            f"""
-            DELETE FROM starfield_relationships
-            WHERE version_id = ? AND status = 'suggested'
-              AND relationship_type IN ({','.join(['?'] * len(CONCRETE_RELATIONSHIP_TYPES))})
-            """,
-            [version_id, *sorted(CONCRETE_RELATIONSHIP_TYPES)],
-        )
+        diff_context = _relationship_diff_context(conn, version_id, rows)
+        incremental_parent_id = diff_context["parentVersionId"]
+        if incremental_parent_id:
+            conn.execute(
+                f"""
+                DELETE FROM starfield_relationships
+                WHERE version_id = ?
+                  AND relationship_type IN ({','.join(['?'] * len(CONCRETE_RELATIONSHIP_TYPES))})
+                """,
+                [version_id, *sorted(CONCRETE_RELATIONSHIP_TYPES)],
+            )
+        else:
+            conn.execute(
+                f"""
+                DELETE FROM starfield_relationships
+                WHERE version_id = ? AND status = 'suggested'
+                  AND relationship_type IN ({','.join(['?'] * len(CONCRETE_RELATIONSHIP_TYPES))})
+                """,
+                [version_id, *sorted(CONCRETE_RELATIONSHIP_TYPES)],
+            )
         conn.execute("DELETE FROM starfield_canonical_keywords WHERE version_id = ?", (version_id,))
         for group in canonical_keyword_groups:
             keyword_id = make_id("canonical_keyword")
@@ -630,14 +884,35 @@ async def _execute_relationship_generation(version_id: str, job_id: str, passage
                 if per_passage_cross_count.get(source["id"], 0) >= 9 or per_passage_cross_count.get(target["id"], 0) >= 9:
                     continue
             seen_pairs.add(pair)
+            relationship_pair_key = _relationship_pair_key(source, target)
+            typed_key = (relationship_pair_key, item["relationship_type"])
+            generated_typed_keys.add(typed_key)
+            parent_same_type = diff_context["byTypedKey"].get(typed_key)
+            parent_same_pair = diff_context["byPairKey"].get(relationship_pair_key)
+            status = "suggested" if is_cross_article else "hidden"
+            change_state = "new"
+            origin_relationship_id = ""
+            rationale = item["rationale"]
+            reviewed_at = None
+            if parent_same_type:
+                status = "accepted"
+                change_state = "reconfirmed"
+                origin_relationship_id = parent_same_type["id"]
+                rationale = parent_same_type["rationale"]
+                reviewed_at = now
+                reconfirmed += 1
+            elif parent_same_pair:
+                change_state = "changed"
+                changed += 1
             relationship_id = make_id("relationship")
             conn.execute(
                 """
                 INSERT INTO starfield_relationships (
                   id, version_id, source_passage_id, target_passage_id, relationship_type,
-                  rationale, evidence_keywords_json, strength, status, is_cross_article, created_at, updated_at
+                  rationale, evidence_keywords_json, strength, status, origin_relationship_id,
+                  change_state, is_cross_article, created_at, updated_at, reviewed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     relationship_id,
@@ -645,26 +920,76 @@ async def _execute_relationship_generation(version_id: str, job_id: str, passage
                     source["id"],
                     target["id"],
                     item["relationship_type"],
-                    item["rationale"],
+                    rationale,
                     json.dumps(item.get("evidence_keywords", []), ensure_ascii=False),
                     item["strength"],
-                    "suggested" if is_cross_article else "hidden",
+                    status,
+                    origin_relationship_id,
+                    change_state,
                     1 if is_cross_article else 0,
                     now,
                     now,
+                    reviewed_at,
                 ),
             )
             if is_cross_article:
                 per_passage_cross_count[source["id"]] = per_passage_cross_count.get(source["id"], 0) + 1
                 per_passage_cross_count[target["id"]] = per_passage_cross_count.get(target["id"], 0) + 1
             created += 1
+        if incremental_parent_id:
+            child_id_by_parent = diff_context["childIdByParentPassageId"]
+            for (parent_pair_key, relationship_type), parent_relationship in diff_context["byTypedKey"].items():
+                if (parent_pair_key, relationship_type) in generated_typed_keys:
+                    continue
+                source_id = child_id_by_parent.get(parent_relationship["source_passage_id"])
+                target_id = child_id_by_parent.get(parent_relationship["target_passage_id"])
+                if not source_id or not target_id:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO starfield_relationships (
+                      id, version_id, source_passage_id, target_passage_id, relationship_type,
+                      rationale, evidence_keywords_json, strength, status, origin_relationship_id,
+                      change_state, is_cross_article, review_note, created_at, updated_at, reviewed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hidden', ?, 'removed', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        make_id("relationship"),
+                        version_id,
+                        source_id,
+                        target_id,
+                        parent_relationship["relationship_type"],
+                        parent_relationship["rationale"],
+                        parent_relationship["evidence_keywords_json"] if "evidence_keywords_json" in parent_relationship.keys() else "[]",
+                        parent_relationship["strength"],
+                        parent_relationship["id"],
+                        parent_relationship["is_cross_article"],
+                        "关系重建后不再生成，已从增量版本公开关系中移除。",
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                created += 1
+                removed += 1
         conn.execute(
             """
             UPDATE starfield_generation_jobs
             SET status = 'succeeded', progress_current = 5, progress_total = 5, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
             WHERE id = ?
             """,
-            (f"关系生成完成，共创建 {created} 条候选关系。", _fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
+            (
+                (
+                    f"关系生成完成，共写入 {created} 条关系。"
+                    if not incremental_parent_id
+                    else f"关系重建完成，共写入 {created} 条关系：{reconfirmed} 条重确认、{changed} 条变更、{removed} 条移除。"
+                ),
+                _fallback_message(fallback_errors),
+                now_iso(),
+                now_iso(),
+                job_id,
+            ),
         )
         conn.execute("UPDATE starfield_versions SET updated_at = ? WHERE id = ?", (now_iso(), version_id))
 
@@ -1090,6 +1415,8 @@ def _version_row(row: Any) -> dict[str, Any]:
         "name": row["name"],
         "status": row["status"],
         "isActive": bool(row["is_active"]),
+        "parentVersionId": row["parent_version_id"] if "parent_version_id" in row.keys() else "",
+        "changeMode": row["change_mode"] if "change_mode" in row.keys() else "full",
         "sourceArticleIds": json_parse(row["source_article_ids_json"], []),
         "generationModel": row["generation_model"],
         "generationPromptVersion": row["generation_prompt_version"],
@@ -1120,6 +1447,7 @@ def _passage_row(row: Any) -> dict[str, Any]:
         "anchor": row["anchor"],
         "keywords": json_parse(row["keywords_json"], []),
         "status": row["status"],
+        "originPassageId": row["origin_passage_id"] if "origin_passage_id" in row.keys() else "",
         "sortOrder": row["sort_order"],
         "reviewNote": row["review_note"],
         "embeddingRef": row["embedding_ref"],
@@ -1163,6 +1491,8 @@ def _relationship_row(row: Any) -> dict[str, Any]:
         "evidenceKeywords": json_parse(row["evidence_keywords_json"] if "evidence_keywords_json" in row.keys() else None, []),
         "strength": row["strength"],
         "status": row["status"],
+        "originRelationshipId": row["origin_relationship_id"] if "origin_relationship_id" in row.keys() else "",
+        "changeState": row["change_state"] if "change_state" in row.keys() else "new",
         "isCrossArticle": bool(row["is_cross_article"]),
         "reviewNote": row["review_note"],
         "createdAt": row["created_at"],
@@ -1758,6 +2088,7 @@ def _passage_like(row: Any) -> dict[str, Any]:
         keywords = _keywords_from_text(f"{row['title']} {row['text']}")
     return {
         "id": row["id"],
+        "origin_passage_id": row["origin_passage_id"] if "origin_passage_id" in row.keys() else "",
         "article_id": row["article_id"],
         "title": row["title"],
         "text": row["text"],

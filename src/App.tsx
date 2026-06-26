@@ -41,14 +41,31 @@ import type {
   PointerEvent as ReactPointerEvent,
   SetStateAction,
 } from 'react';
-import { ArticleComments } from './ArticleComments';
 import { AdminCommandPanel } from './AdminCommandPanel';
 import { AdminDashboardPanel } from './AdminDashboardPanel';
 import { AdminPostsPanel } from './AdminPostsPanel';
 import { AdminStarfieldPanel } from './AdminStarfieldPanel';
 import { AdminTagsPanel } from './AdminTagsPanel';
-import { useArticleHead } from './articleSeo';
+import {
+  AuthorAvatar,
+  PanelHeader,
+  SectionHeading,
+} from './components';
 import { MarkdownBody } from './MarkdownBody';
+import {
+  AllArchivePage,
+  AllNotesPage,
+  AllPostsPage,
+  buildSearchQuickLinks,
+  HomeContent,
+  HomePage,
+  navItems,
+  NotFoundPage,
+  PostDetailPage,
+  SearchCommand,
+  SiteFooter,
+  SiteHeader,
+} from './public';
 import { PublicGalleryPage } from './PublicGalleryPage';
 import { StarfieldPage } from './StarfieldPage';
 import type { RichMarkdownEditorHandle } from './RichMarkdownEditor';
@@ -56,7 +73,6 @@ import {
   defaultSiteContent,
   emptySiteContent,
   ensureSystemGalleryAlbums,
-  readSiteContent,
   resetSiteContent,
   saveSiteContent,
   type HomepageCopy,
@@ -65,11 +81,7 @@ import {
   type GalleryImage,
   type NoteSection,
   type SiteContent,
-  type AlmanacInfo,
-  systemGalleryAlbumId,
-  systemGalleryAlbumSlug,
 } from './contentStore';
-import { createSeasonNote } from './seasonNote';
 import { getRoute, isAdminPath } from './routing';
 import {
   clearAdminDraft,
@@ -91,7 +103,6 @@ import {
   fetchPublicSite,
   generateAdminArticleMetadata,
   fetchAdminDeletedArticles,
-  fetchPublicStarfield,
   loginAdmin,
   logoutAdmin,
   mergeAdminTags,
@@ -134,7 +145,6 @@ import {
   saveUserColorScheme,
   stylePresetAssets,
   stylePresets,
-  systemGalleryAssetUrls,
   type ColorScheme,
   type SiteSettings,
   type StylePreset,
@@ -142,29 +152,74 @@ import {
   normalizeOwnerAvatarUrl,
 } from './siteSettings';
 import { postsPerPage, type Post, type PostStatus } from './posts';
+import type { BatchResult } from './lib/adminTypes';
+import {
+  formatBatchResult,
+  formatCommentTime,
+  formatDeletedAt,
+  formatDraftSavedAt,
+  formatInteger,
+  formatLlmUsageFeature,
+  formatLlmUsageTime,
+  formatToday,
+  formatTokenCount,
+} from './lib/formatUtils';
+import {
+  buildArchive,
+  buildLocalAdminTags,
+  collectExistingTags,
+  createUniqueSlug,
+  fromDatetimeLocalValue,
+  getArchiveDateLabel,
+  getArchiveMonthLabel,
+  getPostArchiveDateValue,
+  getPostArchiveMonthValue,
+  getPostBySlug,
+  getPostMarkdown,
+  getPostStatus,
+  getPostStatusLabel,
+  getPublishedPosts,
+  movePostToArchiveDate,
+  normalizeMarkdown,
+  normalizeTags,
+  slugifyPostTitle,
+  sortPosts,
+  splitTagInput,
+  toDatetimeLocalValue,
+  type ArchiveGroup,
+} from './lib/postUtils';
+import {
+  getLineStartOffset,
+  getMarkdownOutline,
+  moveMarkdownHeadingBlock,
+  normalizeLooseCodeFences,
+  type OutlineItem,
+} from './lib/markdownUtils';
+import {
+  createComposerImageTitle,
+  escapeMarkdownAltText,
+  getActiveOwnerAvatarUrl,
+  getImageFilesFromTransfer,
+  getSystemGalleryImageUrls,
+  hasImageFileInTransfer,
+  isLocalGalleryAlbumDraft,
+  isSupportedComposerImageFile,
+  isSystemGalleryAlbum,
+  normalizeGalleryImageOrder,
+  sortGalleryAlbums,
+  sortGalleryImages,
+  withGalleryAlbumImages,
+} from './lib/galleryUtils';
 import 'katex/dist/katex.min.css';
 
 const RichMarkdownEditor = lazy(() =>
   import('./RichMarkdownEditor').then((module) => ({ default: module.RichMarkdownEditor })),
 );
 
-const navItems = [
-  { label: '首页', href: '/#首页' },
-  { label: '文章', href: '/posts/page/1' },
-  { label: '札记', href: '/notes/page/1' },
-  { label: '归档', href: '/archive/page/1' },
-  { label: '图库', href: '/gallery' },
-  { label: '星图', href: '/starfield' },
-  { label: '关于', href: '/#关于' },
-];
-
-const homepageArchivePreviewLimit = 4;
-const homepageArchiveEntriesPerMonthLimit = 6;
 const adminPostsPerPage = 8;
 const adminSeriesPerPage = 1;
 const composerImageAlbumSlug = 'article-images';
 const composerImageAlbumTitle = '文章配图';
-const supportedComposerImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 function makeClientId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -548,317 +603,16 @@ function AdminLoginPage({
   );
 }
 
-type ArchiveGroup = {
-  month: string;
-  entries: Post[];
-};
-
-function buildArchive(posts: Post[]): ArchiveGroup[] {
-  return sortPosts(posts).reduce<ArchiveGroup[]>((months, post) => {
-    const [year, month] = post.date.split('.');
-    const monthLabel = `${year} 年 ${Number(month)} 月`;
-    const existingMonth = months.find((item) => item.month === monthLabel);
-
-    if (existingMonth) {
-      existingMonth.entries.push(post);
-    } else {
-      months.push({ month: monthLabel, entries: [post] });
-    }
-
-    return months;
-  }, []);
-}
-
-function sortPosts(posts: Post[]) {
-  return [...posts].sort((firstPost, secondPost) => parsePostDate(secondPost.date) - parsePostDate(firstPost.date));
-}
-
-function parsePostDate(date: string) {
-  const [datePart = '', timePart = '00:00'] = date.trim().split(/\s+/);
-  const [year = '0', month = '1', day = '1'] = datePart.split('.');
-  const [hour = '0', minute = '0'] = timePart.split(':');
-  return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)).getTime();
-}
-
-function getPostBySlug(posts: Post[], slug: string) {
-  return posts.find((post) => post.slug === slug);
-}
-
-function getAdjacentPosts(posts: Post[], slug: string) {
-  const index = posts.findIndex((post) => post.slug === slug);
-
-  return {
-    previousPost: index > 0 ? posts[index - 1] : undefined,
-    nextPost: index >= 0 && index < posts.length - 1 ? posts[index + 1] : undefined,
-  };
-}
-
 function getAdminEditPostSlug(pathname: string) {
   const editMatch = pathname.match(/^\/admin\/posts\/([^/]+)\/edit$/);
   return editMatch ? decodeURIComponent(editMatch[1]) : undefined;
 }
-
-function formatToday() {
-  const date = new Date();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hour = String(date.getHours()).padStart(2, '0');
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${date.getFullYear()}.${month}.${day} ${hour}:${minute}`;
-}
-
-function formatDeletedAt(value?: string) {
-  if (!value) {
-    return '删除时间未知';
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '删除时间未知';
-  }
-
-  return `删除于 ${new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date)}`;
-}
-
-const postStatusLabels: Record<PostStatus, string> = {
-  draft: '草稿',
-  published: '已发布',
-  archived: '已归档',
-};
 
 const commentStatusLabels: Record<AdminCommentStatus, string> = {
   pending: '待审核',
   approved: '已通过',
   rejected: '已拒绝',
 };
-
-function getPostStatus(post: Post): PostStatus {
-  return post.status ?? 'published';
-}
-
-function getPostStatusLabel(post: Post) {
-  return postStatusLabels[getPostStatus(post)];
-}
-
-function getPublishedPosts(posts: Post[]) {
-  return posts.filter((post) => getPostStatus(post) === 'published');
-}
-
-function toDatetimeLocalValue(value?: string | null) {
-  if (!value) {
-    return '';
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-
-  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return offsetDate.toISOString().slice(0, 16);
-}
-
-function fromDatetimeLocalValue(value: string) {
-  if (!value) {
-    return null;
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-function getPostArchiveMonthValue(post: Post) {
-  const [year = '', month = ''] = post.date.split(/[.\s]/);
-  if (!year || !month) {
-    return '';
-  }
-
-  return `${year}-${month.padStart(2, '0')}`;
-}
-
-function getArchiveMonthLabel(monthValue: string) {
-  const [year = '', month = ''] = monthValue.split('-');
-  if (!year || !month) {
-    return '未选择月份';
-  }
-
-  return `${year} 年 ${Number(month)} 月`;
-}
-
-function movePostToArchiveMonth(post: Post, monthValue: string): Post {
-  const [targetYearText, targetMonthText] = monthValue.split('-');
-  const targetYear = Number(targetYearText);
-  const targetMonth = Number(targetMonthText);
-  if (!targetYear || !targetMonth) {
-    return post;
-  }
-
-  const [datePart = '', timePart = ''] = post.date.trim().split(/\s+/);
-  const [, , dayText = '1'] = datePart.split('.');
-  const targetDay = Math.min(Math.max(Number(dayText) || 1, 1), new Date(targetYear, targetMonth, 0).getDate());
-  const [hourText = '0', minuteText = '0'] = timePart.split(':');
-  const hour = Number(hourText) || 0;
-  const minute = Number(minuteText) || 0;
-  const pad = (value: number) => String(value).padStart(2, '0');
-  const nextDate = `${targetYear}.${pad(targetMonth)}.${pad(targetDay)}${timePart ? ` ${pad(hour)}:${pad(minute)}` : ''}`;
-  const nextPublishedAt = new Date(targetYear, targetMonth - 1, targetDay, hour, minute).toISOString();
-
-  return {
-    ...post,
-    date: nextDate,
-    publishedAt: nextPublishedAt,
-  };
-}
-
-function slugifyPostTitle(value: string) {
-  const normalizedValue = value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9\u4e00-\u9fa5-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-
-  return normalizedValue || `post-${Date.now()}`;
-}
-
-function createUniqueSlug(posts: Post[], slug: string, currentSlug?: string) {
-  const baseSlug = slugifyPostTitle(slug);
-  const existingSlugs = new Set(posts.filter((post) => post.slug !== currentSlug).map((post) => post.slug));
-
-  if (!existingSlugs.has(baseSlug)) {
-    return baseSlug;
-  }
-
-  let index = 2;
-  let nextSlug = `${baseSlug}-${index}`;
-
-  while (existingSlugs.has(nextSlug)) {
-    index += 1;
-    nextSlug = `${baseSlug}-${index}`;
-  }
-
-  return nextSlug;
-}
-
-function normalizeTag(value: string) {
-  return value.trim().replace(/^#/, '');
-}
-
-function normalizeTags(values: string[]) {
-  return values.reduce<string[]>((tags, value) => {
-    const tag = normalizeTag(value);
-    if (tag && !tags.includes(tag)) {
-      tags.push(tag);
-    }
-
-    return tags;
-  }, []);
-}
-
-function splitTagInput(value: string) {
-  return normalizeTags(value.split(/[，,\n]/));
-}
-
-function collectExistingTags(posts: Post[]) {
-  return normalizeTags(posts.flatMap((post) => post.tags));
-}
-
-function buildLocalAdminTags(posts: Post[]) {
-  const stats = new Map<string, { name: string; articleCount: number; occurrenceCount: number }>();
-  posts.forEach((post) => {
-    const seenTags = new Set<string>();
-    post.tags.forEach((tagName) => {
-      const tag = normalizeTag(tagName);
-      if (!tag) {
-        return;
-      }
-
-      const tagStats = stats.get(tag) ?? { name: tag, articleCount: 0, occurrenceCount: 0 };
-      tagStats.occurrenceCount += 1;
-      if (!seenTags.has(tag)) {
-        tagStats.articleCount += 1;
-        seenTags.add(tag);
-      }
-      stats.set(tag, tagStats);
-    });
-  });
-
-  return Array.from(stats.values()).sort((firstTag, secondTag) =>
-    secondTag.articleCount - firstTag.articleCount || firstTag.name.localeCompare(secondTag.name),
-  );
-}
-
-function getPostMarkdown(post: Post) {
-  return post.bodyMarkdown?.trim() || post.body.join('\n\n') || '这里还没有正文。';
-}
-
-function normalizeMarkdown(value: string) {
-  return value.trim() || '这里还没有正文。';
-}
-
-function normalizeLooseCodeFences(markdown: string) {
-  const lines = markdown.split('\n');
-  const normalizedLines: string[] = [];
-  let index = 0;
-
-  const fencePattern = /^((?:\\`|`){3})\s*([\w-]+)?\s*$/;
-  const unescapeFence = (value: string) => value.replace(/\\`/g, '`');
-
-  while (index < lines.length) {
-    const openingMatch = lines[index].match(fencePattern);
-    const openingLanguage = openingMatch?.[2];
-
-    if (!openingMatch || !openingLanguage) {
-      normalizedLines.push(lines[index]);
-      index += 1;
-      continue;
-    }
-
-    const closingIndex = lines.findIndex((line, lineIndex) => {
-      if (lineIndex <= index) {
-        return false;
-      }
-
-      const closingMatch = line.match(fencePattern);
-      return Boolean(closingMatch && !closingMatch[2]);
-    });
-
-    if (closingIndex < 0) {
-      normalizedLines.push(lines[index]);
-      index += 1;
-      continue;
-    }
-
-    normalizedLines.push(`\`\`\`${openingLanguage}`);
-    normalizedLines.push(...lines.slice(index + 1, closingIndex).map(unescapeFence));
-    normalizedLines.push('```');
-    index = closingIndex + 1;
-
-    let lookaheadIndex = index;
-    while (lines[lookaheadIndex] === '') {
-      lookaheadIndex += 1;
-    }
-
-    const nextOpening = lines[lookaheadIndex]?.match(fencePattern);
-    if (nextOpening?.[2]) {
-      let nextClosingIndex = lookaheadIndex + 1;
-      while (lines[nextClosingIndex] === '') {
-        nextClosingIndex += 1;
-      }
-
-      const nextClosing = lines[nextClosingIndex]?.match(fencePattern);
-      if (nextClosing && !nextClosing[2]) {
-        index = nextClosingIndex + 1;
-      }
-    }
-  }
-
-  return normalizedLines.join('\n');
-}
 
 type ComposerMode = 'wysiwyg' | 'markdown' | 'split';
 type FormulaMode = 'block' | 'inline';
@@ -883,14 +637,6 @@ type ComposerDraft = {
 };
 
 type ComposerDraftData = Omit<ComposerDraft, 'savedAt'>;
-
-type OutlineItem = {
-  id: string;
-  lineIndex: number;
-  level: number;
-  title: string;
-  warning?: string;
-};
 
 function getComposerDraftKey(slug?: string) {
   return `guzhouyue.composerDraft:${slug || 'new'}`;
@@ -963,92 +709,6 @@ function createComposerSnapshot(data: ComposerDraftData) {
   });
 }
 
-function getMarkdownOutline(markdown: string): OutlineItem[] {
-  let previousLevel = 1;
-
-  return markdown.split('\n').reduce<OutlineItem[]>((items, line, lineIndex) => {
-    const headingMatch = line.match(/^(#{2,6})\s+(.+)$/);
-    if (!headingMatch) {
-      return items;
-    }
-
-    const level = headingMatch[1].length;
-    const title = headingMatch[2].replace(/[#\s]+$/g, '').trim() || '未命名标题';
-    const warning = level > previousLevel + 1 ? `标题层级从 H${previousLevel} 跳到 H${level}` : undefined;
-    previousLevel = level;
-
-    items.push({
-      id: `heading-${lineIndex}`,
-      lineIndex,
-      level,
-      title,
-      warning,
-    });
-
-    return items;
-  }, []);
-}
-
-function getHeadingBlockRange(lines: string[], headingLineIndex: number) {
-  const headingMatch = lines[headingLineIndex]?.match(/^(#{2,6})\s+/);
-  if (!headingMatch) {
-    return null;
-  }
-
-  const level = headingMatch[1].length;
-  let endIndex = lines.length;
-
-  for (let index = headingLineIndex + 1; index < lines.length; index += 1) {
-    const nextHeadingMatch = lines[index].match(/^(#{2,6})\s+/);
-    if (nextHeadingMatch && nextHeadingMatch[1].length <= level) {
-      endIndex = index;
-      break;
-    }
-  }
-
-  return { endIndex, level, startIndex: headingLineIndex };
-}
-
-function moveMarkdownHeadingBlock(markdown: string, sourceLineIndex: number, targetLineIndex: number) {
-  if (sourceLineIndex === targetLineIndex) {
-    return markdown;
-  }
-
-  const lines = markdown.split('\n');
-  const sourceRange = getHeadingBlockRange(lines, sourceLineIndex);
-  const targetRange = getHeadingBlockRange(lines, targetLineIndex);
-  if (!sourceRange || !targetRange) {
-    return markdown;
-  }
-
-  const block = lines.slice(sourceRange.startIndex, sourceRange.endIndex);
-  const withoutBlock = [
-    ...lines.slice(0, sourceRange.startIndex),
-    ...lines.slice(sourceRange.endIndex),
-  ];
-  const adjustedTargetIndex =
-    targetRange.startIndex > sourceRange.startIndex
-      ? Math.max(targetRange.startIndex - block.length, 0)
-      : targetRange.startIndex;
-
-  return [
-    ...withoutBlock.slice(0, adjustedTargetIndex),
-    ...block,
-    ...withoutBlock.slice(adjustedTargetIndex),
-  ].join('\n');
-}
-
-function getLineStartOffset(markdown: string, lineIndex: number) {
-  if (lineIndex <= 0) {
-    return 0;
-  }
-
-  return markdown
-    .split('\n')
-    .slice(0, lineIndex)
-    .reduce((offset, line) => offset + line.length + 1, 0);
-}
-
 function draftStatusLabel(status: DraftStatus) {
   const labels: Record<DraftStatus, string> = {
     clean: '已同步',
@@ -1091,35 +751,6 @@ function normalizeLoadedSettings(settings: Partial<SiteSettings> | undefined, fa
   };
 }
 
-function formatDraftSavedAt(value: string) {
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }).format(new Date(value));
-  } catch {
-    return '';
-  }
-}
-
-
-function HomePage({ content, heroImage }: { content: SiteContent; heroImage: string }) {
-  return <HeroMoonScene almanac={content.almanac} heroImage={heroImage} homepage={content.homepage} />;
-}
-
-function HomeContent({ content, ownerAvatarUrl, ownerName }: { content: SiteContent; ownerAvatarUrl: string; ownerName: string }) {
-  return (
-    <>
-      <LatestPosts homepage={content.homepage} posts={content.posts} />
-      <TopicRiver homepage={content.homepage} noteSections={content.noteSections} />
-      <FeaturedEssay homepage={content.homepage} posts={content.posts} seriesList={content.featuredSeries} />
-      <ArchivePreview homepage={content.homepage} posts={content.posts} />
-      <AboutBlock homepage={content.homepage} noteSections={content.noteSections} ownerAvatarUrl={ownerAvatarUrl} ownerName={ownerName} posts={content.posts} />
-    </>
-  );
-}
-
 type AdminPanelId =
   | 'overview'
   | 'posts'
@@ -1138,11 +769,6 @@ type AdminPanelId =
   | 'llm'
   | 'homepage'
   | 'appearance';
-
-type BatchResult = {
-  success: number;
-  failed: number;
-};
 
 const adminPanelIds = new Set<AdminPanelId>([
   'overview',
@@ -1163,10 +789,6 @@ const adminPanelIds = new Set<AdminPanelId>([
   'homepage',
   'appearance',
 ]);
-
-function formatBatchResult(action: string, result: BatchResult) {
-  return `${action}完成：成功 ${result.success} 项，失败 ${result.failed} 项。`;
-}
 
 function navigateAdmin(path: string) {
   window.history.pushState({}, '', path);
@@ -1588,12 +1210,12 @@ function AdminPage({
     return { success: updatedPosts.length, failed: targetSlugs.length - updatedPosts.length };
   }
 
-  async function movePostsToArchiveMonth(slugs: string[], monthValue: string): Promise<BatchResult> {
-    if (!monthValue) {
+  async function movePostsToArchiveDate(slugs: string[], dateValue: string): Promise<BatchResult> {
+    if (!dateValue) {
       return { success: 0, failed: Array.from(new Set(slugs)).length };
     }
 
-    return updatePosts(slugs, (post) => movePostToArchiveMonth(post, monthValue));
+    return updatePosts(slugs, (post) => movePostToArchiveDate(post, dateValue));
   }
 
   async function movePostsToCategory(slugs: string[], category: string): Promise<BatchResult> {
@@ -1723,7 +1345,8 @@ function AdminPage({
     try {
       savedAlbum = normalizeApiGalleryAlbum(await createAdminGalleryAlbum(draftAlbum)) ?? draftAlbum;
     } catch {
-      // API 不可用时先保留本地相册草稿。
+      window.alert('新增相册失败，请确认后台服务正在运行并且登录没有过期。');
+      return;
     }
 
     onContentChange({ ...content, galleryAlbums: [...content.galleryAlbums, savedAlbum] });
@@ -1762,11 +1385,17 @@ function AdminPage({
       return;
     }
 
+    const nextAlbums = content.galleryAlbums.filter((_, albumIndex) => albumIndex !== index);
+
     try {
       await deleteAdminGalleryAlbum(album.id || album.slug);
-      const nextAlbums = content.galleryAlbums.filter((_, albumIndex) => albumIndex !== index);
       onContentChange({ ...content, galleryAlbums: nextAlbums });
-    } catch {
+    } catch (error) {
+      if ((error instanceof ApiError && error.status === 404) || isLocalGalleryAlbumDraft(album)) {
+        onContentChange({ ...content, galleryAlbums: nextAlbums });
+        return;
+      }
+
       window.alert('删除相册失败，请确认后台服务正在运行并且登录没有过期。');
     }
   }
@@ -2192,7 +1821,7 @@ function AdminPage({
                   <AdminArchivePanel
                     archiveGroups={archiveGroups}
                     onArchivePosts={archivePosts}
-                    onMovePostsToArchiveMonth={movePostsToArchiveMonth}
+                    onMovePostsToArchiveDate={movePostsToArchiveDate}
                     onPublishPosts={publishPosts}
                     onUnpublishPosts={unpublishPosts}
                     posts={content.posts}
@@ -2632,6 +2261,9 @@ function AdminPostComposer({
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [showFindReplace, setShowFindReplace] = useState(false);
   const [showGalleryPicker, setShowGalleryPicker] = useState(false);
+  const [showCoverPicker, setShowCoverPicker] = useState(false);
+  const [activeCoverAlbumKey, setActiveCoverAlbumKey] = useState('all');
+  const [previewCoverImageId, setPreviewCoverImageId] = useState('');
   const [findQuery, setFindQuery] = useState('');
   const [replaceValue, setReplaceValue] = useState('');
   const [showFormulaDialog, setShowFormulaDialog] = useState(false);
@@ -2686,16 +2318,58 @@ function AdminPostComposer({
       ),
     [galleryAlbums],
   );
-  const coverImageOptions = useMemo(
+  const coverGalleryAlbums = useMemo(
     () =>
-      sortGalleryAlbums(galleryAlbums).flatMap((album) =>
-        sortGalleryImages(album.images).map((image) => ({
+      sortGalleryAlbums(galleryAlbums).map((album) => {
+        const images = sortGalleryImages(album.images).map((image) => ({
           ...image,
           albumTitle: album.title,
-        })),
-      ),
+        }));
+
+        return {
+          key: album.id || album.slug,
+          title: album.title,
+          description: album.description,
+          imageCount: images.length,
+          coverImageUrl: album.coverImageUrl || images[0]?.imageUrl || '',
+          images,
+        };
+      }),
     [galleryAlbums],
   );
+  const coverImageOptions = useMemo(
+    () => coverGalleryAlbums.flatMap((album) => album.images),
+    [coverGalleryAlbums],
+  );
+  const activeCoverAlbum = coverGalleryAlbums.find((album) => album.key === activeCoverAlbumKey) ?? null;
+  const visibleCoverImages = activeCoverAlbumKey === 'all' ? coverImageOptions : activeCoverAlbum?.images ?? [];
+  const selectedCoverImage = coverImageOptions.find((image) => image.imageUrl === coverImage) ?? null;
+  const activeCoverPreviewImage =
+    visibleCoverImages.find((image) => image.id === previewCoverImageId) ??
+    selectedCoverImage ??
+    visibleCoverImages[0] ??
+    coverImageOptions[0] ??
+    null;
+
+  useEffect(() => {
+    if (activeCoverAlbumKey !== 'all' && !coverGalleryAlbums.some((album) => album.key === activeCoverAlbumKey)) {
+      setActiveCoverAlbumKey('all');
+    }
+  }, [activeCoverAlbumKey, coverGalleryAlbums]);
+
+  useEffect(() => {
+    if (visibleCoverImages.length === 0) {
+      setPreviewCoverImageId('');
+      return;
+    }
+
+    const selectedVisibleImage = visibleCoverImages.find((image) => image.imageUrl === coverImage);
+    const previewStillVisible = visibleCoverImages.some((image) => image.id === previewCoverImageId);
+    if (!previewStillVisible) {
+      setPreviewCoverImageId(selectedVisibleImage?.id ?? visibleCoverImages[0].id);
+    }
+  }, [coverImage, previewCoverImageId, visibleCoverImages]);
+
   function openFormulaDialog(nextMode: FormulaMode = 'block') {
     setFormulaMode(nextMode);
     setShowFormulaDialog(true);
@@ -2806,6 +2480,19 @@ function AdminPostComposer({
   ) {
     setter(value);
     updateDraftField({ [key]: value } as Pick<ComposerDraftData, K>, { persistImmediately: true });
+  }
+
+  function chooseCoverImage(nextCoverImage: string) {
+    updateMetaField('coverImage', nextCoverImage, setCoverImage);
+    setShowCoverPicker(false);
+  }
+
+  function openCoverPicker() {
+    const matchedAlbum = coverGalleryAlbums.find((album) => album.images.some((image) => image.imageUrl === coverImage));
+    const matchedImage = coverImageOptions.find((image) => image.imageUrl === coverImage);
+    setActiveCoverAlbumKey(matchedAlbum?.key ?? 'all');
+    setPreviewCoverImageId(matchedImage?.id ?? '');
+    setShowCoverPicker(true);
   }
 
   async function savePost() {
@@ -4114,20 +3801,18 @@ function AdminPostComposer({
                     placeholder="/uploads/gallery/example.webp"
                   />
                 </label>
-                <label>
-                  从图库选择封面
-                  <select
-                    value={coverImageOptions.some((image) => image.imageUrl === coverImage) ? coverImage : ''}
-                    onChange={(event) => updateMetaField('coverImage', event.target.value, setCoverImage)}
-                  >
-                    <option value="">不使用图库封面</option>
-                    {coverImageOptions.map((image) => (
-                      <option key={image.id} value={image.imageUrl}>
-                        {image.title} · {image.albumTitle}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="composer-cover-actions">
+                  <button className="secondary-action" type="button" onClick={openCoverPicker}>
+                    <ImageIcon size={17} />
+                    从图库选择封面
+                  </button>
+                  {coverImage && (
+                    <button className="secondary-action" type="button" onClick={() => chooseCoverImage('')}>
+                      <X size={17} />
+                      清空封面
+                    </button>
+                  )}
+                </div>
                 {coverImage && (
                   <div className="composer-cover-preview">
                     <img alt="" src={coverImage} />
@@ -4352,6 +4037,117 @@ function AdminPostComposer({
             ) : (
               <p className="empty-state">图库还没有图片，请先到图库管理上传。</p>
             )}
+          </section>
+        </div>
+      )}
+      {showCoverPicker && (
+        <div className="shortcut-layer" role="presentation" onMouseDown={() => setShowCoverPicker(false)}>
+          <section
+            className="gallery-picker-panel cover-picker-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="选择文章封面"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="typora-details-head">
+              <div>
+                <span>Cover</span>
+                <strong>选择文章封面</strong>
+              </div>
+              <button className="typora-icon-action" type="button" onClick={() => setShowCoverPicker(false)}>
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="cover-picker-layout">
+              <aside className="cover-picker-sidebar" aria-label="图库列表">
+                <button
+                  aria-pressed={activeCoverAlbumKey === 'all'}
+                  type="button"
+                  onClick={() => setActiveCoverAlbumKey('all')}
+                >
+                  <span className="cover-picker-album-thumb">
+                    {coverImageOptions[0]?.imageUrl ? <img alt="" src={coverImageOptions[0].imageUrl} /> : <ImageIcon size={18} />}
+                  </span>
+                  <span>
+                    <strong>全部图片</strong>
+                    <small>{coverImageOptions.length} 张图片</small>
+                  </span>
+                </button>
+                {coverGalleryAlbums.map((album) => (
+                  <button
+                    aria-pressed={activeCoverAlbumKey === album.key}
+                    key={album.key}
+                    type="button"
+                    onClick={() => setActiveCoverAlbumKey(album.key)}
+                  >
+                    <span className="cover-picker-album-thumb">
+                      {album.coverImageUrl ? <img alt="" src={album.coverImageUrl} /> : <ImageIcon size={18} />}
+                    </span>
+                    <span>
+                      <strong>{album.title}</strong>
+                      <small>{album.imageCount} 张图片</small>
+                    </span>
+                  </button>
+                ))}
+              </aside>
+
+              <div className="cover-picker-content">
+                <div className="cover-picker-content-head">
+                  <div>
+                    <strong>{activeCoverAlbum?.title ?? '全部图片'}</strong>
+                    <span>{visibleCoverImages.length} 张可选图片</span>
+                  </div>
+                  {activeCoverAlbum?.description && <p>{activeCoverAlbum.description}</p>}
+                </div>
+
+                {visibleCoverImages.length > 0 ? (
+                  <div className="gallery-picker-grid cover-picker-grid">
+                    {visibleCoverImages.map((image) => (
+                      <button
+                        aria-pressed={image.imageUrl === coverImage}
+                        key={image.id}
+                        type="button"
+                        onFocus={() => setPreviewCoverImageId(image.id)}
+                        onMouseEnter={() => setPreviewCoverImageId(image.id)}
+                        onClick={() => chooseCoverImage(image.imageUrl)}
+                      >
+                        <img alt="" src={image.imageUrl} />
+                        <span>
+                          <strong>{image.title}</strong>
+                          <small>{image.albumTitle}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-state">这个图库还没有图片。</p>
+                )}
+              </div>
+
+              <aside className="cover-picker-preview" aria-label="封面预览">
+                {activeCoverPreviewImage ? (
+                  <>
+                    <div className="cover-picker-preview-frame">
+                      <img alt="" src={activeCoverPreviewImage.imageUrl} />
+                    </div>
+                    <div className="cover-picker-preview-copy">
+                      <strong>{activeCoverPreviewImage.title}</strong>
+                      <span>{activeCoverPreviewImage.albumTitle}</span>
+                      {activeCoverPreviewImage.description && <p>{activeCoverPreviewImage.description}</p>}
+                    </div>
+                  </>
+                ) : (
+                  <p className="empty-state">暂无可预览图片。</p>
+                )}
+              </aside>
+            </div>
+
+            <div className="cover-picker-actions">
+              <button className="secondary-action" type="button" onClick={() => chooseCoverImage('')}>
+                不使用封面
+              </button>
+            </div>
           </section>
         </div>
       )}
@@ -5070,14 +4866,14 @@ function AdminGalleryPanel({
 function AdminArchivePanel({
   archiveGroups,
   onArchivePosts,
-  onMovePostsToArchiveMonth,
+  onMovePostsToArchiveDate,
   onPublishPosts,
   onUnpublishPosts,
   posts,
 }: {
   archiveGroups: ArchiveGroup[];
   onArchivePosts: (slugs: string[]) => Promise<BatchResult>;
-  onMovePostsToArchiveMonth: (slugs: string[], monthValue: string) => Promise<BatchResult>;
+  onMovePostsToArchiveDate: (slugs: string[], dateValue: string) => Promise<BatchResult>;
   onPublishPosts: (slugs: string[]) => Promise<BatchResult>;
   onUnpublishPosts: (slugs: string[]) => Promise<BatchResult>;
   posts: Post[];
@@ -5085,9 +4881,9 @@ function AdminArchivePanel({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMonth, setActiveMonth] = useState('all');
   const [activeStatus, setActiveStatus] = useState<'all' | PostStatus>('all');
- const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
-  const [targetMonth, setTargetMonth] = useState(() => posts[0] ? getPostArchiveMonthValue(posts[0]) || '' : '');
- const [batchNotice, setBatchNotice] = useState('');
+  const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
+  const [targetDate, setTargetDate] = useState(() => posts[0] ? getPostArchiveDateValue(posts[0]) || '' : '');
+  const [batchNotice, setBatchNotice] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
   const monthOptions = useMemo(() => archiveGroups.map((group) => group.month), [archiveGroups]);
   const filteredPosts = useMemo(() => {
@@ -5113,10 +4909,10 @@ function AdminArchivePanel({
   }, [posts]);
 
   useEffect(() => {
-   if (!targetMonth) {
-      setTargetMonth(posts[0] ? getPostArchiveMonthValue(posts[0]) || '' : '');
-   }
-  }, [posts, targetMonth]);
+    if (!targetDate) {
+      setTargetDate(posts[0] ? getPostArchiveDateValue(posts[0]) || '' : '');
+    }
+  }, [posts, targetDate]);
 
   function togglePost(slug: string) {
     setSelectedSlugs((slugs) => (slugs.includes(slug) ? slugs.filter((item) => item !== slug) : [...slugs, slug]));
@@ -5243,23 +5039,23 @@ function AdminArchivePanel({
           批量归档
         </button>
         <input
-          aria-label="目标归档月份"
+          aria-label="目标归档日期"
           disabled={selectedCount === 0 || batchBusy}
-          type="month"
-          value={targetMonth}
-          onChange={(event) => setTargetMonth(event.target.value)}
+          type="date"
+          value={targetDate}
+          onChange={(event) => setTargetDate(event.target.value)}
         />
         <button
           className="secondary-action"
-          disabled={selectedCount === 0 || !targetMonth || batchBusy}
+          disabled={selectedCount === 0 || !targetDate || batchBusy}
           type="button"
           onClick={() =>
-            runBatch(`迁移到 ${getArchiveMonthLabel(targetMonth)}`, selectedSlugs, (slugs) =>
-              onMovePostsToArchiveMonth(slugs, targetMonth),
+            runBatch(`迁移到 ${getArchiveDateLabel(targetDate)}`, selectedSlugs, (slugs) =>
+              onMovePostsToArchiveDate(slugs, targetDate),
             )
           }
         >
-          迁移月份
+          迁移日期
         </button>
       </div>
       {batchNotice && <p className="admin-batch-notice">{batchNotice}</p>}
@@ -5277,7 +5073,7 @@ function AdminArchivePanel({
               </header>
               <div className="admin-archive-entries">
                 {group.entries.map((post) => {
-                  const postMonth = getPostArchiveMonthValue(post);
+                  const postDate = getPostArchiveDateValue(post);
 
                   return (
                     <article className="admin-archive-entry" key={post.slug}>
@@ -5301,15 +5097,15 @@ function AdminArchivePanel({
                       </div>
                       <div className="admin-archive-entry-controls">
                         <input
-                          aria-label={`调整${post.title}的归档月份`}
+                          aria-label={`调整${post.title}的归档日期`}
                           disabled={batchBusy}
-                          type="month"
-                          value={postMonth}
+                          type="date"
+                          value={postDate}
                           onChange={(event) => {
-                            const nextMonth = event.target.value;
-                            if (nextMonth && nextMonth !== postMonth) {
+                            const nextDate = event.target.value;
+                            if (nextDate && nextDate !== postDate) {
                               void runBatch(`迁移「${post.title}」`, [post.slug], (slugs) =>
-                                onMovePostsToArchiveMonth(slugs, nextMonth),
+                                onMovePostsToArchiveDate(slugs, nextDate),
                               );
                             }
                           }}
@@ -5465,6 +5261,7 @@ const defaultLlmConfig: ApiLlmConfig = {
   model: 'deepseek-v4-pro',
   baseUrl: 'https://api.deepseek.com',
   apiKey: '',
+  apiKeyConfigured: false,
   temperature: 0.7,
   enabled: true,
 };
@@ -5480,49 +5277,42 @@ const defaultLlmTokenUsage: ApiLlmTokenUsagePayload = {
     unknownTokenRecords: 0,
   },
   items: [],
+  page: 1,
+  pageSize: 10,
+  pageCount: 1,
+  total: 0,
 };
+
+const llmTokenUsagePageSize = 10;
 
 function AdminLlmConfigPanel() {
   const [config, setConfig] = useState<ApiLlmConfig>(defaultLlmConfig);
   const [status, setStatus] = useState<'loading' | 'ready' | 'saving' | 'saved' | 'error'>('loading');
   const [tokenUsage, setTokenUsage] = useState<ApiLlmTokenUsagePayload>(defaultLlmTokenUsage);
+  const [tokenUsagePage, setTokenUsagePage] = useState(1);
   const [tokenUsageStatus, setTokenUsageStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [connectionTestStatus, setConnectionTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [connectionTestResult, setConnectionTestResult] = useState<ApiLlmConnectionTestResult | null>(null);
   const activeProvider = llmProviderOptions.find((provider) => provider.value === config.provider) ?? llmProviderOptions[0];
+  const safeTokenUsagePage = Math.min(Math.max(tokenUsage.page || tokenUsagePage, 1), Math.max(tokenUsage.pageCount || 1, 1));
+  const tokenUsageFirstIndex = tokenUsage.total === 0 ? 0 : (safeTokenUsagePage - 1) * tokenUsage.pageSize + 1;
+  const tokenUsageLastIndex = Math.min(tokenUsage.total, (safeTokenUsagePage - 1) * tokenUsage.pageSize + tokenUsage.items.length);
 
   useEffect(() => {
     let cancelled = false;
     setStatus('loading');
-    setTokenUsageStatus('loading');
 
-    Promise.allSettled([fetchAdminLlmConfig(), fetchAdminLlmTokenUsage()])
-      .then(([configResult, tokenUsageResult]) => {
+    fetchAdminLlmConfig()
+      .then((nextConfig) => {
         if (cancelled) {
           return;
         }
-
-        if (configResult.status === 'fulfilled') {
-          setConfig({ ...defaultLlmConfig, ...configResult.value });
-          setStatus('ready');
-        } else {
-          setStatus('error');
-        }
-
-        if (tokenUsageResult.status === 'fulfilled') {
-          setTokenUsage({
-            summary: { ...defaultLlmTokenUsage.summary, ...tokenUsageResult.value.summary },
-            items: tokenUsageResult.value.items ?? [],
-          });
-          setTokenUsageStatus('ready');
-        } else {
-          setTokenUsageStatus('error');
-        }
+        setConfig({ ...defaultLlmConfig, ...nextConfig });
+        setStatus('ready');
       })
       .catch(() => {
         if (!cancelled) {
           setStatus('error');
-          setTokenUsageStatus('error');
         }
       });
 
@@ -5531,14 +5321,45 @@ function AdminLlmConfigPanel() {
     };
   }, []);
 
-  async function refreshTokenUsage() {
+  useEffect(() => {
+    let cancelled = false;
+    setTokenUsageStatus('loading');
+
+    fetchAdminLlmTokenUsage(tokenUsagePage, llmTokenUsagePageSize)
+      .then((latestTokenUsage) => {
+        if (cancelled) {
+          return;
+        }
+        setTokenUsage({
+          ...defaultLlmTokenUsage,
+          ...latestTokenUsage,
+          summary: { ...defaultLlmTokenUsage.summary, ...latestTokenUsage.summary },
+          items: latestTokenUsage.items ?? [],
+        });
+        setTokenUsageStatus('ready');
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTokenUsageStatus('error');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenUsagePage]);
+
+  async function refreshTokenUsage(page = tokenUsagePage) {
     setTokenUsageStatus('loading');
     try {
-      const latestTokenUsage = await fetchAdminLlmTokenUsage();
+      const latestTokenUsage = await fetchAdminLlmTokenUsage(page, llmTokenUsagePageSize);
       setTokenUsage({
+        ...defaultLlmTokenUsage,
+        ...latestTokenUsage,
         summary: { ...defaultLlmTokenUsage.summary, ...latestTokenUsage.summary },
         items: latestTokenUsage.items ?? [],
       });
+      setTokenUsagePage(latestTokenUsage.page || page);
       setTokenUsageStatus('ready');
     } catch {
       setTokenUsageStatus('error');
@@ -5587,7 +5408,7 @@ function AdminLlmConfigPanel() {
       setConnectionTestStatus('failed');
       setConnectionTestResult(null);
     } finally {
-      await refreshTokenUsage();
+      await refreshTokenUsage(1);
     }
   }
 
@@ -5652,7 +5473,7 @@ function AdminLlmConfigPanel() {
               type="password"
               value={config.apiKey}
               onChange={(event) => updateConfig({ ...config, apiKey: event.target.value })}
-              placeholder="sk-..."
+              placeholder={config.apiKeyConfigured ? '已保存，留空则不修改' : 'sk-...'}
             />
           </label>
           <label>
@@ -5782,39 +5603,38 @@ function AdminLlmConfigPanel() {
             <p className="empty-state">还没有 Token 消耗记录。</p>
           )}
         </div>
+
+        {tokenUsage.total > 0 && (
+          <nav className="admin-pagination llm-token-pagination" aria-label="Token 消耗记录分页">
+            <span>
+              第 {formatInteger(tokenUsageFirstIndex)}-{formatInteger(tokenUsageLastIndex)} 条，共 {formatInteger(tokenUsage.total)} 条
+            </span>
+            <div>
+              <button
+                className="secondary-action"
+                disabled={tokenUsageStatus === 'loading' || safeTokenUsagePage === 1}
+                onClick={() => setTokenUsagePage(Math.max(1, safeTokenUsagePage - 1))}
+                type="button"
+              >
+                上一页
+              </button>
+              <strong>
+                {safeTokenUsagePage} / {tokenUsage.pageCount}
+              </strong>
+              <button
+                className="secondary-action"
+                disabled={tokenUsageStatus === 'loading' || safeTokenUsagePage >= tokenUsage.pageCount}
+                onClick={() => setTokenUsagePage(Math.min(tokenUsage.pageCount, safeTokenUsagePage + 1))}
+                type="button"
+              >
+                下一页
+              </button>
+            </div>
+          </nav>
+        )}
       </section>
     </section>
   );
-}
-
-function formatInteger(value: number) {
-  return new Intl.NumberFormat('zh-CN').format(Number.isFinite(value) ? value : 0);
-}
-
-function formatTokenCount(value: number | null) {
-  return value === null ? '未知' : formatInteger(value);
-}
-
-function formatLlmUsageFeature(value: string) {
-  const labels: Record<string, string> = {
-    article_metadata: '文章元数据',
-    llm_connection_test: '连接测试',
-    starfield_passages: '星图文段',
-    starfield_relationships: '星图关系',
-  };
-  return labels[value] ?? (value || '未知功能');
-}
-
-function formatLlmUsageTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '时间未知';
-  }
-
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
 }
 
 function AdminAppearancePanel({
@@ -6024,1312 +5844,6 @@ function AdminAppearancePanel({
   );
 }
 
-function PanelHeader({ action, title }: { action?: React.ReactNode; title: string }) {
-  return (
-    <div className="panel-header">
-      <h2>{title}</h2>
-      {action}
-    </div>
-  );
-}
-
-function SiteHeader({
-  homepage,
-  colorScheme,
-  ownerAuthenticated,
-  menuOpen,
-  onMenuToggle,
-  onColorSchemeToggle,
-  onSearchOpen,
-}: {
-  homepage: HomepageCopy;
-  colorScheme: ColorScheme;
-  ownerAuthenticated: boolean;
-  menuOpen: boolean;
-  onMenuToggle: () => void;
-  onColorSchemeToggle: () => void;
-  onSearchOpen: () => void;
-}) {
-  return (
-    <header className="site-header">
-      <a className="brand" href="/#首页" aria-label={`${homepage.siteName}首页`}>
-        <span>{homepage.siteName}</span>
-        <small>{homepage.siteTagline}</small>
-      </a>
-
-      <nav className="desktop-nav" aria-label="主导航">
-        {navItems.map((item) => (
-          <a href={item.href} key={item.label}>
-            {item.label}
-          </a>
-        ))}
-        {ownerAuthenticated && <a href="/admin">后台</a>}
-      </nav>
-
-      <div className="header-actions">
-        <button className="icon-button" type="button" onClick={onSearchOpen} aria-label="打开搜索">
-          <Search size={19} />
-        </button>
-        <button className="icon-button" type="button" onClick={onColorSchemeToggle} aria-label="切换明暗模式">
-          {colorScheme === 'light' ? <Moon size={19} /> : <Sun size={19} />}
-        </button>
-        <button
-          aria-controls="mobile-navigation"
-          aria-expanded={menuOpen}
-          aria-label={menuOpen ? '关闭菜单' : '打开菜单'}
-          className="icon-button mobile-only"
-          type="button"
-          onClick={onMenuToggle}
-        >
-          {menuOpen ? <X size={20} /> : <Menu size={20} />}
-        </button>
-      </div>
-    </header>
-  );
-}
-
-function HeroMoonScene({
-  almanac,
-  heroImage,
-  homepage,
-}: {
-  almanac?: AlmanacInfo | null;
-  heroImage: string;
-  homepage: HomepageCopy;
-}) {
-  const seasonNote = useMemo(() => (homepage.seasonAuto ? createSeasonNoteFromAlmanac(almanac) ?? createSeasonNote() : null), [almanac, homepage.seasonAuto]);
-  const seasonTitle = seasonNote?.title ?? homepage.seasonTitle;
-  const seasonText = seasonNote?.text ?? homepage.seasonText;
-
-  return (
-    <section className="hero" id="首页">
-      <div className="hero-art" aria-hidden="true">
-        <img src={heroImage} alt="" />
-        <div className="moon-orbit" />
-        <div className="water-shimmer" />
-      </div>
-
-      <div className="hero-content">
-        <div className="seal" aria-label="乙巳夏前">
-          <span>乙巳</span>
-          <span>夏前</span>
-        </div>
-        <h1>{homepage.heroTitle}</h1>
-        <p>{homepage.heroSubtitle}</p>
-        <div className="hero-actions">
-          <a className="primary-action" href="/#文章">
-            {homepage.primaryCta}
-            <ChevronRight size={18} />
-          </a>
-          <a className="secondary-action" href="/#归档">
-            {homepage.secondaryCta}
-          </a>
-        </div>
-      </div>
-
-      <aside className="season-card" aria-label="今日小记">
-        <CalendarDays size={18} />
-        <div>
-          <strong>{seasonTitle}</strong>
-          <span>{seasonText}</span>
-        </div>
-      </aside>
-    </section>
-  );
-}
-
-function createSeasonNoteFromAlmanac(almanac?: AlmanacInfo | null) {
-  if (!almanac) {
-    return null;
-  }
-
-  const termLabel = almanac.solarTerm || (almanac.nextSolarTerm ? `${almanac.nextSolarTerm}前` : '');
-  const titleParts = ['今日', almanac.lunarMonth && almanac.lunarDay ? `${almanac.lunarMonth}${almanac.lunarDay}` : '', termLabel].filter(Boolean);
-  const goodThings = almanac.goodThings.filter((thing) => thing !== '诸事不忌').slice(0, 3);
-  const badThings = almanac.badThings.filter((thing) => thing !== '诸事不忌').slice(0, 2);
-  const textParts = [
-    goodThings.length > 0 ? `宜：${goodThings.join('、')}` : '',
-    badThings.length > 0 ? `忌：${badThings.join('、')}` : '',
-  ].filter(Boolean);
-
-  return {
-    title: titleParts.join(' · '),
-    text: textParts.join('；') || almanac.zodiacClash || almanac.weekDay,
-  };
-}
-
-function LatestPosts({ homepage, posts }: { homepage: HomepageCopy; posts: Post[] }) {
-  const [lead, ...rest] = posts;
-  const recentPosts = rest.slice(0, 3);
-  const featuredTitleDensity = getFeaturedTitleDensity(lead?.title ?? '');
-
-  if (!lead) {
-    return null;
-  }
-
-  return (
-    <section className="content-section latest" id="文章">
-      <SectionHeading
-        action={
-          <a className="section-link" href="/posts/page/1">
-            全部文章
-            <ChevronRight size={17} />
-          </a>
-        }
-        eyebrow={homepage.latestEyebrow}
-        title={homepage.latestTitle}
-      />
-      <div className="post-grid">
-        <a className={`featured-card tone-${lead.tone}`} href={`/posts/${lead.slug}`}>
-          <PostCover className="featured-card-cover" coverImage={lead.coverImage} loading="lazy" />
-          <div className="featured-card-body">
-            <span>{lead.category}</span>
-            <h3 className={`featured-title-${featuredTitleDensity}`}>{lead.title}</h3>
-            <p>{lead.excerpt}</p>
-            <footer>
-              <small>{lead.date}</small>
-            </footer>
-          </div>
-        </a>
-
-        <div className="post-list">
-          {recentPosts.map((post) => (
-            <PostCard key={post.title} post={post} />
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function getFeaturedTitleDensity(title: string) {
-  const normalizedTitle = title.trim();
-  const titleLength = Array.from(normalizedTitle).length;
-  const longestSegmentLength = Math.max(
-    0,
-    ...normalizedTitle.split(/[\s，。！？、：；,.!?:;()[\]{}"'“”‘’《》<>/\\|-]+/).map((segment) => Array.from(segment).length),
-  );
-
-  if (titleLength > 72 || longestSegmentLength > 34) {
-    return 'ultra';
-  }
-
-  if (titleLength > 52 || longestSegmentLength > 24) {
-    return 'dense';
-  }
-
-  if (titleLength > 34) {
-    return 'compact';
-  }
-
-  return 'normal';
-}
-
-function PostCard({ post }: { post: Post }) {
-  return (
-    <a className={`post-card tone-${post.tone}`} href={`/posts/${post.slug}`}>
-      <PostCover className="post-card-cover" coverImage={post.coverImage} loading="lazy" />
-      <div className="post-card-body">
-        <div className="post-card-meta">
-          <span>{post.category}</span>
-          <small>{post.date}</small>
-        </div>
-        <h3>{post.title}</h3>
-        <p>{post.excerpt}</p>
-        <footer>{post.date}</footer>
-      </div>
-    </a>
-  );
-}
-
-function PostCover({
-  className,
-  coverImage,
-  loading,
-}: {
-  className: string;
-  coverImage?: string;
-  loading?: 'eager' | 'lazy';
-}) {
-  const [isBroken, setIsBroken] = useState(false);
-  const imageUrl = coverImage?.trim() ?? '';
-
-  useEffect(() => {
-    setIsBroken(false);
-  }, [imageUrl]);
-
-  if (!imageUrl || isBroken) {
-    return null;
-  }
-
-  return (
-    <div className={className}>
-      <img alt="" loading={loading} onError={() => setIsBroken(true)} src={imageUrl} />
-    </div>
-  );
-}
-
-function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSections: NoteSection[] }) {
-  const riverRef = useRef<HTMLDivElement>(null);
-  const scrollPositionRef = useRef(0);
-  const pauseUntilRef = useRef(0);
-  const prefersReducedMotionRef = useRef(false);
-  const dragStateRef = useRef({
-    dragged: false,
-    isDragging: false,
-    startScroll: 0,
-    startX: 0,
-    startY: 0,
-  });
-  const displaySections = useMemo(() => {
-    const sectionPriority = new Map(defaultSiteContent.noteSections.map((section, index) => [section.category, index]));
-    return noteSections.filter((section) => section.category !== '功能测试').sort((first, second) => {
-      const firstPriority = sectionPriority.get(first.category) ?? 100 + noteSections.indexOf(first);
-      const secondPriority = sectionPriority.get(second.category) ?? 100 + noteSections.indexOf(second);
-      return firstPriority - secondPriority;
-    });
-  }, [noteSections]);
-  const loopedSections = displaySections.length > 1 ? [...displaySections, ...displaySections] : displaySections;
-
-  const getScrollCycle = (river: HTMLDivElement) => {
-    const styles = window.getComputedStyle(river);
-    const gap = Number.parseFloat(styles.columnGap || styles.gap || '0') || 0;
-    return (river.scrollWidth + gap) / 2;
-  };
-
-  const setLoopedScroll = (river: HTMLDivElement, value: number) => {
-    const cycle = getScrollCycle(river);
-
-    if (!Number.isFinite(cycle) || cycle <= 0 || river.scrollWidth <= river.clientWidth) {
-      return;
-    }
-
-    let next = value;
-    while (next >= cycle) next -= cycle;
-    while (next < 0) next += cycle;
-    scrollPositionRef.current = next;
-    river.scrollLeft = next;
-  };
-
-  useEffect(() => {
-    const river = riverRef.current;
-    if (!river) return;
-
-    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const updateMotionPreference = () => {
-      prefersReducedMotionRef.current = reducedMotionQuery.matches;
-    };
-    updateMotionPreference();
-    reducedMotionQuery.addEventListener('change', updateMotionPreference);
-
-    let animationFrame = 0;
-    let previousTime = performance.now();
-    const speed = 18;
-
-    const animate = (time: number) => {
-      const dragState = dragStateRef.current;
-      const deltaSeconds = Math.min(time - previousTime, 40) / 1000;
-      previousTime = time;
-
-      if (!dragState.isDragging && !prefersReducedMotionRef.current && time >= pauseUntilRef.current) {
-        setLoopedScroll(river, scrollPositionRef.current + speed * deltaSeconds);
-      }
-
-      animationFrame = window.requestAnimationFrame(animate);
-    };
-
-    animationFrame = window.requestAnimationFrame(animate);
-    return () => {
-      reducedMotionQuery.removeEventListener('change', updateMotionPreference);
-      window.cancelAnimationFrame(animationFrame);
-    };
-  }, [noteSections]);
-
-  const pauseAutoScroll = (duration = 900) => {
-    pauseUntilRef.current = window.performance.now() + duration;
-  };
-
-  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-
-    const river = riverRef.current;
-    if (!river) return;
-
-    pauseAutoScroll(1200);
-    dragStateRef.current = {
-      dragged: false,
-      isDragging: true,
-      startScroll: river.scrollLeft,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-    scrollPositionRef.current = river.scrollLeft;
-  };
-
-  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const river = riverRef.current;
-    const dragState = dragStateRef.current;
-    if (!river || !dragState.isDragging) return;
-
-    const dragDistance = event.clientX - dragState.startX;
-    const verticalDistance = event.clientY - dragState.startY;
-    if (Math.hypot(dragDistance, verticalDistance) > 5) {
-      dragState.dragged = true;
-      river.classList.add('is-dragging');
-      if (!river.hasPointerCapture(event.pointerId)) {
-        river.setPointerCapture(event.pointerId);
-      }
-    }
-
-    if (!dragState.dragged) return;
-
-    setLoopedScroll(river, dragState.startScroll - dragDistance * 1.8);
-  };
-
-  const stopDragging = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const river = riverRef.current;
-    if (!river || !dragStateRef.current.isDragging) return;
-
-    dragStateRef.current.isDragging = false;
-    river.classList.remove('is-dragging');
-    if (river.hasPointerCapture(event.pointerId)) {
-      river.releasePointerCapture(event.pointerId);
-    }
-    if (dragStateRef.current.dragged) {
-      window.setTimeout(() => {
-        dragStateRef.current.dragged = false;
-      }, 0);
-    }
-  };
-
-  const handleChipClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
-    if (!dragStateRef.current.dragged) return;
-
-    event.preventDefault();
-    dragStateRef.current.dragged = false;
-  };
-
-  const handleRiverScroll = () => {
-    const river = riverRef.current;
-    if (!river) return;
-
-    scrollPositionRef.current = river.scrollLeft;
-  };
-
-  const handleDragStart = (event: ReactDragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-  };
-
-  return (
-    <section className="content-section" id="札记">
-      <SectionHeading eyebrow={homepage.topicsEyebrow} title={homepage.topicsTitle} />
-      <div
-        className="topic-river"
-        aria-label="文章分类"
-        onDragStart={handleDragStart}
-        onPointerCancel={stopDragging}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={stopDragging}
-        onScroll={handleRiverScroll}
-        onWheel={() => pauseAutoScroll(600)}
-        onFocus={() => pauseAutoScroll(1200)}
-        ref={riverRef}
-      >
-        {loopedSections.map((section, index) => {
-          const isClone = index >= displaySections.length;
-
-          return (
-          <a
-            aria-hidden={isClone || undefined}
-            className="topic-chip"
-            draggable={false}
-            href={`/posts/page/1?category=${encodeURIComponent(section.category)}`}
-            key={`${section.category}-${index}`}
-            onClick={handleChipClick}
-            tabIndex={isClone ? -1 : undefined}
-          >
-            <span>{section.category}</span>
-            <small>{section.description}</small>
-          </a>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function FeaturedEssay({
-  homepage,
-  posts,
-  seriesList,
-}: {
-  homepage: HomepageCopy;
-  posts: Post[];
-  seriesList: FeaturedSeries[];
-}) {
-  const featuredSeries = seriesList.find((series) =>
-    series.postSlugs.some((slug) => posts.some((post) => post.slug === slug)),
-  );
-
-  if (!featuredSeries) {
-    return null;
-  }
-
-  const seriesPosts = featuredSeries.postSlugs
-    .map((slug) => posts.find((post) => post.slug === slug))
-    .filter((post): post is Post => Boolean(post));
-
-  return (
-    <section className="essay-band">
-      <div>
-        <SectionHeading eyebrow={homepage.seriesEyebrow} title={featuredSeries.title} />
-        <h3>{featuredSeries.lead}</h3>
-        <p>{featuredSeries.body}</p>
-      </div>
-      <div className="chapter-list" aria-label="系列章节">
-        {seriesPosts.map((post, index) => (
-          <a href={`/posts/${post.slug}`} key={post.slug}>
-            <span>{String(index + 1).padStart(2, '0')}</span>
-            {post.title}
-          </a>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ArchivePreview({ homepage, posts }: { homepage: HomepageCopy; posts: Post[] }) {
-  const publishedPosts = useMemo(() => getPublishedPosts(posts), [posts]);
-  const archiveGroups = useMemo(() => buildArchive(publishedPosts), [publishedPosts]);
-  const previewGroups = useMemo(() => archiveGroups.slice(0, homepageArchivePreviewLimit), [archiveGroups]);
-  const hasOverflowingArchivePreview =
-    archiveGroups.length > homepageArchivePreviewLimit ||
-    previewGroups.some((group) => group.entries.length > homepageArchiveEntriesPerMonthLimit);
-  const [openMonth, setOpenMonth] = useState(previewGroups[0]?.month ?? '');
-
-  useEffect(() => {
-    if (!previewGroups.some((group) => group.month === openMonth)) {
-      setOpenMonth(previewGroups[0]?.month ?? '');
-    }
-  }, [openMonth, previewGroups]);
-
-  return (
-    <section className="content-section archive" id="归档">
-      <SectionHeading
-        action={
-          hasOverflowingArchivePreview ? (
-            <a className="section-link" href="/archive/page/1">
-              全部归档
-            </a>
-          ) : undefined
-        }
-        eyebrow={homepage.archiveEyebrow}
-        title={homepage.archiveTitle}
-      />
-      <div className="timeline">
-        {previewGroups.map(({ month, entries }) => {
-          const previewEntries = entries.slice(0, homepageArchiveEntriesPerMonthLimit);
-
-          return (
-            <div className="timeline-month" key={month}>
-              <button type="button" onClick={() => setOpenMonth(openMonth === month ? '' : month)}>
-                <span />
-                {month}
-              </button>
-              {openMonth === month && (
-                <ul>
-                  {previewEntries.map((post) => (
-                    <li key={post.slug}>
-                      <a href={`/posts/${post.slug}`}>
-                        {post.date.slice(5).replace('.', '.')}  {post.title}
-                      </a>
-                    </li>
-                  ))}
-                  {entries.length > homepageArchiveEntriesPerMonthLimit && (
-                    <li>
-                      <a className="timeline-more-link" href="/archive/page/1">
-                        查看该月更多文章
-                      </a>
-                    </li>
-                  )}
-                </ul>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function AboutBlock({
-  homepage,
-  noteSections,
-  ownerAvatarUrl,
-  ownerName,
-  posts,
-}: {
-  homepage: HomepageCopy;
-  noteSections: NoteSection[];
-  ownerAvatarUrl: string;
-  ownerName: string;
-  posts: Post[];
-}) {
-  return (
-    <section className="about-band" id="关于">
-      <div>
-        <SectionHeading eyebrow={homepage.aboutEyebrow} title={homepage.aboutTitle} />
-        <p>{homepage.aboutBody}</p>
-      </div>
-      <div className="about-stats" aria-label="站点摘要">
-        <div className="about-author">
-          <AuthorAvatar ownerAvatarUrl={ownerAvatarUrl} ownerName={ownerName} size="large" />
-          <div>
-            <span>作者</span>
-            <strong>{ownerName}</strong>
-          </div>
-        </div>
-        <div className="about-metrics">
-          <span>
-            <strong>{posts.length}</strong>
-            <small>近日文章</small>
-          </span>
-          <span>
-            <strong>{noteSections.length}</strong>
-            <small>内容主题</small>
-          </span>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SearchCommand({
-  quickLinks,
-  query,
-  results,
-  onQueryChange,
-  onClose,
-}: {
-  quickLinks: string[];
-  query: string;
-  results: Post[];
-  onQueryChange: (value: string) => void;
-  onClose: () => void;
-}) {
-  const panelRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        onClose();
-      }
-    }
-
-    window.addEventListener('keydown', closeOnEscape);
-    return () => {
-      window.removeEventListener('keydown', closeOnEscape);
-      previouslyFocusedElement?.focus();
-    };
-  }, [onClose]);
-
-  function trapFocus(event: React.KeyboardEvent<HTMLElement>) {
-    if (event.key !== 'Tab') {
-      return;
-    }
-
-    const focusableElements = getFocusableElements(panelRef.current);
-    if (focusableElements.length === 0) {
-      return;
-    }
-
-    const firstElement = focusableElements[0];
-    const lastElement = focusableElements[focusableElements.length - 1];
-    if (event.shiftKey && document.activeElement === firstElement) {
-      event.preventDefault();
-      lastElement.focus();
-    } else if (!event.shiftKey && document.activeElement === lastElement) {
-      event.preventDefault();
-      firstElement.focus();
-    }
-  }
-
-  return (
-    <div className="search-layer" role="presentation" onMouseDown={onClose}>
-      <section
-        className="search-panel"
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="站内搜索"
-        onKeyDown={trapFocus}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="search-input-row">
-          <Search size={20} />
-          <input
-            aria-label="站内搜索关键词"
-            autoFocus
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="搜索诗词、随笔、技术札记"
-          />
-          <button type="button" onClick={onClose} aria-label="关闭搜索">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="quick-links">
-          {quickLinks.map((item) => (
-            <button type="button" key={item} onClick={() => onQueryChange(item)}>
-              {item}
-            </button>
-          ))}
-        </div>
-
-        <div className="search-results">
-          {results.length > 0 ? (
-            results.map((post) => (
-              <a href={`/posts/${post.slug}`} key={post.slug}>
-                <span>{post.category}</span>
-                <h3>{post.title}</h3>
-                <p>{post.excerpt}</p>
-              </a>
-            ))
-          ) : (
-            <p className="empty-state">没有找到相关内容，换个关键词试试。</p>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function buildSearchQuickLinks(posts: Post[]) {
-  const values = posts.flatMap((post) => [post.category, ...post.tags]).filter(Boolean);
-  return Array.from(new Set(values)).slice(0, 8);
-}
-
-function getFocusableElements(container: HTMLElement | null) {
-  if (!container) {
-    return [];
-  }
-
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((element) => !element.hasAttribute('aria-hidden'));
-}
-
-function SiteFooter({ homepage, ownerAvatarUrl, ownerName }: { homepage: HomepageCopy; ownerAvatarUrl: string; ownerName: string }) {
-  return (
-    <footer className="site-footer">
-      <div className="site-footer-author">
-        <AuthorAvatar ownerAvatarUrl={ownerAvatarUrl} ownerName={ownerName} size="small" />
-        <div>
-          <strong>{homepage.footerSlogan}</strong>
-          <span>© 2026 {ownerName}</span>
-        </div>
-      </div>
-      <nav aria-label="页脚导航">
-        <a href="/posts/page/1">全部文章</a>
-        <a href="/notes/page/1">札记</a>
-        <a href="/archive/page/1">归档</a>
-        <a href="/gallery">图库</a>
-      </nav>
-    </footer>
-  );
-}
-
-function AllPostsPage({
-  category,
-  currentPage,
-  posts,
-  tag,
-}: {
-  category: string | null;
-  currentPage: number;
-  posts: Post[];
-  tag: string | null;
-}) {
-  const allPostsPerPage = 5;
-  const categories = Array.from(new Set(posts.map((post) => post.category))).filter(Boolean);
-  const tags = Array.from(new Set(posts.flatMap((post) => post.tags))).filter(Boolean);
-  const visiblePosts = posts.filter((post) => {
-    const categoryMatches = category ? post.category === category : true;
-    const tagMatches = tag ? post.tags.includes(tag) : true;
-    return categoryMatches && tagMatches;
-  });
-  const pageCount = Math.max(1, Math.ceil(visiblePosts.length / allPostsPerPage));
-  const normalizedPage = Math.min(Math.max(currentPage, 1), pageCount);
-  const startIndex = (normalizedPage - 1) * allPostsPerPage;
-  const pagedPosts = visiblePosts.slice(startIndex, startIndex + allPostsPerPage);
-  const pageTitle = category && tag ? `${category} · ${tag}` : category ? `${category}文章` : tag ? `标签：${tag}` : '全部文章';
-  const filterHref = (nextCategory: string | null, nextTag: string | null) => {
-    const params = new URLSearchParams();
-    if (nextCategory) {
-      params.set('category', nextCategory);
-    }
-    if (nextTag) {
-      params.set('tag', nextTag);
-    }
-    const queryString = params.toString();
-    return `/posts/page/1${queryString ? `?${queryString}` : ''}`;
-  };
-
-  return (
-    <section className="content-section listing-page">
-      <SectionHeading eyebrow="All Posts" title={pageTitle} />
-      <div className="listing-intro">
-        <p>
-          按发布时间逐页浏览{category ? `“${category}”分类下` : '所有'}{tag ? `、带有“${tag}”标签的` : ''}博客内容。当前第 {normalizedPage}{' '}
-          页，共 {pageCount} 页。
-        </p>
-        {(category || tag) && (
-          <a className="section-link" href="/posts/page/1">
-            清除筛选
-            <X size={16} />
-          </a>
-        )}
-      </div>
-
-      <div className="post-filter-bar" aria-label="文章筛选">
-        <div className="post-filter-group" role="group" aria-label="分类筛选">
-          <a aria-current={!category && !tag ? 'page' : undefined} href="/posts/page/1">全部</a>
-          {categories.map((categoryName) => (
-            <a
-              aria-current={category === categoryName ? 'page' : undefined}
-              href={filterHref(categoryName, tag)}
-              key={categoryName}
-            >
-              {categoryName}
-            </a>
-          ))}
-        </div>
-        {tags.length > 0 && (
-          <div className="post-filter-group tag-filter-group" role="group" aria-label="标签筛选">
-            {tags.slice(0, 16).map((tagName) => (
-            <a
-              aria-current={tag === tagName ? 'page' : undefined}
-              href={filterHref(category, tagName)}
-              key={tagName}
-            >
-                {tagName}
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {pagedPosts.length > 0 ? (
-        <div className="listing-grid">
-          {pagedPosts.map((post) => (
-            <PostListItem key={post.slug} post={post} />
-          ))}
-        </div>
-      ) : (
-        <p className="empty-state">没有匹配的文章，可以清除筛选后重新浏览。</p>
-      )}
-
-      <Pagination category={category} currentPage={normalizedPage} pageCount={pageCount} tag={tag} />
-    </section>
-  );
-}
-
-function AllNotesPage({
-  currentPage,
-  noteSections,
-  posts,
-}: {
-  currentPage: number;
-  noteSections: NoteSection[];
-  posts: Post[];
-}) {
-  const pageCount = Math.max(1, Math.ceil(noteSections.length / postsPerPage));
-  const normalizedPage = Math.min(Math.max(currentPage, 1), pageCount);
-  const startIndex = (normalizedPage - 1) * postsPerPage;
-  const pagedSections = noteSections.slice(startIndex, startIndex + postsPerPage);
-
-  return (
-    <section className="content-section listing-page">
-      <SectionHeading eyebrow="Notes" title="札记" />
-      <div className="listing-intro">
-        <p>按主题查看札记分类。当前第 {normalizedPage} 页，共 {pageCount} 页。</p>
-      </div>
-      <div className="note-listing-grid">
-        {pagedSections.map((section) => {
-          const sectionPosts = posts.filter((post) => post.category === section.category);
-          return (
-            <article className="note-section-card" key={section.category}>
-              <div>
-                <span>{sectionPosts.length} 篇</span>
-                <h3>{section.category}</h3>
-                <p>{section.description}</p>
-              </div>
-              <div className="note-section-posts">
-                {sectionPosts.slice(0, 3).map((post) => (
-                  <a href={`/posts/${post.slug}`} key={post.slug}>{post.title}</a>
-                ))}
-                <a className="section-link" href={`/posts/page/1?category=${encodeURIComponent(section.category)}`}>
-                  查看全部
-                  <ChevronRight size={17} />
-                </a>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-      <SimplePagination basePath="/notes/page" currentPage={normalizedPage} pageCount={pageCount} />
-    </section>
-  );
-}
-
-function AllArchivePage({ currentPage, posts }: { currentPage: number; posts: Post[] }) {
-  const archiveGroups = buildArchive(posts);
-  const pageCount = Math.max(1, Math.ceil(archiveGroups.length / postsPerPage));
-  const normalizedPage = Math.min(Math.max(currentPage, 1), pageCount);
-  const startIndex = (normalizedPage - 1) * postsPerPage;
-  const pagedGroups = archiveGroups.slice(startIndex, startIndex + postsPerPage);
-
-  return (
-    <section className="content-section listing-page">
-      <SectionHeading eyebrow="Archive" title="归档" />
-      <div className="listing-intro">
-        <p>按月份回看全部文章。当前第 {normalizedPage} 页，共 {pageCount} 页。</p>
-        <a className="section-link" href="/#归档">
-          返回首页归档
-          <ChevronRight size={17} />
-        </a>
-      </div>
-      <div className="timeline">
-        {pagedGroups.map(({ month, entries }) => (
-          <div className="timeline-month" key={month}>
-            <button type="button">
-              <span />
-              {month}
-            </button>
-            <ul>
-              {entries.map((post) => (
-                <li key={post.slug}>
-                  <a href={`/posts/${post.slug}`}>{post.date}  {post.title}</a>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-      <SimplePagination basePath="/archive/page" currentPage={normalizedPage} pageCount={pageCount} />
-    </section>
-  );
-}
-
-function sortGalleryAlbums(albums: GalleryAlbum[]) {
-  return [...albums].sort((first, second) => first.sortOrder - second.sortOrder || first.title.localeCompare(second.title));
-}
-
-function sortGalleryImages(images: GalleryImage[]) {
-  return [...images].sort((first, second) => first.sortOrder - second.sortOrder || first.title.localeCompare(second.title));
-}
-
-function isSystemGalleryAlbum(album: GalleryAlbum) {
-  return album.id === systemGalleryAlbumId || album.slug === systemGalleryAlbumSlug;
-}
-
-function getSystemGalleryImageUrls(albums: GalleryAlbum[]) {
-  const systemImages = albums.find((album) => isSystemGalleryAlbum(album))?.images ?? [];
-
-  return {
-    avatar: systemImages.find((image) => image.id === 'image-guzhouyue-avatar')?.imageUrl,
-    classic: systemImages.find((image) => image.id === 'image-guzhouyue-hero')?.imageUrl,
-    cyber: systemImages.find((image) => image.id === 'image-guzhouyue-cyber')?.imageUrl,
-  };
-}
-
-function getActiveOwnerAvatarUrl(ownerAvatarUrl: string, systemGalleryImages: ReturnType<typeof getSystemGalleryImageUrls>) {
-  return ownerAvatarUrl === systemGalleryAssetUrls.avatarImage ? systemGalleryImages.avatar ?? ownerAvatarUrl : ownerAvatarUrl;
-}
-
-function normalizeGalleryImageOrder(images: GalleryImage[]) {
-  return images.map((image, index) => ({
-    ...image,
-    sortOrder: index,
-  }));
-}
-
-function withGalleryAlbumImages(album: GalleryAlbum, images: GalleryImage[]) {
-  const coverImage = images.find((image) => image.id === album.coverImageId) ?? images[0] ?? null;
-
-  return {
-    ...album,
-    coverImageId: coverImage?.id ?? null,
-    coverImageUrl: coverImage?.imageUrl ?? '',
-    imageCount: images.length,
-    images,
-  };
-}
-
-function isSupportedComposerImageFile(file: File) {
-  return supportedComposerImageMimeTypes.has(file.type);
-}
-
-function hasImageFileInTransfer(dataTransfer: DataTransfer) {
-  if (Array.from(dataTransfer.files ?? []).some((file) => file.type.startsWith('image/'))) {
-    return true;
-  }
-
-  return Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file' && item.type.startsWith('image/'));
-}
-
-function getImageFilesFromTransfer(dataTransfer: DataTransfer) {
-  const files = Array.from(dataTransfer.files ?? []);
-  if (files.length > 0) {
-    return files.filter((file) => file.type.startsWith('image/'));
-  }
-
-  return Array.from(dataTransfer.items ?? [])
-    .map((item) => (item.kind === 'file' && item.type.startsWith('image/') ? item.getAsFile() : null))
-    .filter((file): file is File => file !== null);
-}
-
-function escapeMarkdownAltText(value: string) {
-  return value.replace(/[\r\n[\]]/g, ' ').trim() || '图片';
-}
-
-function createComposerImageTitle(file: File, index: number) {
-  const baseName = file.name.replace(/\.[^.]+$/, '').trim();
-  if (baseName && !/^image$/i.test(baseName)) {
-    return baseName.slice(0, 80);
-  }
-
-  const now = new Date();
-  const timestamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-    String(now.getSeconds()).padStart(2, '0'),
-  ].join('');
-  return `截图-${timestamp}${index > 0 ? `-${index + 1}` : ''}`;
-}
-
-function AuthorAvatar({
-  ownerAvatarUrl,
-  ownerName,
-  size = 'medium',
-}: {
-  ownerAvatarUrl: string;
-  ownerName: string;
-  size?: 'small' | 'medium' | 'large';
-}) {
-  const initial = normalizeOwnerName(ownerName).slice(0, 1);
-
-  return (
-    <span className={`author-avatar author-avatar-${size}`} aria-hidden="true">
-      {ownerAvatarUrl ? <img alt="" src={ownerAvatarUrl} /> : <span>{initial}</span>}
-    </span>
-  );
-}
-
-function PostListItem({ post }: { post: Post }) {
-  return (
-    <a className={`list-post tone-${post.tone}`} href={`/posts/${post.slug}`}>
-      <PostCover className="list-post-cover" coverImage={post.coverImage} loading="lazy" />
-      <div>
-        <span>{post.category}</span>
-        <h3>{post.title}</h3>
-        <p>{post.excerpt}</p>
-      </div>
-      <footer>
-        <small>{post.date}</small>
-      </footer>
-    </a>
-  );
-}
-
-function Pagination({
-  category,
-  currentPage,
-  pageCount,
-  tag,
-}: {
-  category: string | null;
-  currentPage: number;
-  pageCount: number;
-  tag: string | null;
-}) {
-  const pageNumbers = Array.from({ length: pageCount }, (_, index) => index + 1);
-  const pageHref = (page: number) => {
-    const params = new URLSearchParams();
-    if (category) {
-      params.set('category', category);
-    }
-    if (tag) {
-      params.set('tag', tag);
-    }
-    const queryString = params.toString();
-    return `/posts/page/${page}${queryString ? `?${queryString}` : ''}`;
-  };
-
-  return (
-    <nav className="pagination" aria-label="文章分页">
-      <a aria-disabled={currentPage === 1} href={pageHref(Math.max(1, currentPage - 1))}>
-        上一页
-      </a>
-      <div>
-        {pageNumbers.map((page) => (
-          <a aria-current={page === currentPage ? 'page' : undefined} href={pageHref(page)} key={page}>
-            {page}
-          </a>
-        ))}
-      </div>
-      <a aria-disabled={currentPage === pageCount} href={pageHref(Math.min(pageCount, currentPage + 1))}>
-        下一页
-      </a>
-    </nav>
-  );
-}
-
-function SimplePagination({
-  basePath,
-  currentPage,
-  pageCount,
-}: {
-  basePath: string;
-  currentPage: number;
-  pageCount: number;
-}) {
-  const pageNumbers = Array.from({ length: pageCount }, (_, index) => index + 1);
-  const pageHref = (page: number) => `${basePath}/${page}`;
-
-  return (
-    <nav className="pagination" aria-label="分页">
-      <a aria-disabled={currentPage === 1} href={pageHref(Math.max(1, currentPage - 1))}>
-        上一页
-      </a>
-      <div>
-        {pageNumbers.map((page) => (
-          <a aria-current={page === currentPage ? 'page' : undefined} href={pageHref(page)} key={page}>
-            {page}
-          </a>
-        ))}
-      </div>
-      <a aria-disabled={currentPage === pageCount} href={pageHref(Math.min(pageCount, currentPage + 1))}>
-        下一页
-      </a>
-    </nav>
-  );
-}
-
-function formatCommentTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '时间未知';
-  }
-
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
-}
-
-function decodeHashAnchor(hash: string) {
-  const raw = hash.replace(/^#/, '');
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
-function calculateReadingMinutes(markdown: string) {
-  const chineseCharacters = (markdown.match(/[\u4e00-\u9fa5]/g) ?? []).length;
-  const latinWords = markdown.replace(/[\u4e00-\u9fa5]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
-  return Math.max(1, Math.ceil((chineseCharacters + latinWords) / 420));
-}
-
-function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: string; posts: Post[]; slug: string }) {
-  const post = getPostBySlug(posts, slug);
-  useArticleHead(post ?? null);
-  const markdown = post ? getPostMarkdown(post) : '';
-  const outlineItems = useMemo(() => getMarkdownOutline(markdown), [markdown]);
-  const passageAnchor = typeof window !== 'undefined' ? decodeHashAnchor(window.location.hash) : '';
-  const [starfieldPassageAnchors, setStarfieldPassageAnchors] = useState<Array<{ anchor: string; text: string }>>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!post || !passageAnchor.startsWith('passage-id-')) {
-      setStarfieldPassageAnchors([]);
-      return () => {
-        cancelled = true;
-      };
-    }
-    fetchPublicStarfield()
-      .then((payload) => {
-        if (cancelled) {
-          return;
-        }
-        setStarfieldPassageAnchors(
-          payload.passages
-            .filter((passage) => passage.article.slug === post.slug)
-            .map((passage) => ({ anchor: passage.anchor, text: passage.text })),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setStarfieldPassageAnchors([]);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [passageAnchor, post]);
-
-  useEffect(() => {
-    if (!passageAnchor) {
-      return;
-    }
-    if (passageAnchor.startsWith('passage-id-') && starfieldPassageAnchors.length === 0) {
-      return;
-    }
-    const target = document.getElementById(passageAnchor) ?? document.querySelector('.article-body');
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    target?.classList.add('is-passage-target');
-    const timeout = window.setTimeout(() => target?.classList.remove('is-passage-target'), 2200);
-    return () => window.clearTimeout(timeout);
-  }, [passageAnchor, starfieldPassageAnchors]);
-
-  if (!post) {
-    return <NotFoundPage />;
-  }
-
-  const { previousPost, nextPost } = getAdjacentPosts(posts, slug);
-  const readingMinutes = calculateReadingMinutes(markdown);
-  const relatedPosts = posts.filter((item) => item.slug !== post.slug && item.category === post.category).slice(0, 3);
-
-  return (
-    <article className="article-page">
-      <header className={`article-hero tone-${post.tone}`}>
-        <PostCover className="article-hero-cover" coverImage={post.coverImage} />
-        <div className="article-hero-content">
-          <a className="breadcrumb" href="/posts/page/1">
-            全部文章
-          </a>
-          <span>{post.category}</span>
-          <h1>{post.title}</h1>
-          <p>{post.excerpt}</p>
-          <div className="article-meta">
-            <span className="article-author-meta">
-              <AuthorAvatar ownerAvatarUrl={ownerAvatarUrl} ownerName={post.authorName || '孤舟月'} size="small" />
-              <small>作者：{post.authorName || '孤舟月'}</small>
-            </span>
-            <small>{post.date}</small>
-            <small>{readingMinutes} 分钟阅读</small>
-          </div>
-          {post.tags.length > 0 && (
-            <div className="article-tags" aria-label="文章标签">
-              {post.tags.map((tag) => (
-                <a href={`/posts/page/1?category=${encodeURIComponent(post.category)}&tag=${encodeURIComponent(tag)}`} key={tag}>
-                  {tag}
-                </a>
-              ))}
-            </div>
-          )}
-        </div>
-      </header>
-
-      {outlineItems.length > 0 && (
-        <nav className="article-toc" aria-label="文章目录">
-          <strong>目录</strong>
-          {outlineItems.map((item) => (
-            <span className={`toc-level-${item.level}`} key={item.id}>{item.title}</span>
-          ))}
-        </nav>
-      )}
-
-      {passageAnchor && (
-        <p className="passage-anchor-notice">
-          已从星图定位到文段锚点：{passageAnchor}
-        </p>
-      )}
-
-      <MarkdownBody markdown={markdown} passageAnchors={starfieldPassageAnchors} />
-
-      <nav className="article-neighbors" aria-label="相邻文章">
-        {previousPost ? (
-          <a href={`/posts/${previousPost.slug}`}>
-            <small>上一篇</small>
-            {previousPost.title}
-          </a>
-        ) : (
-          <span />
-        )}
-        {nextPost ? (
-          <a href={`/posts/${nextPost.slug}`}>
-            <small>下一篇</small>
-            {nextPost.title}
-          </a>
-        ) : (
-          <span />
-        )}
-      </nav>
-
-      {relatedPosts.length > 0 && (
-        <section className="related-posts" aria-label="相关文章">
-          <SectionHeading eyebrow="Related" title="相关文章" />
-          <div className="listing-grid listing-grid-compact">
-            {relatedPosts.map((relatedPost) => (
-              <PostListItem key={relatedPost.slug} post={relatedPost} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      <ArticleComments slug={post.slug} />
-    </article>
-  );
-}
-
-function NotFoundPage() {
-  return (
-    <section className="content-section not-found-page">
-      <SectionHeading eyebrow="404" title="没有找到这页" />
-      <p>这条路径暂时没有内容，可以回到首页或浏览全部文章。</p>
-      <div className="hero-actions">
-        <a className="primary-action" href="/">
-          返回首页
-        </a>
-        <a className="secondary-action" href="/posts/page/1">
-          全部文章
-        </a>
-      </div>
-    </section>
-  );
-}
-
-function SectionHeading({
-  action,
-  eyebrow,
-  title,
-}: {
-  action?: React.ReactNode;
-  eyebrow: string;
-  title: string;
-}) {
-  return (
-    <div className="section-heading">
-      <span>
-        <Feather size={16} />
-        {eyebrow}
-      </span>
-      <h2>{title}</h2>
-      {action}
-    </div>
-  );
-}
-
 export default App;
+
 
