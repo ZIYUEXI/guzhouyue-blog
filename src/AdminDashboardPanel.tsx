@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Bot, ChevronRight, FileText, Image as ImageIcon, Orbit, Plus, Settings, SquareTerminal, Sun } from 'lucide-react';
-import { fetchAdminOps, type ApiAdminOps } from './apiClient';
+import { Bell, Bot, ChevronRight, CloudUpload, FileText, Image as ImageIcon, Orbit, Plus, Settings, SquareTerminal, Sun } from 'lucide-react';
+import { fetchAdminOps, fetchAdminPublicDeployTask, publishAdminPublicSnapshot, type ApiAdminOps, type ApiPublicDeployTask } from './apiClient';
 import type { SiteContent } from './contentStore';
 import { sortPosts, type ArchiveGroup } from './lib/postUtils';
 import type { Post } from './posts';
@@ -12,6 +12,7 @@ type AdminPanelId =
   | 'posts'
   | 'trash'
   | 'comments'
+  | 'private-memos'
   | 'notes'
   | 'series'
   | 'gallery'
@@ -45,8 +46,12 @@ export function AdminDashboardPanel({
   const unsyncedPostCount = content.posts.filter((post) => post.syncStatus === 'local-only').length;
   const [ops, setOps] = useState<ApiAdminOps | null>(null);
   const [opsStatus, setOpsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [deployStatus, setDeployStatus] = useState<'idle' | 'publishing' | 'success' | 'error'>('idle');
+  const [deployTask, setDeployTask] = useState<ApiPublicDeployTask | null>(null);
+  const [deployMessage, setDeployMessage] = useState('');
   const quickActions: Array<{ label: string; detail: string; panel: AdminPanelId; icon: ReactNode }> = [
     { label: '整理文章', detail: '搜索、预览、编辑和删除', panel: 'posts', icon: <FileText size={18} /> },
+    { label: '私人备忘', detail: '待办、提醒和临时想法', panel: 'private-memos', icon: <Bell size={18} /> },
     { label: '维护图库', detail: `${content.galleryAlbums.length} 个相册，${galleryImageCount} 张图片`, panel: 'gallery', icon: <ImageIcon size={18} /> },
     { label: '星图生成', detail: 'Passage 切割与标签生成', panel: 'starfield-generate', icon: <Orbit size={18} /> },
     { label: '快速指令', detail: '管理员指令通道框架', panel: 'commands', icon: <SquareTerminal size={18} /> },
@@ -75,6 +80,61 @@ export function AdminDashboardPanel({
       cancelled = true;
     };
   }, []);
+
+  const handlePublishPublicSnapshot = async () => {
+    if (deployStatus === 'publishing') {
+      return;
+    }
+
+    setDeployStatus('publishing');
+    setDeployTask(null);
+    setDeployMessage('');
+    try {
+      const task = await publishAdminPublicSnapshot();
+      setDeployTask(task);
+      setDeployMessage('发布任务已开始，正在读取 Git 日志。');
+    } catch (error) {
+      setDeployTask(null);
+      setDeployMessage(error instanceof Error ? error.message : '发布失败');
+      setDeployStatus('error');
+    }
+  };
+
+  useEffect(() => {
+    if (!deployTask || !['pending', 'running'].includes(deployTask.status)) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      fetchAdminPublicDeployTask(deployTask.id)
+        .then((task) => {
+          if (cancelled) {
+            return;
+          }
+          setDeployTask(task);
+          if (task.status === 'succeeded') {
+            setDeployStatus('success');
+            setDeployMessage(task.result?.message ?? '发布完成');
+          }
+          if (task.status === 'failed') {
+            setDeployStatus('error');
+            setDeployMessage(task.error || '发布失败');
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setDeployStatus('error');
+            setDeployMessage(error instanceof Error ? error.message : '读取发布日志失败');
+          }
+        });
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [deployTask]);
 
   return (
     <section className="admin-panel admin-dashboard" aria-label="管理总览">
@@ -161,6 +221,22 @@ export function AdminDashboardPanel({
               <small>{formatCount(ops?.llmTokenUsage?.totalTokens ?? 0)} token · {formatCount(ops?.llmTokenUsage?.totalCalls ?? 0)} 次调用</small>
             </div>
           </div>
+          <div className="admin-public-deploy">
+            <div>
+              <strong>发布到 Cloudflare</strong>
+              <small>{deployTask?.result?.commit ? `最新提交 ${deployTask.result.commit}` : '同步文章、评论、图库和星图快照'}</small>
+            </div>
+            <button className="primary-action" type="button" onClick={handlePublishPublicSnapshot} disabled={deployStatus === 'publishing'}>
+              <CloudUpload size={17} />
+              {deployStatus === 'publishing' ? '发布中' : '发布静态站'}
+            </button>
+          </div>
+          {deployMessage ? (
+            <p className={`admin-public-deploy-message${deployStatus === 'error' ? ' is-error' : ''}`}>{deployMessage}</p>
+          ) : null}
+          {deployTask?.logs?.length ? (
+            <pre className="admin-public-deploy-log">{deployTask.logs.join('\n')}</pre>
+          ) : null}
         </section>
 
         <section className="admin-dashboard-section">

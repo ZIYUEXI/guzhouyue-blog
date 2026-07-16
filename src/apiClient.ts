@@ -7,12 +7,15 @@ type JsonRecord = Record<string, unknown>;
 export class ApiError extends Error {
   status: number;
   path: string;
+  detail: unknown;
 
-  constructor(status: number, path: string) {
-    super(`API ${status}: ${path}`);
+  constructor(status: number, path: string, detail?: unknown) {
+    const message = typeof detail === 'string' ? detail : `API ${status}: ${path}`;
+    super(message);
     this.name = 'ApiError';
     this.status = status;
     this.path = path;
+    this.detail = detail;
   }
 }
 
@@ -38,6 +41,30 @@ export type ApiAdminTag = {
 export type ApiAdminTagMutationPayload = {
   updatedCount: number;
   articles: unknown[];
+};
+
+export type ApiPrivateMemoStatus = 'open' | 'done';
+
+export type ApiPrivateMemoNode = {
+  id: string;
+  memoId: string;
+  text: string;
+  status: ApiPrivateMemoStatus;
+  createdAt: string;
+};
+
+export type ApiPrivateMemoItem = {
+  id: string;
+  text: string;
+  status: ApiPrivateMemoStatus;
+  reminderAt: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  nodes: ApiPrivateMemoNode[];
 };
 
 export type ApiGalleryImagesPayload = {
@@ -239,6 +266,25 @@ export type ApiAdminOps = {
   llmTokenUsage?: ApiLlmTokenUsageSummary;
 };
 
+export type ApiPublicDeployResult = {
+  ok: boolean;
+  changed: boolean;
+  message: string;
+  repo: string;
+  branch: string;
+  commit: string;
+};
+
+export type ApiPublicDeployTask = {
+  id: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+  logs: string[];
+  result: ApiPublicDeployResult | null;
+  error: string;
+};
+
 export type LlmProvider = 'deepseek' | 'openai' | 'anthropic' | 'google' | 'moonshot' | 'qwen' | 'zhipu' | 'custom';
 
 export type ApiLlmConfig = {
@@ -414,6 +460,51 @@ const jsonHeaders = {
   'Content-Type': 'application/json; charset=utf-8',
 };
 
+const publicDataSource = (import.meta.env.VITE_PUBLIC_DATA_SOURCE ?? 'api') as 'api' | 'static' | 'hybrid';
+
+async function requestStaticJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, {
+    headers: { Accept: 'application/json' },
+    cache: 'no-cache',
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, path, await readErrorDetail(response));
+  }
+
+  return (await response.json()) as T;
+}
+
+async function readErrorDetail(response: Response) {
+  try {
+    const payload = await response.clone().json();
+    if (typeof payload?.detail?.error === 'string') {
+      return payload.detail.error;
+    }
+    if (typeof payload?.error === 'string') {
+      return payload.error;
+    }
+    return payload;
+  } catch {
+    return response.statusText;
+  }
+}
+
+async function requestPublicJson<T>(apiPath: string, snapshotPath: string): Promise<T> {
+  if (publicDataSource === 'static') {
+    return requestStaticJson<T>(snapshotPath);
+  }
+
+  try {
+    return await requestJson<T>(apiPath);
+  } catch (error) {
+    if (publicDataSource === 'hybrid') {
+      return requestStaticJson<T>(snapshotPath);
+    }
+    throw error;
+  }
+}
+
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const headers = new Headers(isFormData ? { Accept: 'application/json' } : jsonHeaders);
@@ -440,21 +531,21 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
 }
 
 export async function fetchPublicSite() {
-  return requestJson<ApiSitePayload>('/api/site');
+  return requestPublicJson<ApiSitePayload>('/api/site', '/data/site.json');
 }
 
 export async function fetchPublicArticles() {
-  const payload = await requestJson<ApiArticlesPayload | unknown[]>('/api/articles?pageSize=1000');
+  const payload = await requestPublicJson<ApiArticlesPayload | unknown[]>('/api/articles?pageSize=1000', '/data/articles.json');
   return Array.isArray(payload) ? payload : payload.items ?? [];
 }
 
 export async function fetchPublicGallery() {
-  const payload = await requestJson<unknown[] | { items?: unknown[] }>('/api/gallery');
+  const payload = await requestPublicJson<unknown[] | { items?: unknown[] }>('/api/gallery', '/data/gallery.json');
   return Array.isArray(payload) ? payload : payload.items ?? [];
 }
 
 export async function fetchPublicStarfield() {
-  const payload = await requestJson<ApiStarfieldPayload>('/api/starfield');
+  const payload = await requestPublicJson<ApiStarfieldPayload>('/api/starfield', '/data/starfield.json');
   return {
     version: payload.version ?? null,
     passages: (payload.passages ?? []).map(normalizeStarfieldPassage).filter((passage): passage is ApiStarfieldPassage => passage !== null),
@@ -464,21 +555,44 @@ export async function fetchPublicStarfield() {
 }
 
 export async function fetchPublicGalleryAlbumImages(albumIdOrSlug: string, options: { page?: number; pageSize?: number } = {}) {
+  const page = options.page ?? 1;
+  const pageSize = options.pageSize ?? 24;
   const params = new URLSearchParams({
-    page: String(options.page ?? 1),
-    pageSize: String(options.pageSize ?? 24),
+    page: String(page),
+    pageSize: String(pageSize),
   });
-  const payload = await requestJson<ApiGalleryImagesPayload>(
-    `/api/gallery/albums/${encodeURIComponent(albumIdOrSlug)}/images?${params.toString()}`,
-  );
-  const images = Array.isArray(payload.items) ? payload.items : [];
 
+  if (publicDataSource !== 'static') {
+    try {
+      const payload = await requestJson<ApiGalleryImagesPayload>(
+        `/api/gallery/albums/${encodeURIComponent(albumIdOrSlug)}/images?${params.toString()}`,
+      );
+      const images = Array.isArray(payload.items) ? payload.items : [];
+      return {
+        items: images,
+        page: asNumber(payload.page, page),
+        pageSize: asNumber(payload.pageSize, pageSize),
+        pageCount: asNumber(payload.pageCount, 1),
+        total: asNumber(payload.total, images.length),
+      };
+    } catch (error) {
+      if (publicDataSource !== 'hybrid') {
+        throw error;
+      }
+    }
+  }
+
+  const snapshot = await requestStaticJson<{ items?: GalleryAlbum[] }>('/data/gallery.json');
+  const album = (snapshot.items ?? []).find((item) => item.id === albumIdOrSlug || item.slug === albumIdOrSlug);
+  const allImages = album?.images ?? [];
+  const start = (page - 1) * pageSize;
+  const images = allImages.slice(start, start + pageSize);
   return {
     items: images,
-    page: asNumber(payload.page, options.page ?? 1),
-    pageSize: asNumber(payload.pageSize, options.pageSize ?? 24),
-    pageCount: asNumber(payload.pageCount, 1),
-    total: asNumber(payload.total, images.length),
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(allImages.length / pageSize)),
+    total: allImages.length,
   };
 }
 
@@ -672,8 +786,24 @@ export async function deleteAdminGalleryImage(id: string) {
 }
 
 export async function fetchArticleComments(slug: string) {
-  const payload = await requestJson<unknown[] | { items?: unknown[] }>(`/api/articles/${encodeURIComponent(slug)}/comments`);
-  const comments = Array.isArray(payload) ? payload : payload.items ?? [];
+  let comments: unknown[] = [];
+  let shouldReadSnapshot = publicDataSource === 'static';
+  if (publicDataSource !== 'static') {
+    try {
+      const payload = await requestJson<unknown[] | { items?: unknown[] }>(`/api/articles/${encodeURIComponent(slug)}/comments`);
+      comments = Array.isArray(payload) ? payload : payload.items ?? [];
+    } catch (error) {
+      if (publicDataSource !== 'hybrid') {
+        throw error;
+      }
+      shouldReadSnapshot = true;
+    }
+  }
+
+  if (shouldReadSnapshot) {
+    const snapshot = await requestStaticJson<{ articles?: Record<string, unknown[]> }>('/data/comments.json');
+    comments = snapshot.articles?.[slug] ?? [];
+  }
   return comments.map(normalizeComment).filter((comment): comment is ApiComment => comment !== null);
 }
 
@@ -694,6 +824,53 @@ export async function fetchAdminComments(status: AdminCommentStatus) {
 
 export async function fetchAdminOps() {
   return requestJson<ApiAdminOps>('/api/admin/ops');
+}
+
+export async function publishAdminPublicSnapshot() {
+  return requestJson<ApiPublicDeployTask>('/api/admin/public-deploy', {
+    method: 'POST',
+  });
+}
+
+export async function fetchAdminPublicDeployTask(id: string) {
+  return requestJson<ApiPublicDeployTask>(`/api/admin/public-deploy/${encodeURIComponent(id)}`);
+}
+
+export async function fetchAdminPrivateMemos(status: ApiPrivateMemoStatus | 'all' = 'all') {
+  const params = new URLSearchParams({ status, limit: '300' });
+  const payload = await requestJson<{ items?: unknown[] }>(`/api/admin/private-memos?${params.toString()}`);
+  return (payload.items ?? []).map(normalizePrivateMemoItem).filter((item): item is ApiPrivateMemoItem => item !== null);
+}
+
+export async function createAdminPrivateMemo(payload: {
+  text: string;
+  reminderAt?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  pinned?: boolean;
+}) {
+  return normalizePrivateMemoItem(await requestJson<unknown>('/api/admin/private-memos', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }));
+}
+
+export async function updateAdminPrivateMemo(
+  id: string,
+  payload: Partial<Pick<ApiPrivateMemoItem, 'text' | 'status' | 'reminderAt' | 'startedAt' | 'endedAt' | 'pinned'>> & {
+    nodeText?: string;
+  },
+) {
+  return normalizePrivateMemoItem(await requestJson<unknown>(`/api/admin/private-memos/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  }));
+}
+
+export async function deleteAdminPrivateMemo(id: string) {
+  await requestJson<void>(`/api/admin/private-memos/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function fetchAdminLlmConfig() {
@@ -1048,6 +1225,53 @@ export function normalizeApiGalleryAlbum(value: unknown): GalleryAlbum | null {
     createdAt: asText(value.createdAt),
     updatedAt: asText(value.updatedAt),
     images,
+  };
+}
+
+function normalizePrivateMemoItem(value: unknown): ApiPrivateMemoItem | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  const text = asText(value.text);
+  if (!id || !text) {
+    return null;
+  }
+
+  const status = normalizePrivateMemoStatus(asText(value.status));
+  return {
+    id,
+    text,
+    status,
+    reminderAt: asText(value.reminderAt) || null,
+    startedAt: asText(value.startedAt) || null,
+    endedAt: asText(value.endedAt) || null,
+    pinned: asBoolean(value.pinned, false),
+    createdAt: asText(value.createdAt),
+    updatedAt: asText(value.updatedAt),
+    completedAt: asText(value.completedAt) || null,
+    nodes: Array.isArray(value.nodes) ? value.nodes.map(normalizePrivateMemoNode).filter((node): node is ApiPrivateMemoNode => node !== null) : [],
+  };
+}
+
+function normalizePrivateMemoNode(value: unknown): ApiPrivateMemoNode | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = asText(value.id);
+  const text = asText(value.text);
+  if (!id || !text) {
+    return null;
+  }
+
+  return {
+    id,
+    memoId: asText(value.memoId),
+    text,
+    status: normalizePrivateMemoStatus(asText(value.status)),
+    createdAt: asText(value.createdAt),
   };
 }
 
@@ -1417,6 +1641,10 @@ function normalizePostStatus(value: string): PostStatus {
 
 function normalizeCommentStatus(value: string): AdminCommentStatus {
   return value === 'approved' || value === 'rejected' || value === 'pending' ? value : 'pending';
+}
+
+function normalizePrivateMemoStatus(value: string): ApiPrivateMemoStatus {
+  return value === 'done' || value === 'archived' ? 'done' : 'open';
 }
 
 function normalizeRelationshipType(value: string): ApiStarfieldRelationship['relationshipType'] {

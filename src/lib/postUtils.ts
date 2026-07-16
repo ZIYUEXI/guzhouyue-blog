@@ -1,4 +1,5 @@
 import type { Post, PostStatus } from '../posts';
+import { normalizeLooseCodeFences } from './markdownUtils';
 
 export type ArchiveGroup = {
   month: string;
@@ -236,5 +237,5 @@ export function getPostMarkdown(post: Post) {
 }
 
 export function normalizeMarkdown(value: string) {
-  return value.trim() || '这里还没有正文。';
+  return normalizeLooseCodeFences(value).trim() || '这里还没有正文。';
 }

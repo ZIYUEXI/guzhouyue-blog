@@ -9,6 +9,7 @@
 - `COOKIE_SECURE=true`：HTTPS 部署时启用安全 Cookie。
 - `DATABASE_PATH`：SQLite 数据库路径。
 - `GALLERY_UPLOAD_DIR`：图库上传目录。
+- `MAX_GALLERY_IMAGE_BYTES`：图库单张上传大小上限，默认 25165824，也就是 24MB。
 - `SERVER_HOST`、`SERVER_PORT`：后端监听地址和端口。
 - `PYTHON_COMMAND`、`ALMANAC_TIMEOUT_MS`：黄历脚本运行配置。
 

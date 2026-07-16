@@ -1,0 +1,151 @@
+{
+  "settings": {
+    "stylePreset": "classic",
+    "ownerName": "紫月汐",
+    "ownerAvatarUrl": "/uploads/gallery/system-image-guzhouyue-avatar-mq3ir2qs-56b28a6f9fa0b785.png",
+    "updatedAt": "2026-06-12T08:44:58.930Z"
+  },
+  "homepage": {
+    "siteName": "孤舟月",
+    "siteTagline": "一叶孤舟，照见人间月色",
+    "heroTitle": "孤舟月",
+    "heroSubtitle": "写给长夜、山河与代码的私人札记。",
+    "primaryCta": "读最新文章",
+    "secondaryCta": "查看归档",
+    "seasonAuto": true,
+    "seasonTitle": "今日 · 小满前",
+    "seasonText": "宜：读书、夜行、写字",
+    "latestEyebrow": "Latest",
+    "latestTitle": "近来所写",
+    "topicsEyebrow": "Topics",
+    "topicsTitle": "沿水而行",
+    "seriesEyebrow": "Series",
+    "seriesTitle": "长夜一卷",
+    "seriesLead": "从一篇文章开始，慢慢读完整个月亮。",
+    "seriesBody": "这里会收束长文、系列和持续更新的专题，把散落的札记整理成可以一路读下去的路径。",
+    "archiveEyebrow": "Archive",
+    "archiveTitle": "旧日可寻",
+    "aboutEyebrow": "About",
+    "aboutTitle": "关于孤舟月",
+    "aboutBody": "这里先是一处前端完整的静态博客入口，后续可以接入文章 API、Markdown 渲染、RSS、归档检索和后台编辑。现在的重点，是让站点先拥有清晰的气质、结构和交互。",
+    "footerSlogan": "孤舟泊处，月色自来。",
+    "updatedAt": "2026-06-15T01:52:21.714Z"
+  },
+  "noteSections": [
+    {
+      "id": "section_网络安全",
+      "name": "网络安全",
+      "category": "网络安全",
+      "slug": "网络安全",
+      "description": "Web 安全、网络协议与攻防记录",
+      "sortOrder": 0,
+      "createdAt": "2026-06-08T05:36:36.170Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    },
+    {
+      "id": "section_游戏开发",
+      "name": "游戏开发",
+      "category": "游戏开发",
+      "slug": "游戏开发",
+      "description": "Unity、UE、Pygame 与玩法系统笔记",
+      "sortOrder": 1,
+      "createdAt": "2026-06-08T05:36:36.170Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    },
+    {
+      "id": "section_人工智能",
+      "name": "人工智能",
+      "category": "人工智能",
+      "slug": "人工智能",
+      "description": "模型、智能体和数据建模学习",
+      "sortOrder": 2,
+      "createdAt": "2026-06-08T05:36:36.170Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    },
+    {
+      "id": "section_生活备考",
+      "name": "生活备考",
+      "category": "生活备考",
+      "slug": "生活备考",
+      "description": "考试错题和日常整理",
+      "sortOrder": 3,
+      "createdAt": "2026-06-08T05:36:36.170Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    },
+    {
+      "id": "section_数据库",
+      "name": "数据库",
+      "category": "数据库",
+      "slug": "数据库",
+      "description": "数据库系统与项目文档",
+      "sortOrder": 4,
+      "createdAt": "2026-06-08T05:36:36.170Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    },
+    {
+      "id": "section_技术笔记",
+      "name": "技术笔记",
+      "category": "技术笔记",
+      "slug": "技术笔记",
+      "description": "记录前端、后端、工程化与系统设计实践。",
+      "sortOrder": 5,
+      "createdAt": "2026-06-08T05:36:36.170Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    },
+    {
+      "id": "section_mqoutwsr_9c800ght",
+      "name": "工业设计",
+      "category": "工业设计",
+      "slug": "工业设计",
+      "description": "记录一些结构力学等工业设计知识",
+      "sortOrder": 6,
+      "createdAt": "2026-06-22T06:48:43.095Z",
+      "updatedAt": "2026-06-29T04:23:30.661Z"
+    }
+  ],
+  "featuredSeries": [
+    {
+      "id": "long-night-volume",
+      "title": "长夜一卷",
+      "lead": "从一篇文章开始，慢慢读完整个月亮。",
+      "body": "这里会收束长文、系列和持续更新的专题，把散落的札记整理成可以一路读下去的路径。",
+      "sortOrder": 0,
+      "postSlugs": [],
+      "articles": [],
+      "createdAt": "2026-06-15T01:52:21.714Z",
+      "updatedAt": "2026-06-15T01:52:21.714Z"
+    }
+  ],
+  "almanac": {
+    "date": "2026-07-01",
+    "weekDay": "星期三",
+    "lunarYear": "二零二六",
+    "lunarMonth": "五月小",
+    "lunarDay": "十七",
+    "zodiac": "马",
+    "solarTerm": "",
+    "nextSolarTerm": "小暑",
+    "nextSolarTermDate": "2026-07-07",
+    "dayGanzhi": "丙子",
+    "monthGanzhi": "甲午",
+    "yearGanzhi": "丙午",
+    "zodiacClash": "鼠日冲马",
+    "levelName": "从忌不从宜",
+    "goodThings": [
+      "祭祀",
+      "沐浴",
+      "覃恩",
+      "恤孤茕",
+      "雪冤"
+    ],
+    "badThings": [
+      "出行",
+      "结婚姻",
+      "宴会",
+      "嫁娶",
+      "安床",
+      "剃头"
+    ],
+    "source": "cnlunar"
+  }
+}

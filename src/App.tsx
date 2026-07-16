@@ -1,5 +1,6 @@
 import {
   Bot,
+  Bell,
   CalendarDays,
   ChevronRight,
   Code2,
@@ -43,6 +44,7 @@ import type {
 } from 'react';
 import { AdminCommandPanel } from './AdminCommandPanel';
 import { AdminDashboardPanel } from './AdminDashboardPanel';
+import { AdminPrivateMemoPanel, PrivateMemoReminderToast } from './AdminPrivateMemoPanel';
 import { AdminPostsPanel } from './AdminPostsPanel';
 import { AdminStarfieldPanel } from './AdminStarfieldPanel';
 import { AdminTagsPanel } from './AdminTagsPanel';
@@ -71,8 +73,8 @@ import { StarfieldPage } from './StarfieldPage';
 import type { RichMarkdownEditorHandle } from './RichMarkdownEditor';
 import {
   defaultSiteContent,
-  emptySiteContent,
   ensureSystemGalleryAlbums,
+  readSiteContent,
   resetSiteContent,
   saveSiteContent,
   type HomepageCopy,
@@ -103,6 +105,7 @@ import {
   fetchPublicSite,
   generateAdminArticleMetadata,
   fetchAdminDeletedArticles,
+  fetchAdminPrivateMemos,
   loginAdmin,
   logoutAdmin,
   mergeAdminTags,
@@ -131,6 +134,7 @@ import {
   type AdminCommentStatus,
   type ApiArticleMetadataSuggestion,
   type ApiAdminComment,
+  type ApiPrivateMemoItem,
   type ApiLlmConnectionTestResult,
   type ApiLlmConfig,
   type ApiLlmTokenUsagePayload,
@@ -206,6 +210,7 @@ import {
   isSupportedComposerImageFile,
   isSystemGalleryAlbum,
   normalizeGalleryImageOrder,
+  prepareComposerImageForUpload,
   sortGalleryAlbums,
   sortGalleryImages,
   withGalleryAlbumImages,
@@ -220,6 +225,7 @@ const adminPostsPerPage = 8;
 const adminSeriesPerPage = 1;
 const composerImageAlbumSlug = 'article-images';
 const composerImageAlbumTitle = '文章配图';
+const imageUploadConcurrency = 3;
 
 function makeClientId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -234,8 +240,49 @@ function isProductionPublicRuntime() {
   return !['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+) {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    }),
+  );
+
+  return results;
+}
+
+function getPublicDataSource() {
+  return import.meta.env.VITE_PUBLIC_DATA_SOURCE ?? 'api';
+}
+
+function getConfiguredAdminOrigin() {
+  return (import.meta.env.VITE_ADMIN_ORIGIN ?? '').replace(/\/+$/, '');
+}
+
+function getExternalAdminUrl(pathname: string, search: string) {
+  const adminOrigin = getConfiguredAdminOrigin();
+  if (!adminOrigin || getPublicDataSource() !== 'static' || typeof window === 'undefined') {
+    return '';
+  }
+  if (window.location.origin === adminOrigin) {
+    return '';
+  }
+  return `${adminOrigin}${pathname}${search}`;
+}
+
 function readInitialSiteContent() {
-  return emptySiteContent;
+  return readSiteContent();
 }
 
 function App() {
@@ -254,7 +301,14 @@ function App() {
   const searchParams = new URLSearchParams(window.location.search);
   const category = searchParams.get('category');
   const tag = searchParams.get('tag');
-  const isAdminRoute = isAdminPath(pathname);
+  const externalAdminUrl = isAdminPath(pathname) ? getExternalAdminUrl(pathname, window.location.search) : '';
+  const isAdminRoute = isAdminPath(pathname) && !externalAdminUrl;
+
+  useEffect(() => {
+    if (externalAdminUrl) {
+      window.location.replace(externalAdminUrl);
+    }
+  }, [externalAdminUrl]);
 
   useEffect(() => {
     function handleLocationChange() {
@@ -359,6 +413,7 @@ function App() {
         setContent(nextContent);
         setSettings(nextSettings);
         setDataSourceNotice('');
+        saveSiteContent(nextContent);
         saveSiteSettings(nextSettings);
       } catch {
         if (isAdminRoute && !cancelled) {
@@ -366,7 +421,7 @@ function App() {
           setAdminContentStatus('error');
         }
         if (!cancelled && !isAdminRoute) {
-          setDataSourceNotice('暂时无法连接数据库内容接口，文章、分类和标签未加载。');
+          setDataSourceNotice('暂时无法连接数据库内容接口，正在显示此浏览器上次保存的内容。');
         }
       }
     }
@@ -412,6 +467,11 @@ function App() {
   const activeSystemGalleryImages = useMemo(() => getSystemGalleryImageUrls(content.galleryAlbums), [content.galleryAlbums]);
   const heroImage = activeSystemGalleryImages[settings.stylePreset] ?? stylePresetAssets[settings.stylePreset].heroImage;
   const ownerAvatarUrl = getActiveOwnerAvatarUrl(settings.ownerAvatarUrl, activeSystemGalleryImages);
+  const adminHomeUrl = getExternalAdminUrl('/admin', '') || '/admin';
+
+  if (externalAdminUrl) {
+    return <ExternalAdminRedirectPage url={externalAdminUrl} />;
+  }
 
   if (isAdminRoute) {
     if (adminAuthStatus !== 'authenticated') {
@@ -452,6 +512,7 @@ function App() {
         homepage={content.homepage}
         colorScheme={colorScheme}
         ownerAuthenticated={ownerAuthenticated}
+        adminHref={adminHomeUrl}
         menuOpen={menuOpen}
         onMenuToggle={() => setMenuOpen((value) => !value)}
         onColorSchemeToggle={() => updateColorScheme(colorScheme === 'light' ? 'dark' : 'light')}
@@ -465,7 +526,7 @@ function App() {
             </a>
           ))}
           {ownerAuthenticated && (
-            <a href="/admin" onClick={() => setMenuOpen(false)}>
+            <a href={adminHomeUrl} onClick={() => setMenuOpen(false)}>
               后台
             </a>
           )}
@@ -511,6 +572,20 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function ExternalAdminRedirectPage({ url }: { url: string }) {
+  return (
+    <section className="content-section not-found-page">
+      <SectionHeading eyebrow="Admin" title="正在打开管理台" />
+      <p>管理台已迁移到独立入口。</p>
+      <div className="hero-actions">
+        <a className="primary-action" href={url}>
+          打开管理台
+        </a>
+      </div>
+    </section>
   );
 }
 
@@ -638,6 +713,8 @@ type ComposerDraft = {
 
 type ComposerDraftData = Omit<ComposerDraft, 'savedAt'>;
 
+const composerAutosaveIntervalMs = 15_000;
+
 function getComposerDraftKey(slug?: string) {
   return `guzhouyue.composerDraft:${slug || 'new'}`;
 }
@@ -757,6 +834,7 @@ type AdminPanelId =
   | 'trash'
   | 'tags'
   | 'comments'
+  | 'private-memos'
   | 'notes'
   | 'series'
   | 'gallery'
@@ -776,6 +854,7 @@ const adminPanelIds = new Set<AdminPanelId>([
   'trash',
   'tags',
   'comments',
+  'private-memos',
   'notes',
   'series',
   'gallery',
@@ -867,6 +946,8 @@ function AdminPage({
   const [activePanel, setActivePanel] = useState<AdminPanelId>(() => getAdminPanelFromUrl());
   const [deletedPosts, setDeletedPosts] = useState<Post[]>([]);
   const [adminTags, setAdminTags] = useState(() => buildLocalAdminTags(content.posts));
+  const [privateMemoItems, setPrivateMemoItems] = useState<ApiPrivateMemoItem[]>([]);
+  const [privateMemoNotice, setPrivateMemoNotice] = useState('');
   const [trashNotice, setTrashNotice] = useState('');
   const archiveGroups = buildArchive(content.posts);
   const editPostSlug = getAdminEditPostSlug(window.location.pathname);
@@ -938,6 +1019,33 @@ function AdminPage({
       cancelled = true;
     };
   }, [content.posts, isPostComposerRoute]);
+
+  useEffect(() => {
+    if (isPostComposerRoute) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadPrivateMemos() {
+      try {
+        const memoItems = await fetchAdminPrivateMemos('all');
+        if (!cancelled) {
+          setPrivateMemoItems(memoItems);
+          setPrivateMemoNotice('');
+        }
+      } catch {
+        if (!cancelled) {
+          setPrivateMemoNotice('私人备忘暂时无法连接后台。');
+        }
+      }
+    }
+
+    void loadPrivateMemos();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPostComposerRoute]);
 
   useEffect(() => {
     return () => {
@@ -1406,20 +1514,19 @@ function AdminPage({
       return;
     }
 
-    const uploadedImages: GalleryImage[] = [];
-
-    for (const file of files) {
+    const uploadedImages = (await mapWithConcurrency(files, imageUploadConcurrency, async (file, index) => {
       try {
-        const savedImage = await uploadAdminGalleryImage(album.id || album.slug, file, {
+        const uploadFile = await prepareComposerImageForUpload(file);
+        return await uploadAdminGalleryImage(album.id || album.slug, uploadFile, {
           title: file.name.replace(/\.[^.]+$/, ''),
-          sortOrder: album.images.length + uploadedImages.length,
+          sortOrder: album.images.length + index,
           isPublic: true,
         });
-        uploadedImages.push(savedImage);
       } catch {
         // 单张上传失败时跳过，已成功的图片继续保留。
+        return null;
       }
-    }
+    })).filter((image): image is GalleryImage => image !== null);
 
     if (uploadedImages.length === 0) {
       return;
@@ -1460,16 +1567,14 @@ function AdminPage({
       nextAlbums = [...nextAlbums, targetAlbum];
     }
 
-    const uploadedImages: GalleryImage[] = [];
-
-    for (const file of imageFiles) {
-      const savedImage = await uploadAdminGalleryImage(targetAlbum.id || targetAlbum.slug, file, {
-        title: createComposerImageTitle(file, uploadedImages.length),
-        sortOrder: targetAlbum.images.length + uploadedImages.length,
+    const uploadedImages = await mapWithConcurrency(imageFiles, imageUploadConcurrency, async (file, index) => {
+      const uploadFile = await prepareComposerImageForUpload(file);
+      return uploadAdminGalleryImage(targetAlbum.id || targetAlbum.slug, uploadFile, {
+        title: createComposerImageTitle(file, index),
+        sortOrder: targetAlbum.images.length + index,
         isPublic: true,
       });
-      uploadedImages.push(savedImage);
-    }
+    });
 
     const nextImages = normalizeGalleryImageOrder([...targetAlbum.images, ...uploadedImages]);
     const nextAlbum = withGalleryAlbumImages(targetAlbum, nextImages);
@@ -1704,6 +1809,7 @@ function AdminPage({
                   { panel: 'tags', label: '标签管理', Icon: Tags, meta: `${adminTags.length} 个` },
                   { panel: 'trash', label: '回收站', Icon: Trash2, meta: `${deletedPosts.length} 篇` },
                   { panel: 'comments', label: '评论审核', Icon: MessageCircle, meta: '待处理' },
+                  { panel: 'private-memos', label: '私人备忘', Icon: Bell, meta: `${privateMemoItems.filter((item) => item.status === 'open').length} 条未完成` },
                   { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
                   { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
                   { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
@@ -1775,6 +1881,13 @@ function AdminPage({
                 )}
 
                 {activePanel === 'comments' && <AdminCommentsPanel />}
+
+                {activePanel === 'private-memos' && (
+                  <AdminPrivateMemoPanel
+                    items={privateMemoItems}
+                    onItemsChange={setPrivateMemoItems}
+                  />
+                )}
 
                 {activePanel === 'notes' && (
                   <AdminNotesPanel
@@ -1853,6 +1966,12 @@ function AdminPage({
                 )}
               </div>
             </section>
+            {privateMemoNotice && <p className="admin-batch-notice">{privateMemoNotice}</p>}
+            <PrivateMemoReminderToast
+              items={privateMemoItems}
+              onItemsChange={setPrivateMemoItems}
+              onOpenPanel={() => selectAdminPanel('private-memos')}
+            />
           </>
         )}
       </main>
@@ -2274,6 +2393,7 @@ function AdminPostComposer({
   const [draggingHeadingId, setDraggingHeadingId] = useState('');
   const [isComposerImageDragging, setIsComposerImageDragging] = useState(false);
   const [composerImageUploadCount, setComposerImageUploadCount] = useState(0);
+  const [composerImageUploadMessage, setComposerImageUploadMessage] = useState('');
   const [composerImageNotice, setComposerImageNotice] = useState('');
   const [aiAgentStatus, setAiAgentStatus] = useState<'idle' | 'generating' | 'ready' | 'error'>('idle');
   const [aiAgentNotice, setAiAgentNotice] = useState('');
@@ -2282,6 +2402,7 @@ function AdminPostComposer({
   const mdxEditorRef = useRef<RichMarkdownEditorHandle>(null);
   const skipNextWysiwygSyncRef = useRef(false);
   const paperRef = useRef<HTMLElement>(null);
+  const autosaveTimeoutRef = useRef<number | null>(null);
   const savedSnapshotRef = useRef('');
   const hydratedPostSnapshotRef = useRef('');
   const latestDraftRef = useRef<ComposerDraftData>({
@@ -2396,10 +2517,22 @@ function AdminPostComposer({
   );
   const currentSnapshot = useMemo(() => createComposerSnapshot(currentDraftData), [currentDraftData]);
 
+  function clearAutosaveTimeout() {
+    if (autosaveTimeoutRef.current === null) {
+      return;
+    }
+
+    window.clearTimeout(autosaveTimeoutRef.current);
+    autosaveTimeoutRef.current = null;
+  }
+
   async function saveDraftSnapshot(data = latestDraftRef.current, savedAt = new Date().toISOString()) {
     if (draftStatus === 'published') {
       return;
     }
+
+    clearAutosaveTimeout();
+    setDraftStatus('saving');
 
     const nextDraft: ComposerDraft = {
       bodyMarkdown: data.bodyMarkdown,
@@ -2418,31 +2551,29 @@ function AdminPostComposer({
       title: data.title,
       tone: data.tone,
     };
+    const savedSnapshot = createComposerSnapshot(data);
+    let nextDraftStatus: DraftStatus = 'draft-saved';
 
     try {
       const savedDraft = await saveAdminDraft(draftKey, nextDraft);
       window.localStorage.removeItem(draftKey);
       setLastDraftSavedAt(savedDraft?.savedAt || savedAt);
-      setDraftStatus('draft-saved');
     } catch {
       writeComposerDraft(draftKey, nextDraft);
       setLastDraftSavedAt(savedAt);
-      setDraftStatus('local-draft-saved');
+      nextDraftStatus = 'local-draft-saved';
     }
 
-    savedSnapshotRef.current = createComposerSnapshot(data);
+    savedSnapshotRef.current = savedSnapshot;
+    setDraftStatus(savedSnapshot === createComposerSnapshot(latestDraftRef.current) ? nextDraftStatus : 'dirty');
   }
 
-  function updateDraftField(nextData: Partial<ComposerDraftData>, options: { persistImmediately?: boolean } = {}) {
+  function updateDraftField(nextData: Partial<ComposerDraftData>) {
     latestDraftRef.current = {
       ...latestDraftRef.current,
       ...nextData,
     };
     setDraftStatus('dirty');
-
-    if (options.persistImmediately) {
-      void saveDraftSnapshot(latestDraftRef.current);
-    }
   }
 
   function updateTitle(nextTitle: string) {
@@ -2452,12 +2583,12 @@ function AdminPostComposer({
     if (!slugTouched) {
       setSlug(nextSlug);
     }
-    updateDraftField({ slug: nextSlug, title: nextTitle }, { persistImmediately: true });
+    updateDraftField({ slug: nextSlug, title: nextTitle });
   }
 
   function updateBodyMarkdown(nextMarkdown: string) {
     setBodyMarkdown(nextMarkdown);
-    updateDraftField({ bodyMarkdown: nextMarkdown }, { persistImmediately: true });
+    updateDraftField({ bodyMarkdown: nextMarkdown });
   }
 
   function updateBodyMarkdownFromWysiwyg(nextMarkdown: string) {
@@ -2479,7 +2610,7 @@ function AdminPostComposer({
     setter: Dispatch<SetStateAction<ComposerDraftData[K]>>,
   ) {
     setter(value);
-    updateDraftField({ [key]: value } as Pick<ComposerDraftData, K>, { persistImmediately: true });
+    updateDraftField({ [key]: value } as Pick<ComposerDraftData, K>);
   }
 
   function chooseCoverImage(nextCoverImage: string) {
@@ -2502,6 +2633,8 @@ function AdminPostComposer({
     if (!trimmedTitle) {
       return false;
     }
+
+    clearAutosaveTimeout();
 
     const nextPost: Post = {
       slug: createUniqueSlug(posts, slug || trimmedTitle, editingPost?.slug),
@@ -2540,6 +2673,7 @@ function AdminPostComposer({
     }
 
     setPublishNotice('');
+    clearAutosaveTimeout();
     clearComposerDraft(draftKey);
     void clearAdminDraft(draftKey).catch(() => undefined);
     savedSnapshotRef.current = currentSnapshot;
@@ -2622,6 +2756,23 @@ function AdminPostComposer({
     }, 0);
   }
 
+  function insertCodeBlockMarkdown() {
+    const snippet = '\n```ts\n\n```\n';
+
+    if (composerMode === 'wysiwyg') {
+      mdxEditorRef.current?.insertMarkdown(snippet);
+      mdxEditorRef.current?.focus();
+      setDraftStatus('dirty');
+      return;
+    }
+
+    insertMarkdown(snippet, -5);
+  }
+
+  function openFormulaBlockShortcut() {
+    openFormulaDialog('block');
+  }
+
   function createFormulaMarkdown(value: string, mode: FormulaMode) {
     const formula = value.trim();
     if (mode === 'inline') {
@@ -2663,6 +2814,13 @@ function AdminPostComposer({
 
   function createImageMarkdown(image: GalleryImage) {
     return `![${escapeMarkdownAltText(image.title || '图片')}](${image.imageUrl})`;
+  }
+
+  function getComposerImageUploadErrorMessage(error: unknown) {
+    if (error instanceof ApiError && error.status === 413) {
+      return '图片仍然太大，已超过后台允许大小。请换小一点的原图，或先裁剪后再上传。';
+    }
+    return '图片上传失败，请确认后台服务和登录状态。';
   }
 
   function insertImageMarkdownBlock(snippet: string, options: { closeGalleryPicker?: boolean } = {}) {
@@ -2711,7 +2869,8 @@ function AdminPostComposer({
 
     setIsComposerImageDragging(false);
     setComposerImageUploadCount(imageFiles.length);
-    setComposerImageNotice(`正在上传 ${imageFiles.length} 张图片...`);
+    setComposerImageUploadMessage(`正在处理并上传 ${imageFiles.length} 张图片`);
+    setComposerImageNotice('');
 
     try {
       const uploadedImages = await onUploadImages(imageFiles);
@@ -2722,10 +2881,11 @@ function AdminPostComposer({
 
       insertImageMarkdownBlock(uploadedImages.map(createImageMarkdown).join('\n\n'), { closeGalleryPicker: false });
       setComposerImageNotice(`${source === 'paste' ? '已粘贴' : '已拖入'} ${uploadedImages.length} 张图片。`);
-    } catch {
-      setComposerImageNotice('图片上传失败，请确认后台服务和登录状态。');
+    } catch (error) {
+      setComposerImageNotice(getComposerImageUploadErrorMessage(error));
     } finally {
       setComposerImageUploadCount(0);
+      setComposerImageUploadMessage('');
     }
   }
 
@@ -2805,14 +2965,14 @@ function AdminPostComposer({
     }
 
     setTags(nextTags);
-    updateDraftField({ tags: nextTags }, { persistImmediately: true });
+    updateDraftField({ tags: nextTags });
   }
 
   function removeTag(tagToRemove: string) {
     const nextTags = tags.filter((tag) => tag !== tagToRemove);
 
     setTags(nextTags);
-    updateDraftField({ tags: nextTags }, { persistImmediately: true });
+    updateDraftField({ tags: nextTags });
   }
 
   function commitTagInput() {
@@ -2900,6 +3060,12 @@ function AdminPostComposer({
       return true;
     }
 
+    if (event.key === 'Escape' && showShortcutHelp) {
+      event.preventDefault();
+      setShowShortcutHelp(false);
+      return true;
+    }
+
     if (event.key === 'Escape' && focusMode) {
       event.preventDefault();
       setFocusMode(false);
@@ -2912,9 +3078,22 @@ function AdminPostComposer({
     }
 
     const key = event.key.toLowerCase();
+    const isLetterKey = (letter: string) => key === letter || event.code === `Key${letter.toUpperCase()}`;
     if (key === 's') {
       event.preventDefault();
-      savePost();
+      void savePost();
+      return true;
+    }
+
+    if (event.altKey && isLetterKey('c')) {
+      event.preventDefault();
+      insertCodeBlockMarkdown();
+      return true;
+    }
+
+    if (event.altKey && isLetterKey('m')) {
+      event.preventDefault();
+      openFormulaBlockShortcut();
       return true;
     }
 
@@ -3189,15 +3368,20 @@ function AdminPostComposer({
 
   useEffect(() => {
     if (currentSnapshot === savedSnapshotRef.current || draftStatus === 'published') {
+      clearAutosaveTimeout();
       return undefined;
     }
 
-    setDraftStatus('saving');
-    const timeoutId = window.setTimeout(() => {
-      void saveDraftSnapshot();
-    }, 700);
+    if (autosaveTimeoutRef.current !== null) {
+      return undefined;
+    }
 
-    return () => window.clearTimeout(timeoutId);
+    autosaveTimeoutRef.current = window.setTimeout(() => {
+      autosaveTimeoutRef.current = null;
+      void saveDraftSnapshot();
+    }, composerAutosaveIntervalMs);
+
+    return undefined;
   }, [
     bodyMarkdown,
     category,
@@ -3217,6 +3401,22 @@ function AdminPostComposer({
     title,
     tone,
   ]);
+
+  useEffect(() => {
+    const textarea = markdownInputRef.current;
+    if (!textarea || composerMode !== 'markdown') {
+      return undefined;
+    }
+
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+
+    return () => {
+      textarea.style.height = '';
+    };
+  }, [bodyMarkdown, composerMode]);
+
+  useEffect(() => () => clearAutosaveTimeout(), []);
 
   useEffect(() => {
     function warnBeforeLeave(event: BeforeUnloadEvent) {
@@ -3420,7 +3620,7 @@ function AdminPostComposer({
             <a className="secondary-action" href={returnPath}>
               取消
             </a>
-            <button className="primary-action" type="submit">
+            <button className="primary-action" type="submit" title="保存（Cmd/Ctrl + S）">
               <Save size={17} />
               {isEditing ? '保存修改' : '保存文章'}
             </button>
@@ -3428,21 +3628,34 @@ function AdminPostComposer({
         </header>
 
         {focusMode && (
-          <div className="focus-floating-status" aria-label="专注模式状态">
-            <div>
-              <span>{draftStatusLabel(draftStatus)}</span>
-              {lastDraftSavedAt && <small>{formatDraftSavedAt(lastDraftSavedAt)}</small>}
-            </div>
+          <>
             <button
-              className="focus-exit-action"
+              aria-expanded={showShortcutHelp}
+              className="focus-shortcut-action"
               type="button"
-              onClick={() => setFocusMode(false)}
-              title="退出专注模式"
+              onClick={() => setShowShortcutHelp(true)}
+              title="打开快捷键提示"
             >
-              <X size={16} />
-              退出专注
+              <Keyboard size={16} />
+              <span>快捷键</span>
             </button>
-          </div>
+
+            <div className="focus-floating-status" aria-label="专注模式状态">
+              <div>
+                <span>{draftStatusLabel(draftStatus)}</span>
+                {lastDraftSavedAt && <small>{formatDraftSavedAt(lastDraftSavedAt)}</small>}
+              </div>
+              <button
+                className="focus-exit-action"
+                type="button"
+                onClick={() => setFocusMode(false)}
+                title="退出专注模式"
+              >
+                <X size={16} />
+                退出专注
+              </button>
+            </div>
+          </>
         )}
 
         {publishNotice && <p className="composer-sync-warning" role="alert">{publishNotice}</p>}
@@ -3481,7 +3694,7 @@ function AdminPostComposer({
           )}
 
           <main
-            className={`typora-paper ${isComposerImageDragging ? 'is-image-dragging' : ''}`}
+            className={`typora-paper typora-paper-${composerMode}${isComposerImageDragging ? ' is-image-dragging' : ''}`}
             aria-label="正文写作区"
             onDragEnter={handleComposerDragEnter}
             onDragLeave={handleComposerDragLeave}
@@ -3505,11 +3718,21 @@ function AdminPostComposer({
               <span>{date || formatToday()}</span>
             </div>
 
-            {(isComposerImageDragging || composerImageUploadCount > 0) && (
+            {isComposerImageDragging && (
               <div className="composer-drop-layer" aria-live="polite">
                 <ImageIcon size={28} />
-                <strong>{composerImageUploadCount > 0 ? '正在上传图片' : '松开上传图片'}</strong>
-                {composerImageUploadCount > 0 && <span>{composerImageUploadCount} 张</span>}
+                <strong>松开上传图片</strong>
+                <span>支持 JPG、PNG、WebP 和 GIF</span>
+              </div>
+            )}
+
+            {composerImageUploadCount > 0 && (
+              <div className="composer-upload-toast" aria-live="polite" role="status">
+                <ImageIcon size={18} />
+                <div>
+                  <strong>{composerImageUploadMessage || `正在上传 ${composerImageUploadCount} 张图片`}</strong>
+                  <span>上传完成后会自动插入正文，可以继续写作。</span>
+                </div>
               </div>
             )}
 
@@ -3554,12 +3777,12 @@ function AdminPostComposer({
               </button>
               <button
                 type="button"
-                onClick={() => insertMarkdown('\n```ts\nconsole.log(\"Hello, Guzhouyue\");\n```\n')}
-                title="代码块"
+                onClick={insertCodeBlockMarkdown}
+                title="代码块（Cmd/Ctrl + Alt + C）"
               >
                 <Code2 size={17} />
               </button>
-              <button type="button" onClick={() => openFormulaDialog('block')} title="数学公式">
+              <button type="button" onClick={openFormulaBlockShortcut} title="数学公式（Cmd/Ctrl + Alt + M）">
                 <Sigma size={17} />
               </button>
               <button type="button" onClick={() => setShowGalleryPicker(true)} title="插入图库图片">
@@ -3581,9 +3804,6 @@ function AdminPostComposer({
                   onChange={(nextMarkdown, initialNormalize) => {
                     if (!initialNormalize) {
                       const normalizedMarkdown = normalizeLooseCodeFences(nextMarkdown);
-                      if (normalizedMarkdown !== nextMarkdown) {
-                        mdxEditorRef.current?.setMarkdown(normalizedMarkdown);
-                      }
                       updateBodyMarkdownFromWysiwyg(normalizedMarkdown);
                     }
                   }}
@@ -3852,8 +4072,18 @@ function AdminPostComposer({
       </form>
 
       {showShortcutHelp && (
-        <div className="shortcut-layer" role="presentation" onMouseDown={() => setShowShortcutHelp(false)}>
-          <section className="shortcut-panel" role="dialog" aria-modal="true" aria-label="快捷键说明" onMouseDown={(event) => event.stopPropagation()}>
+        <div
+          className={`shortcut-layer${focusMode ? ' focus-shortcut-layer' : ''}`}
+          role="presentation"
+          onMouseDown={() => setShowShortcutHelp(false)}
+        >
+          <section
+            className="shortcut-panel"
+            role="dialog"
+            aria-modal={focusMode ? undefined : true}
+            aria-label="快捷键说明"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="typora-details-head">
               <div>
                 <span>Keyboard</span>
@@ -3866,14 +4096,20 @@ function AdminPostComposer({
             <div className="shortcut-grid">
               {[
                 ['Cmd/Ctrl + S', '保存'],
+                ['Cmd/Ctrl + Z', '撤销'],
+                ['Cmd/Ctrl + Shift + Z', '反撤销'],
+                ['Cmd/Ctrl + Y', '反撤销'],
                 ['Cmd/Ctrl + B', '加粗'],
                 ['Cmd/Ctrl + I', '斜体'],
                 ['Cmd/Ctrl + K', '链接'],
                 ['Cmd/Ctrl + E', '行内代码'],
+                ['Cmd/Ctrl + Alt + C', '代码块'],
+                ['Cmd/Ctrl + Alt + M', '公式块'],
                 ['Cmd/Ctrl + P', '预览/分屏'],
                 ['Cmd/Ctrl + F', '查找'],
                 ['Cmd/Ctrl + H', '替换'],
                 ['Cmd/Ctrl + /', '快捷键说明'],
+                ['自动保存', '每 15 秒保存一次草稿'],
               ].map(([shortcut, label]) => (
                 <div key={shortcut}>
                   <kbd>{shortcut}</kbd>

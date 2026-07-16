@@ -59,6 +59,13 @@ from .content import (
     update_gallery_image_file,
 )
 from .db import get_db, now_iso
+from .private_memos import (
+    create_private_memo_item,
+    delete_private_memo_item,
+    list_private_memo_items,
+    update_private_memo_item,
+)
+from .public_deploy import get_public_deploy_task, start_public_deploy_task
 from .starfield import (
     archive_version,
     create_incremental_version as create_incremental_starfield_version,
@@ -89,7 +96,8 @@ sessions: dict[str, float] = {}
 csrf_tokens: dict[str, str] = {}
 rate_limits: dict[str, dict[str, float]] = {}
 allowed_gallery_mime_types = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
-max_gallery_image_bytes = 8 * 1024 * 1024
+max_gallery_image_bytes = config.max_gallery_image_bytes
+public_json_cache_control = "public, max-age=300, stale-while-revalidate=86400"
 
 app = FastAPI()
 
@@ -107,6 +115,9 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["x-content-type-options"] = "nosniff"
     response.headers["x-frame-options"] = "DENY"
+    if request.url.path.startswith("/api/admin"):
+        response.headers["cache-control"] = "no-store"
+        response.headers["pragma"] = "no-cache"
     response.headers["content-security-policy"] = (
         "default-src 'self'; "
         "script-src 'self'; "
@@ -207,6 +218,18 @@ def error(status_code: int, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"error": message})
 
 
+def public_cached_json(request: Request, payload: Any) -> Response:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    etag = f'"{hashlib.sha256(body).hexdigest()}"'
+    headers = {
+        "Cache-Control": public_json_cache_control,
+        "ETag": etag,
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json; charset=utf-8", headers=headers)
+
+
 def parse_int_form(value: Any, field_name: str, fallback: int = 0) -> int:
     if value in {None, ""}:
         return fallback
@@ -238,8 +261,8 @@ async def health():
 
 
 @app.get("/api/site")
-async def public_site():
-    return get_site_payload(read_today_almanac())
+async def public_site(request: Request):
+    return public_cached_json(request, get_site_payload(read_today_almanac()))
 
 
 @app.get("/api/almanac/today")
@@ -251,18 +274,18 @@ async def today_almanac():
 
 
 @app.get("/api/articles")
-async def articles(page: int = 1, pageSize: int = 10, category: str | None = None, tag: str | None = None, q: str | None = None):
-    return list_articles({"page": page, "pageSize": pageSize, "category": category, "tag": tag, "q": q})
+async def articles(request: Request, page: int = 1, pageSize: int = 10, category: str | None = None, tag: str | None = None, q: str | None = None):
+    return public_cached_json(request, list_articles({"page": page, "pageSize": pageSize, "category": category, "tag": tag, "q": q}))
 
 
 @app.get("/api/gallery")
-async def gallery():
+async def gallery(request: Request):
     items = [
         {**album, "images": []}
         for album in list_gallery_albums()
         if album["id"] != SYSTEM_GALLERY_ALBUM_ID and album["slug"] != SYSTEM_GALLERY_ALBUM_SLUG
     ]
-    return {"items": items}
+    return public_cached_json(request, {"items": items})
 
 
 @app.get("/api/starfield")
@@ -445,9 +468,56 @@ async def admin_ops(_token: str = Depends(require_admin)):
     }
 
 
+@app.post("/api/admin/public-deploy")
+async def admin_public_deploy(_token: str = Depends(require_admin)):
+    return start_public_deploy_task()
+
+
+@app.get("/api/admin/public-deploy/{task_id}")
+async def admin_public_deploy_task(task_id: str, _token: str = Depends(require_admin)):
+    task = get_public_deploy_task(task_id)
+    if not task:
+        raise error(404, "Deploy task not found")
+    return task
+
+
 @app.get("/api/admin/audit")
 async def admin_audit_log(_token: str = Depends(require_admin)):
     return {"items": read_audit_log(50)}
+
+
+@app.get("/api/admin/private-memos")
+async def admin_private_memos(status: str | None = None, limit: int = 200, _token: str = Depends(require_admin)):
+    try:
+        return {"items": list_private_memo_items(status, limit)}
+    except ValueError as error_value:
+        raise error(400, str(error_value)) from error_value
+
+
+@app.post("/api/admin/private-memos", status_code=201)
+async def admin_create_private_memo(payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        return create_private_memo_item(payload)
+    except ValueError as error_value:
+        raise error(400, str(error_value)) from error_value
+
+
+@app.put("/api/admin/private-memos/{memo_id}")
+async def admin_update_private_memo(memo_id: str, payload: dict[str, Any], _token: str = Depends(require_admin)):
+    try:
+        memo = update_private_memo_item(memo_id, payload)
+    except ValueError as error_value:
+        raise error(400, str(error_value)) from error_value
+    if not memo:
+        raise error(404, "Private memo not found")
+    return memo
+
+
+@app.delete("/api/admin/private-memos/{memo_id}")
+async def admin_delete_private_memo(memo_id: str, _token: str = Depends(require_admin)):
+    if not delete_private_memo_item(memo_id):
+        raise error(404, "Private memo not found")
+    return {"ok": True}
 
 
 @app.get("/api/admin/tasks")
@@ -778,7 +848,8 @@ async def admin_delete_gallery_image(image_id: str, _token: str = Depends(requir
 async def read_validated_gallery_image(file: UploadFile, extension: str) -> bytes:
     buffer = await file.read(max_gallery_image_bytes + 1)
     if len(buffer) > max_gallery_image_bytes:
-        raise error(413, "Image file is too large")
+        max_size_mb = max_gallery_image_bytes / 1024 / 1024
+        raise error(413, f"Image file is too large. Max size is {max_size_mb:.0f} MB")
     if not has_expected_image_signature(buffer, extension):
         raise error(400, "Invalid image file")
     return buffer

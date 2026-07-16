@@ -8,6 +8,7 @@ export function SiteHeader({
   homepage,
   colorScheme,
   ownerAuthenticated,
+  adminHref = '/admin',
   menuOpen,
   onMenuToggle,
   onColorSchemeToggle,
@@ -16,6 +17,7 @@ export function SiteHeader({
   homepage: HomepageCopy;
   colorScheme: ColorScheme;
   ownerAuthenticated: boolean;
+  adminHref?: string;
   menuOpen: boolean;
   onMenuToggle: () => void;
   onColorSchemeToggle: () => void;
@@ -34,7 +36,7 @@ export function SiteHeader({
             {item.label}
           </a>
         ))}
-        {ownerAuthenticated && <a href="/admin">后台</a>}
+        {ownerAuthenticated && <a href={adminHref}>后台</a>}
       </nav>
 
       <div className="header-actions">

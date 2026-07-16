@@ -67,6 +67,7 @@ class Config:
     cookie_secure: bool
     python_command: str
     almanac_timeout_ms: int
+    max_gallery_image_bytes: int
     config_path: Path
 
 
@@ -105,6 +106,7 @@ def load_config() -> Config:
         cookie_secure=_parse_bool(os.environ.get("COOKIE_SECURE"), bool(file_config.get("cookieSecure", cookie_secure_default))),
         python_command=python_command,
         almanac_timeout_ms=int(os.environ.get("ALMANAC_TIMEOUT_MS", file_config.get("almanacTimeoutMs", 3000))),
+        max_gallery_image_bytes=int(os.environ.get("MAX_GALLERY_IMAGE_BYTES", file_config.get("maxGalleryImageBytes", 24 * 1024 * 1024))),
         config_path=config_path,
     )
 

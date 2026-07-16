@@ -7,16 +7,16 @@ export type OutlineItem = {
 };
 
 export function normalizeLooseCodeFences(markdown: string) {
-  const lines = markdown.split('\n');
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
   const normalizedLines: string[] = [];
   let index = 0;
 
-  const fencePattern = /^((?:\\`|`){3})\s*([\w-]+)?\s*$/;
-  const unescapeFence = (value: string) => value.replace(/\\`/g, '`');
+  const fencePattern = /^((?:\\+`|`){3})\s*(?:\{([^\s{}]+)\}|([^\s{}]+))?\s*$/;
+  const unescapeFence = (value: string) => value.replace(/\\+`/g, '`');
 
   while (index < lines.length) {
     const openingMatch = lines[index].match(fencePattern);
-    const openingLanguage = openingMatch?.[2];
+    const openingLanguage = openingMatch?.[2] ?? openingMatch?.[3];
 
     if (!openingMatch || !openingLanguage) {
       normalizedLines.push(lines[index]);
@@ -24,14 +24,14 @@ export function normalizeLooseCodeFences(markdown: string) {
       continue;
     }
 
-    const closingIndex = lines.findIndex((line, lineIndex) => {
-      if (lineIndex <= index) {
-        return false;
+    let closingIndex = -1;
+    for (let lineIndex = index + 1; lineIndex < lines.length; lineIndex += 1) {
+      const closingMatch = lines[lineIndex].match(fencePattern);
+      if (closingMatch && !closingMatch[2] && !closingMatch[3]) {
+        closingIndex = lineIndex;
+        break;
       }
-
-      const closingMatch = line.match(fencePattern);
-      return Boolean(closingMatch && !closingMatch[2]);
-    });
+    }
 
     if (closingIndex < 0) {
       normalizedLines.push(lines[index]);
@@ -39,28 +39,18 @@ export function normalizeLooseCodeFences(markdown: string) {
       continue;
     }
 
+    const codeLines = lines.slice(index + 1, closingIndex);
+    while (codeLines[0]?.trim() === '') {
+      codeLines.shift();
+    }
+    while (codeLines[codeLines.length - 1]?.trim() === '') {
+      codeLines.pop();
+    }
+
     normalizedLines.push(`\`\`\`${openingLanguage}`);
-    normalizedLines.push(...lines.slice(index + 1, closingIndex).map(unescapeFence));
+    normalizedLines.push(...codeLines.map(unescapeFence));
     normalizedLines.push('```');
     index = closingIndex + 1;
-
-    let lookaheadIndex = index;
-    while (lines[lookaheadIndex] === '') {
-      lookaheadIndex += 1;
-    }
-
-    const nextOpening = lines[lookaheadIndex]?.match(fencePattern);
-    if (nextOpening?.[2]) {
-      let nextClosingIndex = lookaheadIndex + 1;
-      while (lines[nextClosingIndex] === '') {
-        nextClosingIndex += 1;
-      }
-
-      const nextClosing = lines[nextClosingIndex]?.match(fencePattern);
-      if (nextClosing && !nextClosing[2]) {
-        index = nextClosingIndex + 1;
-      }
-    }
   }
 
   return normalizedLines.join('\n');
@@ -70,7 +60,7 @@ export function getMarkdownOutline(markdown: string): OutlineItem[] {
   let previousLevel = 1;
 
   return markdown.split('\n').reduce<OutlineItem[]>((items, line, lineIndex) => {
-    const headingMatch = line.match(/^(#{2,6})\s+(.+)$/);
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
     if (!headingMatch) {
       return items;
     }
@@ -93,7 +83,7 @@ export function getMarkdownOutline(markdown: string): OutlineItem[] {
 }
 
 function getHeadingBlockRange(lines: string[], headingLineIndex: number) {
-  const headingMatch = lines[headingLineIndex]?.match(/^(#{2,6})\s+/);
+  const headingMatch = lines[headingLineIndex]?.match(/^(#{1,6})\s+/);
   if (!headingMatch) {
     return null;
   }
@@ -102,7 +92,7 @@ function getHeadingBlockRange(lines: string[], headingLineIndex: number) {
   let endIndex = lines.length;
 
   for (let index = headingLineIndex + 1; index < lines.length; index += 1) {
-    const nextHeadingMatch = lines[index].match(/^(#{2,6})\s+/);
+    const nextHeadingMatch = lines[index].match(/^(#{1,6})\s+/);
     if (nextHeadingMatch && nextHeadingMatch[1].length <= level) {
       endIndex = index;
       break;

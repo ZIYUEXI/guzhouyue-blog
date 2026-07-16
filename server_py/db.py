@@ -96,6 +96,29 @@ CREATE TABLE IF NOT EXISTS composer_drafts (
   FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS private_memo_items (
+  id TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  reminder_at TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  archived_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS private_memo_nodes (
+  id TEXT PRIMARY KEY,
+  memo_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (memo_id) REFERENCES private_memo_items(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS seed_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -323,12 +346,46 @@ def ensure_schema() -> None:
         _ensure_column(conn, "starfield_generation_jobs", "progress_total", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "starfield_generation_jobs", "current_step", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "starfield_deep_paths", "review_note", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "private_memo_items", "reminder_at", "TEXT")
+        _ensure_column(conn, "private_memo_items", "started_at", "TEXT")
+        _ensure_column(conn, "private_memo_items", "ended_at", "TEXT")
+        _ensure_column(conn, "private_memo_items", "pinned", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "private_memo_items", "completed_at", "TEXT")
+        _ensure_column(conn, "private_memo_items", "archived_at", "TEXT")
+        conn.execute(
+            """
+            UPDATE private_memo_items
+            SET status = 'done',
+                completed_at = COALESCE(completed_at, archived_at, updated_at)
+            WHERE status = 'archived'
+            """
+        )
+        _backfill_private_memo_nodes(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     if not any(row["name"] == column for row in rows):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _backfill_private_memo_nodes(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT m.id, m.text, m.status, m.created_at
+        FROM private_memo_items m
+        LEFT JOIN private_memo_nodes n ON n.memo_id = m.id
+        WHERE n.id IS NULL
+        """
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """
+            INSERT INTO private_memo_nodes (id, memo_id, text, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (f"{row['id']}_node_initial", row["id"], row["text"], row["status"], row["created_at"]),
+        )
 
 
 ensure_schema()

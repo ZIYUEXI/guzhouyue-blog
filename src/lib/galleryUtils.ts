@@ -3,6 +3,9 @@ import { systemGalleryAlbumId, systemGalleryAlbumSlug } from '../contentStore';
 import { systemGalleryAssetUrls } from '../siteSettings';
 
 const supportedComposerImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const compressibleComposerImageMimeTypes = new Set(['image/jpeg', 'image/png']);
+const composerImageMaxDimension = 1600;
+const composerImageCompressionQuality = 0.78;
 
 export function sortGalleryAlbums(albums: GalleryAlbum[]) {
   return [...albums].sort((first, second) => first.sortOrder - second.sortOrder || first.title.localeCompare(second.title));
@@ -55,6 +58,45 @@ export function withGalleryAlbumImages(album: GalleryAlbum, images: GalleryImage
 
 export function isSupportedComposerImageFile(file: File) {
   return supportedComposerImageMimeTypes.has(file.type);
+}
+
+export async function prepareComposerImageForUpload(file: File) {
+  if (!compressibleComposerImageMimeTypes.has(file.type)) {
+    return file;
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, composerImageMaxDimension / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      bitmap.close();
+      return file;
+    }
+
+    context.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/webp', composerImageCompressionQuality);
+    });
+    if (!blob || blob.size >= file.size * 0.92) {
+      return file;
+    }
+
+    const safeName = file.name.replace(/\.[^.]+$/, '') || 'image';
+    return new File([blob], `${safeName}.webp`, {
+      lastModified: file.lastModified,
+      type: 'image/webp',
+    });
+  } catch {
+    return file;
+  }
 }
 
 export function hasImageFileInTransfer(dataTransfer: DataTransfer) {

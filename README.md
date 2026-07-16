@@ -139,6 +139,7 @@ npm run preview            # 预览前端构建产物
 - `corsOrigins`：允许访问 API 的前端来源。
 - `cookieSecure`：HTTPS 部署时建议设为 `true`。
 - `pythonCommand`：后端调用辅助 Python 脚本时使用的命令。
+- `maxGalleryImageBytes`：图库单张上传大小上限，默认 24MB。
 
 也可以用环境变量覆盖配置：
 
@@ -150,6 +151,7 @@ CORS_ORIGINS=https://example.com
 COOKIE_SECURE=true
 DATABASE_PATH=/var/lib/guzhouyue-blog/blog.sqlite
 GALLERY_UPLOAD_DIR=/var/lib/guzhouyue-blog/uploads/gallery
+MAX_GALLERY_IMAGE_BYTES=25165824
 SERVER_HOST=127.0.0.1
 SERVER_PORT=4174
 ```

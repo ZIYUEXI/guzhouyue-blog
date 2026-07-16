@@ -1,4 +1,4 @@
-import { ChevronRight, ExternalLink, Loader2, Network, Orbit, Search, Unlock, X } from 'lucide-react';
+import { ChevronRight, ExternalLink, Info, Loader2, Network, Orbit, Search, SlidersHorizontal, Unlock, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { fetchPublicStarfield, type ApiStarfieldDeepPath, type ApiStarfieldPassage, type ApiStarfieldRelationship } from './apiClient';
@@ -68,6 +68,7 @@ type FocusRequest = {
   id: string;
   nonce: number;
 };
+type MobileStarfieldPanel = '' | 'network' | 'focus';
 type CameraFlight = {
   active: boolean;
   startedAt: number;
@@ -80,12 +81,14 @@ type CameraFlight = {
 };
 
 export function StarfieldPage() {
+  const pageRef = useRef<HTMLElement | null>(null);
   const [passages, setPassages] = useState<ApiStarfieldPassage[]>([]);
   const [relationships, setRelationships] = useState<ApiStarfieldRelationship[]>([]);
   const [deepPaths, setDeepPaths] = useState<ApiStarfieldDeepPath[]>([]);
   const [versionName, setVersionName] = useState('');
   const [activePassageId, setActivePassageId] = useState('');
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
+  const [mobilePanel, setMobilePanel] = useState<MobileStarfieldPanel>('');
   const [status, setStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [relationshipNetwork, setRelationshipNetwork] = useState<RelationshipNetworkFilter>({
     showAllSameTopic: false,
@@ -135,8 +138,81 @@ export function StarfieldPage() {
     setFocusRequest(null);
   };
 
+  useEffect(() => {
+    if (!activePassageId && mobilePanel === 'focus') {
+      setMobilePanel('');
+    }
+  }, [activePassageId, mobilePanel]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const body = document.body;
+    const scrollY = window.scrollY;
+    const previousRootOverflow = root.style.overflow;
+    const previousRootOverscroll = root.style.overscrollBehavior;
+    const previousBodyOverflow = body.style.overflow;
+    const previousBodyOverscroll = body.style.overscrollBehavior;
+    const previousBodyPosition = body.style.position;
+    const previousBodyTop = body.style.top;
+    const previousBodyLeft = body.style.left;
+    const previousBodyRight = body.style.right;
+    const previousBodyWidth = body.style.width;
+
+    root.classList.add('starfield-immersive-active');
+    body.classList.add('starfield-immersive-active');
+    root.style.overflow = 'hidden';
+    root.style.overscrollBehavior = 'none';
+    body.style.overflow = 'hidden';
+    body.style.overscrollBehavior = 'none';
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+
+    const preventCanvasTouchScroll = (event: TouchEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !pageRef.current?.contains(target)) {
+        return;
+      }
+      if (target.closest('.starfield-focus-panel, .starfield-network-panel')) {
+        return;
+      }
+      event.preventDefault();
+    };
+
+    const preventStarfieldContextMenu = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !pageRef.current?.contains(target)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    document.addEventListener('touchmove', preventCanvasTouchScroll, { passive: false });
+    document.addEventListener('contextmenu', preventStarfieldContextMenu, { capture: true });
+
+    return () => {
+      document.removeEventListener('touchmove', preventCanvasTouchScroll);
+      document.removeEventListener('contextmenu', preventStarfieldContextMenu, { capture: true });
+      root.classList.remove('starfield-immersive-active');
+      body.classList.remove('starfield-immersive-active');
+      root.style.overflow = previousRootOverflow;
+      root.style.overscrollBehavior = previousRootOverscroll;
+      body.style.overflow = previousBodyOverflow;
+      body.style.overscrollBehavior = previousBodyOverscroll;
+      body.style.position = previousBodyPosition;
+      body.style.top = previousBodyTop;
+      body.style.left = previousBodyLeft;
+      body.style.right = previousBodyRight;
+      body.style.width = previousBodyWidth;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+
   return (
-    <section className="starfield-page" aria-label="星图">
+    <section ref={pageRef} className="starfield-page" aria-label="星图">
       <div className="starfield-orientation-gate" role="status" aria-live="polite">
         <Orbit size={28} />
         <strong>请横屏浏览星图</strong>
@@ -186,13 +262,43 @@ export function StarfieldPage() {
             relationshipNetwork={relationshipNetwork}
           />
 
-          <RelationshipNetworkPanel filter={relationshipNetwork} relationships={relationships} onChange={setRelationshipNetwork} />
+          <div className="starfield-mobile-dock" aria-label="星图面板">
+            <button
+              aria-pressed={mobilePanel === 'network'}
+              type="button"
+              onClick={() => setMobilePanel((current) => (current === 'network' ? '' : 'network'))}
+            >
+              <SlidersHorizontal size={15} />
+              关系
+            </button>
+            <button
+              aria-pressed={mobilePanel === 'focus'}
+              disabled={!activePassage}
+              type="button"
+              onClick={() => setMobilePanel((current) => (current === 'focus' ? '' : 'focus'))}
+            >
+              <Info size={15} />
+              详情
+            </button>
+          </div>
 
-          <aside className="starfield-focus-panel" aria-label="星点详情">
+          <RelationshipNetworkPanel
+            filter={relationshipNetwork}
+            isMobileOpen={mobilePanel === 'network'}
+            relationships={relationships}
+            onChange={setRelationshipNetwork}
+            onClose={() => setMobilePanel('')}
+          />
+
+          <aside className={`starfield-focus-panel ${mobilePanel === 'focus' ? 'is-mobile-open' : ''}`} aria-label="星点详情">
             {activePassage ? (
               <>
                 <div className="starfield-focus-head">
                   <span>{activePassage.article.category}</span>
+                  <button className="starfield-panel-close" type="button" onClick={() => setMobilePanel('')}>
+                    <X size={13} />
+                    收起
+                  </button>
                   <button className="secondary-action starfield-focus-clear" type="button" onClick={clearFocus}>
                     <X size={14} />
                     取消聚焦
@@ -330,11 +436,15 @@ function getDeepPathsForPassage(activePassageId: string, deepPaths: ApiStarfield
 
 function RelationshipNetworkPanel({
   filter,
+  isMobileOpen = false,
   onChange,
+  onClose,
   relationships,
 }: {
   filter: RelationshipNetworkFilter;
+  isMobileOpen?: boolean;
   onChange: (next: RelationshipNetworkFilter) => void;
+  onClose?: () => void;
   relationships: ApiStarfieldRelationship[];
 }) {
   const relationshipTypes = useMemo(() => {
@@ -381,19 +491,27 @@ function RelationshipNetworkPanel({
   };
 
   return (
-    <aside className="starfield-network-panel" aria-label="关系网控制">
+    <aside className={`starfield-network-panel ${isMobileOpen ? 'is-mobile-open' : ''}`} aria-label="关系网控制">
       <div className="starfield-network-head">
         <div>
           <Network size={16} />
           <span>关系分类</span>
         </div>
-        <button
-          aria-pressed={filter.relationshipTypes.length === 0 && filter.topics.length === 0 && !filter.showAllSameTopic}
-          type="button"
-          onClick={() => onChange({ showAllSameTopic: false, topics: [], relationshipTypes: [] })}
-        >
-          清除
-        </button>
+        <div className="starfield-network-actions">
+          <button
+            aria-pressed={filter.relationshipTypes.length === 0 && filter.topics.length === 0 && !filter.showAllSameTopic}
+            type="button"
+            onClick={() => onChange({ showAllSameTopic: false, topics: [], relationshipTypes: [] })}
+          >
+            清除
+          </button>
+          {onClose && (
+            <button className="starfield-panel-close" type="button" onClick={onClose}>
+              <X size={13} />
+              收起
+            </button>
+          )}
+        </div>
       </div>
       <p className="starfield-network-copy">点击关系类型或主题标签激活对应星线。</p>
       <div className="starfield-network-types">
@@ -679,8 +797,17 @@ function GalaxyViewport({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.button === 2) {
+      let shouldStartLook = event.button === 2 || event.button === 1;
+      if (event.button === 0) {
+        const rect = host.getBoundingClientRect();
+        pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        pointerRef.current.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+        shouldStartLook = pickPassage(pointerRef.current, camera, raycasterRef.current, pickablesRef.current) === null;
+      }
+
+      if (shouldStartLook) {
         event.preventDefault();
+        event.stopPropagation();
         cameraFlightRef.current = null;
         lookRef.current = { active: true, lastX: event.clientX, lastY: event.clientY };
         try {
@@ -692,7 +819,9 @@ function GalaxyViewport({
     };
 
     const handlePointerUp = (event: PointerEvent) => {
-      if (event.button === 2) {
+      if (lookRef.current.active) {
+        event.preventDefault();
+        event.stopPropagation();
         lookRef.current.active = false;
         try {
           host.releasePointerCapture?.(event.pointerId);
@@ -704,6 +833,14 @@ function GalaxyViewport({
 
     const handleContextMenu = (event: MouseEvent) => {
       event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const handleAuxClick = (event: MouseEvent) => {
+      if (event.button === 1 || event.button === 2) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
     };
 
     const handleWheel = (event: WheelEvent) => {
@@ -739,6 +876,7 @@ function GalaxyViewport({
     host.addEventListener('pointerdown', handleClick);
     host.addEventListener('dblclick', handleDoubleClick);
     host.addEventListener('contextmenu', handleContextMenu);
+    host.addEventListener('auxclick', handleAuxClick);
     host.addEventListener('wheel', handleWheel, { passive: false });
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
@@ -894,6 +1032,7 @@ function GalaxyViewport({
       host.removeEventListener('pointerdown', handleClick);
       host.removeEventListener('dblclick', handleDoubleClick);
       host.removeEventListener('contextmenu', handleContextMenu);
+      host.removeEventListener('auxclick', handleAuxClick);
       host.removeEventListener('wheel', handleWheel);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
@@ -995,7 +1134,7 @@ function GalaxyViewport({
           <span>3D Galaxy</span>
           <small>{data.nodes.length} 个星点 · {data.edges.length} 条关系</small>
         </div>
-        <div className="starfield-hint">WASD 移动 · 滚轮调速 · 按住右键转动视角 · 双击星点锁定跟踪</div>
+        <div className="starfield-hint">WASD 移动 · 滚轮调速 · 拖拽空白处或按住右键转动视角 · 双击星点锁定跟踪</div>
         {(activePassageId || lockedPassageId) && (
           <div className="starfield-camera-controls" aria-label="摄像机控制">
             <button disabled={!lockedPassageId} type="button" onClick={unlockCameraLock}>

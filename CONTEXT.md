@@ -172,6 +172,10 @@ _Avoid_: Relationship type, status flag
 The initial Starfield Knowledge Map view that shows the overall constellation before a Reader focuses any star.
 _Avoid_: Default focused star, random starting point
 
+**Immersive Starfield View**:
+A compact Reader-facing layout for small landscape screens where the Starfield Knowledge Map remains the primary surface and supporting panels are available on demand. It preserves exploration first, then reveals relationship filters, Focused Star details, and Source Article navigation when the Reader asks for them.
+_Avoid_: Admin-style three-column dashboard, always-visible control panels
+
 **Passage Curation**:
 The act of choosing meaningful Passages from a published Article for reader exploration.
 _Avoid_: Paragraph splitting, chunking
@@ -207,3 +211,41 @@ _Avoid_: Summary, opinion, hallucinated answer
 **GraphRAG-Ready Starfield**:
 A Starfield Knowledge Map whose reviewed Passages and Passage Relationships retain enough source, rationale, and review context to support a future Reader GraphRAG experience.
 _Avoid_: Current chatbot, model-only search
+
+## Administrator Private Workspace
+
+**Private Memo Item**:
+A private reminder, task, or temporary thought recorded by the administrator in the admin area. Task records and memos are the same kind of item here; the item is not public blog content and never appears on reader-facing pages.
+_Avoid_: Article, Note, Admin Task, Task Record, Comment
+
+**Private Memo Text**:
+The plain text content of a Private Memo Item. It is intentionally not Markdown, rich text, image content, formula content, or article structure.
+_Avoid_: Markdown body, Rich text, Image attachment, Formula, Article section
+
+**Private Memo Quick Capture**:
+A short-form way for the administrator to create a Private Memo Item at the moment a task or thought appears. It captures the item first and leaves optional reminder or time-window detail for later refinement.
+_Avoid_: Full editor, Article composer, Rich capture
+
+**Private Memo Progress Node**:
+A dated plain-text entry in the history of a Private Memo Item that records a meaningful change, discovery, blocker, reopening, or completion. Progress node timestamps are part of the item's private history and should not be overwritten.
+_Avoid_: Comment, Chat message, Article revision, Audit log
+
+**Private Memo Reminder**:
+An administrator-facing cue for an open Private Memo Item that is due, overdue, or intentionally kept visible. It exists only inside the admin area and is separate from reader-facing notifications.
+_Avoid_: Public notification, Comment notification, Admin Task status
+
+**Overdue Private Memo Reminder**:
+A Private Memo Reminder for an open Private Memo Item whose reminder time has passed. It should make the elapsed overdue time clear to the administrator.
+_Avoid_: Snoozed reminder, Public alert, Calendar event
+
+**Private Memo Area**:
+The admin-only workspace where the administrator creates, reviews, and clears Private Memo Items. It is reachable only from the admin area and is not part of the public homepage, public navigation, reader search, sitemap, or public content APIs.
+_Avoid_: Public page, Blog section, Reader navigation, Homepage widget
+
+**Open Private Memo Item**:
+A Private Memo Item that is still active and may need the administrator's attention. Open items are the only private memo items eligible for Private Memo Reminders.
+_Avoid_: Draft article, Pending comment, Running job
+
+**Done Private Memo Item**:
+A Private Memo Item that has been completed and retained as private history. Done items do not produce Private Memo Reminders.
+_Avoid_: Deleted memo, Published content
