@@ -149,6 +149,7 @@ rmSync(stagingRoot, { recursive: true, force: true });
 mkdirSync(stagingRoot, { recursive: true });
 
 copy(join(repoRoot, 'dist'), join(stagingRoot, 'dist'));
+copy(join(repoRoot, 'src'), join(stagingRoot, 'src'));
 copy(join(repoRoot, 'server_py'), join(stagingRoot, 'server_py'));
 copy(join(repoRoot, 'server', 'requirements.txt'), join(stagingRoot, 'server', 'requirements.txt'));
 copy(join(repoRoot, 'server', 'config.example.json'), join(stagingRoot, 'server', 'config.example.json'));
@@ -158,7 +159,7 @@ copy(join(repoRoot, 'scripts'), join(stagingRoot, 'scripts'));
 copy(join(repoRoot, 'functions'), join(stagingRoot, 'functions'));
 copy(join(repoRoot, 'docs', 'cloudflare-tencent-deployment.md'), join(stagingRoot, 'docs', 'cloudflare-tencent-deployment.md'));
 
-for (const file of ['package.json', 'package-lock.json', 'README.md', 'LICENSE']) {
+for (const file of ['index.html', 'package.json', 'package-lock.json', 'README.md', 'LICENSE', 'tsconfig.json', 'tsconfig.node.json', 'vite.config.ts']) {
   copy(join(repoRoot, file), join(stagingRoot, file));
 }
 

@@ -7,6 +7,7 @@ import {
   createAdminStarfieldVersion,
   createIncrementalAdminStarfieldVersion,
   deleteAdminStarfieldVersion,
+  fetchAdminPublicDeployTask,
   fetchAdminTasks,
   fetchAdminStarfieldVersion,
   fetchAdminStarfieldVersions,
@@ -19,6 +20,7 @@ import {
   updateAdminStarfieldRelationship,
   type ApiAdminTask,
   type ApiAdminStarfieldVersionPayload,
+  type ApiPublicDeployTask,
   type ApiStarfieldCanonicalKeyword,
   type ApiStarfieldDeepPath,
   type ApiStarfieldPassage,
@@ -80,6 +82,7 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
   const [relationshipDrafts, setRelationshipDrafts] = useState<Record<string, { relationshipType: ApiStarfieldRelationship['relationshipType']; rationale: string; strength: string }>>({});
   const [taskItems, setTaskItems] = useState<ApiAdminTask[]>([]);
   const [taskSourceFilter, setTaskSourceFilter] = useState('all');
+  const [publicDeployTask, setPublicDeployTask] = useState<ApiPublicDeployTask | null>(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -211,6 +214,39 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
     }, 1600);
     return () => window.clearInterval(interval);
   }, [activeVersion?.id, runningStarfieldJob?.id, runningStarfieldJob?.status]);
+
+  useEffect(() => {
+    if (!publicDeployTask || !['pending', 'running'].includes(publicDeployTask.status)) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      fetchAdminPublicDeployTask(publicDeployTask.id)
+        .then((task) => {
+          if (cancelled) {
+            return;
+          }
+          setPublicDeployTask(task);
+          if (task.status === 'succeeded') {
+            setNotice(task.result?.message ?? '星图已发布，公开站快照同步完成。');
+          }
+          if (task.status === 'failed') {
+            setNotice(`星图版本已发布，但公开站同步失败：${task.error || '请到管理总览查看发布日志。'}`);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setNotice('星图版本已发布，但暂时无法读取公开站同步状态。');
+          }
+        });
+    }, 1800);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [publicDeployTask?.id, publicDeployTask?.status]);
 
   useEffect(() => {
     setPassageDrafts(
@@ -477,6 +513,11 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
       </div>
 
       {notice && <p className="admin-batch-notice">{notice}</p>}
+      {publicDeployTask && (
+        <p className={`admin-batch-notice${publicDeployTask.status === 'failed' ? ' is-error' : ''}`}>
+          公开站同步：{publicDeployTask.status === 'succeeded' ? '已完成' : publicDeployTask.status === 'failed' ? '失败' : '进行中'}
+        </p>
+      )}
 
       {mode === 'generation' && (
         <div className="starfield-generation-shell">
@@ -681,7 +722,18 @@ export function AdminStarfieldPanel({ mode, posts }: { mode: StarfieldPanelMode;
                 <Sparkles size={16} />
                 深度关系挖掘
               </button>
-              <button className="primary-action" disabled={busy || acceptedPassages.length < 1 || !activePayload} type="button" onClick={() => void runAction(() => publishAdminStarfieldVersion(activePayload!.version.id), '星图已发布给读者。')}>
+              <button
+                className="primary-action"
+                disabled={busy || acceptedPassages.length < 1 || !activePayload}
+                type="button"
+                onClick={() =>
+                  void runAction(
+                    () => publishAdminStarfieldVersion(activePayload!.version.id),
+                    '星图版本已发布，正在同步公开站。',
+                    (payload) => setPublicDeployTask(payload.publicDeployTask ?? null),
+                  )
+                }
+              >
                 <Rocket size={16} />
                 发布
               </button>
@@ -887,7 +939,7 @@ function JobList({ jobs, large = false, showSource = false }: { jobs: ApiAdminTa
     <div className={`starfield-job-list${large ? ' is-large' : ''}`}>
       {jobs.map((job) => (
         <div className="starfield-job-item" key={job.id}>
-          <small>{formatTaskPhase(job.phase)} · {job.status}{showSource && job.sourceName ? ` · ${job.sourceLabel || '来源'}：${job.sourceName}` : ''}{job.errorMessage ? ` · ${job.errorMessage}` : ''}</small>
+          <small>{formatTaskPhase(job.phase)} · {formatTaskStatus(job.status)}{showSource && job.sourceName ? ` · ${job.sourceLabel || '来源'}：${job.sourceName}` : ''}{job.errorMessage ? ` · ${job.errorMessage}` : ''}</small>
           <span>{job.currentStep || (job.status === 'pending' || job.status === 'running' ? '等待 AI-agent 更新任务状态。' : '任务没有记录详细步骤。')}</span>
           <progress max={Math.max(1, job.progressTotal)} value={Math.min(job.progressCurrent, Math.max(1, job.progressTotal))} />
         </div>
@@ -904,6 +956,17 @@ function formatTaskPhase(phase: string) {
     'deep-relationships': '深度关系挖掘',
   };
   return labels[phase] ?? phase;
+}
+
+function formatTaskStatus(status: ApiAdminTask['status']) {
+  const labels: Record<string, string> = {
+    pending: '等待中',
+    running: '进行中',
+    succeeded: '已完成',
+    succeeded_with_fallback: '降级完成',
+    failed: '失败',
+  };
+  return labels[status] ?? status;
 }
 
 function PassageEditor({

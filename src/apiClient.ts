@@ -202,13 +202,14 @@ export type ApiAdminStarfieldVersionPayload = {
   canonicalKeywords: ApiStarfieldCanonicalKeyword[];
   deepPaths: ApiStarfieldDeepPath[];
   jobs: ApiAdminTask[];
+  publicDeployTask?: ApiPublicDeployTask | null;
 };
 
 export type ApiAdminTask = {
   id: string;
   versionId: string;
   phase: 'passages' | 'relationships' | 'deep-relationships' | string;
-  status: 'pending' | 'running' | 'succeeded' | 'failed';
+  status: 'pending' | 'running' | 'succeeded' | 'succeeded_with_fallback' | 'failed';
   selectedArticleIds: string[];
   progressCurrent: number;
   progressTotal: number;
@@ -698,6 +699,12 @@ export async function fetchAdminDeletedArticles() {
 export async function restoreAdminArticle(slug: string) {
   return requestJson<Post>(`/api/admin/trash/articles/${encodeURIComponent(slug)}/restore`, {
     method: 'POST',
+  });
+}
+
+export async function emptyAdminTrash() {
+  return requestJson<{ deletedCount: number }>('/api/admin/trash/articles', {
+    method: 'DELETE',
   });
 }
 
@@ -1583,6 +1590,33 @@ function normalizeAdminStarfieldVersionPayload(value: unknown): ApiAdminStarfiel
     jobs: Array.isArray(payload.jobs)
       ? payload.jobs.map((job) => normalizeStarfieldJob(job))
       : [],
+    publicDeployTask: normalizePublicDeployTask(payload.publicDeployTask),
+  };
+}
+
+function normalizePublicDeployTask(value: unknown): ApiPublicDeployTask | null {
+  const task = isRecord(value) ? value : null;
+  if (!task || !asText(task.id)) {
+    return null;
+  }
+  const status = asText(task.status);
+  return {
+    id: asText(task.id),
+    status: status === 'pending' || status === 'running' || status === 'succeeded' || status === 'failed' ? status : 'failed',
+    createdAt: asText(task.createdAt),
+    updatedAt: asText(task.updatedAt),
+    logs: Array.isArray(task.logs) ? task.logs.map(asText).filter(Boolean) : [],
+    result: isRecord(task.result)
+      ? {
+          ok: Boolean(task.result.ok),
+          changed: Boolean(task.result.changed),
+          message: asText(task.result.message),
+          repo: asText(task.result.repo),
+          branch: asText(task.result.branch),
+          commit: asText(task.result.commit),
+        }
+      : null,
+    error: asText(task.error),
   };
 }
 
@@ -1592,7 +1626,7 @@ function normalizeStarfieldJob(job: unknown): ApiAdminTask {
     id: asText(record.id),
     versionId: asText(record.versionId),
     phase: record.phase === 'passages' || record.phase === 'relationships' || record.phase === 'deep-relationships' ? record.phase : asText(record.phase) || 'task',
-    status: record.status === 'pending' || record.status === 'running' || record.status === 'succeeded' || record.status === 'failed' ? record.status : 'pending',
+    status: record.status === 'pending' || record.status === 'running' || record.status === 'succeeded' || record.status === 'succeeded_with_fallback' || record.status === 'failed' ? record.status : 'pending',
     selectedArticleIds: Array.isArray(record.selectedArticleIds) ? record.selectedArticleIds.map(asText).filter(Boolean) : [],
     progressCurrent: asNumber(record.progressCurrent, 0),
     progressTotal: asNumber(record.progressTotal, 0),

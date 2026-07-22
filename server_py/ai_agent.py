@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -21,6 +22,8 @@ ABSTRACT_STARFIELD_RELATIONSHIP_TYPES = {
     "implementation_echo",
 }
 STARFIELD_RELATIONSHIP_TYPES = CONCRETE_STARFIELD_RELATIONSHIP_TYPES | ABSTRACT_STARFIELD_RELATIONSHIP_TYPES
+LLM_MAX_ATTEMPTS = 3
+LLM_RETRY_DELAY_SECONDS = 0.8
 
 
 class AiAgentError(Exception):
@@ -136,23 +139,33 @@ async def _chat_json_completion(feature: str, system_prompt: str, user_payload: 
     usage_recorded = False
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                _resolve_chat_completions_url(settings["baseUrl"]),
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {settings['apiKey']}",
-                    "Content-Type": "application/json; charset=utf-8",
-                },
-                json={
-                    "model": settings["model"],
-                    "temperature": settings["temperature"],
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-                    ],
-                },
-            )
+            response = None
+            for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+                try:
+                    response = await client.post(
+                        _resolve_chat_completions_url(settings["baseUrl"]),
+                        headers={
+                            "Accept": "application/json",
+                            "Authorization": f"Bearer {settings['apiKey']}",
+                            "Content-Type": "application/json; charset=utf-8",
+                        },
+                        json={
+                            "model": settings["model"],
+                            "temperature": settings["temperature"],
+                            "response_format": {"type": "json_object"},
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                            ],
+                        },
+                    )
+                    break
+                except (httpx.TimeoutException, httpx.NetworkError) as error:
+                    if attempt >= LLM_MAX_ATTEMPTS:
+                        raise AiAgentError(503, f"LLM request failed after {attempt} attempts: {_describe_transport_error(error)}") from error
+                    await asyncio.sleep(LLM_RETRY_DELAY_SECONDS * attempt)
+        if response is None:
+            raise AiAgentError(503, "LLM request did not return a response")
         if response.status_code >= 400:
             _record_llm_usage(feature, settings, "failed", None, f"LLM request failed: {response.status_code}")
             usage_recorded = True
@@ -166,11 +179,17 @@ async def _chat_json_completion(feature: str, system_prompt: str, user_payload: 
         usage_recorded = True
         return parsed
     except Exception as error:
+        message = str(error).strip() if isinstance(error, AiAgentError) else _describe_transport_error(error)
         if not usage_recorded:
-            _record_llm_usage(feature, settings, "failed", None, str(error) or "Unknown LLM error")
+            _record_llm_usage(feature, settings, "failed", None, message)
         if isinstance(error, AiAgentError):
             raise
-        raise AiAgentError(503, str(error) or "Unknown LLM error") from error
+        raise AiAgentError(503, message) from error
+
+
+def _describe_transport_error(error: Exception) -> str:
+    message = str(error).strip()
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__
 
 
 def _resolve_chat_completions_url(base_url: str) -> str:

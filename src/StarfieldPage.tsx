@@ -1,5 +1,5 @@
-import { ChevronRight, ExternalLink, Info, Loader2, Network, Orbit, Search, SlidersHorizontal, Unlock, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronRight, ExternalLink, Home, Info, Loader2, Network, Orbit, Search, SlidersHorizontal, Unlock, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { fetchPublicStarfield, type ApiStarfieldDeepPath, type ApiStarfieldPassage, type ApiStarfieldRelationship } from './apiClient';
 
@@ -67,8 +67,14 @@ type RelationshipNetworkFilter = {
 type FocusRequest = {
   id: string;
   nonce: number;
+  panelTab?: FocusPanelTab;
 };
-type MobileStarfieldPanel = '' | 'network' | 'focus';
+type StarfieldSearchResult = {
+  passage: ApiStarfieldPassage;
+  score: number;
+};
+type StarfieldPanel = '' | 'network' | 'focus';
+type FocusPanelTab = 'overview' | 'paths' | 'related';
 type CameraFlight = {
   active: boolean;
   startedAt: number;
@@ -88,7 +94,9 @@ export function StarfieldPage() {
   const [versionName, setVersionName] = useState('');
   const [activePassageId, setActivePassageId] = useState('');
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
-  const [mobilePanel, setMobilePanel] = useState<MobileStarfieldPanel>('');
+  const [openPanel, setOpenPanel] = useState<StarfieldPanel>('');
+  const [focusPanelTab, setFocusPanelTab] = useState<FocusPanelTab>('overview');
+  const [searchQuery, setSearchQuery] = useState('');
   const [status, setStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [relationshipNetwork, setRelationshipNetwork] = useState<RelationshipNetworkFilter>({
     showAllSameTopic: false,
@@ -129,20 +137,57 @@ export function StarfieldPage() {
   const activePassage = passages.find((passage) => passage.id === activePassageId) ?? null;
   const related = useMemo(() => getRelatedStars(activePassageId, passages, relationships), [activePassageId, passages, relationships]);
   const activeDeepPaths = useMemo(() => getDeepPathsForPassage(activePassageId, deepPaths), [activePassageId, deepPaths]);
-  const focusPassage = (id: string) => {
+  const searchResults = useMemo(() => findStarfieldSearchResults(searchQuery, passages), [passages, searchQuery]);
+  const focusPassage = (id: string, panelTab: FocusPanelTab = 'overview') => {
+    setFocusPanelTab(panelTab);
     setActivePassageId(id);
-    setFocusRequest((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+    setFocusRequest((current) => ({ id, nonce: (current?.nonce ?? 0) + 1, panelTab }));
+    setOpenPanel('focus');
+  };
+  const pickPassage = useCallback((id: string, panelTab: FocusPanelTab = 'overview') => {
+    setFocusPanelTab(panelTab);
+    setActivePassageId(id);
+    setOpenPanel('focus');
+  }, []);
+  const focusSearchResult = (passage: ApiStarfieldPassage) => {
+    setFocusPanelTab('overview');
+    focusPassage(passage.id);
+    setSearchQuery('');
+    const params = new URLSearchParams(window.location.search);
+    params.set('passage', passage.id);
+    params.delete('article');
+    params.delete('anchor');
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
   };
   const clearFocus = () => {
     setActivePassageId('');
     setFocusRequest(null);
+    setFocusPanelTab('overview');
+    setOpenPanel('');
   };
 
   useEffect(() => {
-    if (!activePassageId && mobilePanel === 'focus') {
-      setMobilePanel('');
+    if (!activePassageId && openPanel === 'focus') {
+      setOpenPanel('');
     }
-  }, [activePassageId, mobilePanel]);
+  }, [activePassageId, openPanel]);
+
+  useEffect(() => {
+    if (passages.length === 0) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const requestedPassageId = params.get('passage') ?? '';
+    const requestedArticleSlug = params.get('article') ?? '';
+    const requestedAnchor = params.get('anchor') ?? '';
+    const target = requestedPassageId
+      ? passages.find((passage) => passage.id === requestedPassageId)
+      : passages.find((passage) => passage.article.slug === requestedArticleSlug && (!requestedAnchor || passage.anchor === requestedAnchor))
+        ?? passages.find((passage) => passage.article.slug === requestedArticleSlug);
+    if (target) {
+      focusPassage(target.id);
+    }
+  }, [passages]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -175,7 +220,7 @@ export function StarfieldPage() {
       if (!(target instanceof Element) || !pageRef.current?.contains(target)) {
         return;
       }
-      if (target.closest('.starfield-focus-panel, .starfield-network-panel')) {
+      if (target.closest('.starfield-toolbar, .starfield-focus-panel, .starfield-network-panel')) {
         return;
       }
       event.preventDefault();
@@ -242,149 +287,202 @@ export function StarfieldPage() {
 
       {status === 'ready' && (
         <div className={`starfield-workspace ${activePassage ? 'is-focused' : ''}`}>
-          <header className="starfield-hero">
-            <div>
-              <span>Starfield</span>
-              <h1>银河星图</h1>
-              <p>从文章文段出发，沿着跨文章关系，在三维银河里查看知识的聚合与牵引。</p>
-            </div>
-            <a className="secondary-action" href="/posts/page/1">
-              <Search size={17} />
-              回到文章列表
+          <header className="starfield-toolbar">
+            <a className="starfield-toolbar-brand" href="/" aria-label="返回孤舟月首页">
+              <span>孤舟月</span>
+              <div>
+                <small>Starfield</small>
+                <h1>银河星图</h1>
+              </div>
             </a>
+            <div className="starfield-hero-actions">
+              <form
+                className="starfield-search"
+                role="search"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (searchResults[0]) {
+                    focusSearchResult(searchResults[0].passage);
+                  }
+                }}
+              >
+                <label className="starfield-search-field">
+                  <Search aria-hidden="true" size={16} />
+                  <input
+                    aria-label="搜索星点、文章或关键词"
+                    autoComplete="off"
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onFocus={() => setOpenPanel('')}
+                    placeholder="搜索星点、文章或关键词"
+                    type="search"
+                    value={searchQuery}
+                  />
+                  {searchQuery && (
+                    <button aria-label="清除搜索" onClick={() => setSearchQuery('')} type="button">
+                      <X size={14} />
+                    </button>
+                  )}
+                </label>
+                {searchQuery.trim() && (
+                  <div className="starfield-search-results" role="listbox">
+                    {searchResults.length > 0 ? (
+                      searchResults.map(({ passage }) => (
+                        <button key={passage.id} onClick={() => focusSearchResult(passage)} role="option" type="button">
+                          <span>{passage.article.category || '未分类'} · {passage.article.title}</span>
+                          <strong>{passage.title}</strong>
+                          <small>{passage.excerpt || passage.text.slice(0, 90)}</small>
+                        </button>
+                      ))
+                    ) : (
+                      <p>没有找到对应星点。</p>
+                    )}
+                  </div>
+                )}
+              </form>
+              <div className="starfield-toolbar-actions" aria-label="星图工具">
+                <button
+                  aria-pressed={openPanel === 'network'}
+                  className="starfield-toolbar-button"
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setOpenPanel((current) => (current === 'network' ? '' : 'network'));
+                  }}
+                >
+                  <SlidersHorizontal size={16} />
+                  <span>关系</span>
+                  {(relationshipNetwork.relationshipTypes.length + relationshipNetwork.topics.length) > 0 && (
+                    <small>{relationshipNetwork.relationshipTypes.length + relationshipNetwork.topics.length}</small>
+                  )}
+                </button>
+                {activePassage && (
+                  <button
+                    aria-pressed={openPanel === 'focus'}
+                    className="starfield-toolbar-button"
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setOpenPanel((current) => (current === 'focus' ? '' : 'focus'));
+                    }}
+                  >
+                    <Info size={16} />
+                    <span>详情</span>
+                  </button>
+                )}
+                <a className="starfield-toolbar-icon" href="/" aria-label="返回首页" title="返回首页">
+                  <Home size={17} />
+                </a>
+              </div>
+            </div>
           </header>
 
           <GalaxyViewport
             data={sceneData}
             activePassageId={activePassageId}
             focusRequest={focusRequest}
-            onPickPassage={setActivePassageId}
+            onPickPassage={pickPassage}
             relationshipNetwork={relationshipNetwork}
           />
 
-          <div className="starfield-mobile-dock" aria-label="星图面板">
-            <button
-              aria-pressed={mobilePanel === 'network'}
-              type="button"
-              onClick={() => setMobilePanel((current) => (current === 'network' ? '' : 'network'))}
-            >
-              <SlidersHorizontal size={15} />
-              关系
-            </button>
-            <button
-              aria-pressed={mobilePanel === 'focus'}
-              disabled={!activePassage}
-              type="button"
-              onClick={() => setMobilePanel((current) => (current === 'focus' ? '' : 'focus'))}
-            >
-              <Info size={15} />
-              详情
-            </button>
-          </div>
-
           <RelationshipNetworkPanel
             filter={relationshipNetwork}
-            isMobileOpen={mobilePanel === 'network'}
+            isOpen={openPanel === 'network'}
             relationships={relationships}
             onChange={setRelationshipNetwork}
-            onClose={() => setMobilePanel('')}
+            onClose={() => setOpenPanel('')}
           />
 
-          <aside className={`starfield-focus-panel ${mobilePanel === 'focus' ? 'is-mobile-open' : ''}`} aria-label="星点详情">
-            {activePassage ? (
-              <>
-                <div className="starfield-focus-head">
-                  <span>{activePassage.article.category}</span>
-                  <button className="starfield-panel-close" type="button" onClick={() => setMobilePanel('')}>
-                    <X size={13} />
-                    收起
-                  </button>
-                  <button className="secondary-action starfield-focus-clear" type="button" onClick={clearFocus}>
-                    <X size={14} />
-                    取消聚焦
-                  </button>
-                </div>
-                <h2>{activePassage.title}</h2>
-                <p className="starfield-focus-excerpt">{activePassage.excerpt || activePassage.text.slice(0, 140)}</p>
-                <div className="starfield-keywords">
-                  {activePassage.keywords.slice(0, 4).map((keyword) => (
-                    <small key={keyword}>{keyword}</small>
-                  ))}
-                  {activePassage.keywords.length > 4 && <small>+{activePassage.keywords.length - 4}</small>}
-                </div>
-                <a className="primary-action" href={`/posts/${activePassage.article.slug}#${activePassage.anchor}`}>
-                  定位到原文
-                  <ExternalLink size={16} />
-                </a>
-                <div className="related-stars-list">
-                  {activeDeepPaths.length > 0 && (
-                    <>
-                      <h3>深层路径</h3>
-                      {activeDeepPaths.map((path) => {
-                        const currentIndex = path.passageIds.indexOf(activePassage.id);
-                        const nextPassageId = path.passageIds[currentIndex + 1] ?? path.passageIds[0];
-                        const nextPassage = passages.find((passage) => passage.id === nextPassageId) ?? null;
-                        return (
-                          <article className="starfield-deep-path-card" key={path.id}>
-                            <span>{path.pathType} · 强度 {path.strength.toFixed(2)}</span>
-                            <strong>{path.title}</strong>
-                            <p>{path.inquiry.question || path.rationale}</p>
-                            <div>
-                              {path.passageIds.map((passageId, index) => {
-                                const step = passages.find((passage) => passage.id === passageId);
-                                return (
-                                  <button
-                                    aria-current={passageId === activePassage.id ? 'step' : undefined}
-                                    key={`${path.id}-${passageId}`}
-                                    type="button"
-                                    onClick={() => focusPassage(passageId)}
-                                  >
-                                    <small>{index + 1}</small>
-                                    <span>{step?.title ?? '未知星点'}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {nextPassage && nextPassage.id !== activePassage.id && (
-                              <button className="primary-action" type="button" onClick={() => focusPassage(nextPassage.id)}>
-                                沿路径下一步
-                                <ChevronRight size={16} />
-                              </button>
-                            )}
-                          </article>
-                        );
-                      })}
-                    </>
-                  )}
-                  <h3>相关关系</h3>
-                  {related.length > 0 ? (
-                    related.map(({ passage, relationship }) => (
+          {activePassage && (
+            <aside className={`starfield-focus-panel ${openPanel === 'focus' ? 'is-open' : ''}`} aria-label="星点详情">
+              <div className="starfield-focus-head">
+                <span>{activePassage.article.category}</span>
+                <button className="starfield-panel-icon" type="button" onClick={clearFocus} aria-label="关闭详情并取消聚焦" title="取消聚焦">
+                  <X size={16} />
+                </button>
+              </div>
+              <h2>{activePassage.title}</h2>
+              <div className="starfield-focus-tabs" role="tablist" aria-label="星点信息">
+                <button aria-selected={focusPanelTab === 'overview'} role="tab" type="button" onClick={() => setFocusPanelTab('overview')}>概览</button>
+                <button aria-selected={focusPanelTab === 'paths'} role="tab" type="button" onClick={() => setFocusPanelTab('paths')}>深层路径 <small>{activeDeepPaths.length}</small></button>
+                <button aria-selected={focusPanelTab === 'related'} role="tab" type="button" onClick={() => setFocusPanelTab('related')}>相关关系 <small>{related.length}</small></button>
+              </div>
+
+              <div className="starfield-focus-content">
+                {focusPanelTab === 'overview' && (
+                  <div className="starfield-focus-overview" role="tabpanel">
+                    <p className="starfield-focus-excerpt">{activePassage.excerpt || activePassage.text.slice(0, 180)}</p>
+                    <div className="starfield-keywords">
+                      {activePassage.keywords.slice(0, 6).map((keyword) => (
+                        <small key={keyword}>{keyword}</small>
+                      ))}
+                      {activePassage.keywords.length > 6 && <small>+{activePassage.keywords.length - 6}</small>}
+                    </div>
+                    <dl className="starfield-focus-meta">
+                      <div><dt>来源文章</dt><dd>{activePassage.article.title}</dd></div>
+                      <div><dt>星图版本</dt><dd>{versionName || '已发布星图'}</dd></div>
+                    </dl>
+                  </div>
+                )}
+
+                {focusPanelTab === 'paths' && (
+                  <div className="starfield-path-list" role="tabpanel">
+                    {activeDeepPaths.length > 0 ? activeDeepPaths.map((path) => {
+                      const currentIndex = path.passageIds.indexOf(activePassage.id);
+                      const nextPassageId = path.passageIds[currentIndex + 1] ?? path.passageIds[0];
+                      const nextPassage = passages.find((passage) => passage.id === nextPassageId) ?? null;
+                      return (
+                        <article className="starfield-deep-path-card" key={path.id}>
+                          <span>{path.pathType} · 强度 {path.strength.toFixed(2)}</span>
+                          <strong>{path.title}</strong>
+                          <p>{path.inquiry.question || path.rationale}</p>
+                          <div>
+                            {path.passageIds.map((passageId, index) => {
+                              const step = passages.find((passage) => passage.id === passageId);
+                              return (
+                                <button aria-current={passageId === activePassage.id ? 'step' : undefined} key={`${path.id}-${passageId}`} type="button" onClick={() => focusPassage(passageId, 'paths')}>
+                                  <small>{index + 1}</small>
+                                  <span>{step?.title ?? '未知星点'}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {nextPassage && nextPassage.id !== activePassage.id && (
+                            <button className="starfield-path-next" type="button" onClick={() => focusPassage(nextPassage.id, 'paths')}>
+                              沿路径下一步
+                              <ChevronRight size={16} />
+                            </button>
+                          )}
+                        </article>
+                      );
+                    }) : <p className="starfield-panel-empty">这个星点暂时没有深层路径。</p>}
+                  </div>
+                )}
+
+                {focusPanelTab === 'related' && (
+                  <div className="related-stars-list" role="tabpanel">
+                    {related.length > 0 ? related.map(({ passage, relationship }) => (
                       <button key={`${relationship.id}-${passage.id}`} type="button" onClick={() => focusPassage(passage.id)}>
                         <span>{relationship.relationshipLabel}</span>
                         <strong>{passage.title}</strong>
                         <small>{relationship.rationale}</small>
                         <ChevronRight size={16} />
                       </button>
-                    ))
-                  ) : (
-                    <p>这个星点暂时没有已审核关系。</p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="starfield-guide">
-                <Orbit size={28} />
-                <h2>点击任意星点</h2>
-                <p>视角会聚焦到该文段，并显示跨文章优先的相关星点和关系说明。</p>
+                    )) : <p className="starfield-panel-empty">这个星点暂时没有已审核关系。</p>}
+                  </div>
+                )}
               </div>
-            )}
-          </aside>
 
-          {activePassage && (
-            <div className="starfield-inspector">
-              <span>当前聚焦</span>
-              <strong>{activePassage.title}</strong>
-              <small>{versionName || '已发布星图'}</small>
+              <a className="starfield-source-action" href={`/posts/${activePassage.article.slug}#${activePassage.anchor}`}>
+                定位到原文
+                <ExternalLink size={16} />
+              </a>
+            </aside>
+          )}
+
+          {!activePassage && openPanel === '' && (
+            <div className="starfield-onboarding" aria-live="polite">
+              <Orbit size={17} />
+              <span>选择一个星点开始探索</span>
             </div>
           )}
         </div>
@@ -424,6 +522,37 @@ function getRelationshipTopics(relationship: ApiStarfieldRelationship) {
   return rationaleTopics.length > 0 ? rationaleTopics : [UNTITLED_SAME_TOPIC];
 }
 
+function findStarfieldSearchResults(query: string, passages: ApiStarfieldPassage[]): StarfieldSearchResult[] {
+  const normalizedQuery = normalizeStarfieldSearchText(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  return passages
+    .map((passage) => {
+      const title = normalizeStarfieldSearchText(passage.title);
+      const articleTitle = normalizeStarfieldSearchText(passage.article.title);
+      const keywords = passage.keywords.map(normalizeStarfieldSearchText);
+      const excerpt = normalizeStarfieldSearchText(passage.excerpt || passage.text);
+      let score = 0;
+      if (title === normalizedQuery) score += 120;
+      else if (title.includes(normalizedQuery)) score += 90;
+      if (articleTitle === normalizedQuery) score += 110;
+      else if (articleTitle.includes(normalizedQuery)) score += 70;
+      if (keywords.some((keyword) => keyword === normalizedQuery)) score += 80;
+      else if (keywords.some((keyword) => keyword.includes(normalizedQuery))) score += 55;
+      if (excerpt.includes(normalizedQuery)) score += 25;
+      return { passage, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || (right.passage.starSize ?? 0) - (left.passage.starSize ?? 0) || left.passage.title.localeCompare(right.passage.title, 'zh-Hans-CN'))
+    .slice(0, 8);
+}
+
+function normalizeStarfieldSearchText(value: string) {
+  return value.trim().toLocaleLowerCase('zh-Hans-CN').replace(/\s+/g, '');
+}
+
 function getDeepPathsForPassage(activePassageId: string, deepPaths: ApiStarfieldDeepPath[]) {
   if (!activePassageId) {
     return [];
@@ -436,17 +565,18 @@ function getDeepPathsForPassage(activePassageId: string, deepPaths: ApiStarfield
 
 function RelationshipNetworkPanel({
   filter,
-  isMobileOpen = false,
+  isOpen = false,
   onChange,
   onClose,
   relationships,
 }: {
   filter: RelationshipNetworkFilter;
-  isMobileOpen?: boolean;
+  isOpen?: boolean;
   onChange: (next: RelationshipNetworkFilter) => void;
   onClose?: () => void;
   relationships: ApiStarfieldRelationship[];
 }) {
+  const [activeSection, setActiveSection] = useState<'types' | 'topics'>('types');
   const relationshipTypes = useMemo(() => {
     const next = new Map<string, { label: string; count: number }>();
     relationships.forEach((relationship) => {
@@ -475,6 +605,7 @@ function RelationshipNetworkPanel({
   }, [relationships]);
   const selectedTopics = new Set(filter.topics);
   const selectedRelationshipTypes = new Set(filter.relationshipTypes);
+  const selectedCount = filter.topics.length + filter.relationshipTypes.length;
 
   const toggleTopic = (topic: string) => {
     const nextTopics = selectedTopics.has(topic)
@@ -491,55 +622,48 @@ function RelationshipNetworkPanel({
   };
 
   return (
-    <aside className={`starfield-network-panel ${isMobileOpen ? 'is-mobile-open' : ''}`} aria-label="关系网控制">
+    <aside className={`starfield-network-panel ${isOpen ? 'is-open' : ''}`} aria-label="关系网控制">
       <div className="starfield-network-head">
         <div>
           <Network size={16} />
-          <span>关系分类</span>
+          <span>关系筛选</span>
         </div>
         <div className="starfield-network-actions">
-          <button
-            aria-pressed={filter.relationshipTypes.length === 0 && filter.topics.length === 0 && !filter.showAllSameTopic}
-            type="button"
-            onClick={() => onChange({ showAllSameTopic: false, topics: [], relationshipTypes: [] })}
-          >
-            清除
-          </button>
+          {selectedCount > 0 && (
+            <button type="button" onClick={() => onChange({ showAllSameTopic: false, topics: [], relationshipTypes: [] })}>
+              清除 {selectedCount}
+            </button>
+          )}
           {onClose && (
-            <button className="starfield-panel-close" type="button" onClick={onClose}>
-              <X size={13} />
-              收起
+            <button className="starfield-panel-icon" type="button" onClick={onClose} aria-label="关闭关系筛选" title="关闭">
+              <X size={15} />
             </button>
           )}
         </div>
       </div>
-      <p className="starfield-network-copy">点击关系类型或主题标签激活对应星线。</p>
-      <div className="starfield-network-types">
-        {relationshipTypes.map(([relationshipType, item]) => (
-          <button
-            aria-pressed={selectedRelationshipTypes.has(relationshipType)}
-            key={relationshipType}
-            type="button"
-            onClick={() => toggleRelationshipType(relationshipType)}
-          >
-            <span>{item.label}</span>
-            <small>{item.count}</small>
-          </button>
-        ))}
+      <div className="starfield-network-tabs" role="tablist" aria-label="筛选方式">
+        <button aria-selected={activeSection === 'types'} role="tab" type="button" onClick={() => setActiveSection('types')}>
+          关系类型 <small>{relationshipTypes.length}</small>
+        </button>
+        <button aria-selected={activeSection === 'topics'} role="tab" type="button" onClick={() => setActiveSection('topics')}>
+          主题 <small>{topics.length}</small>
+        </button>
       </div>
-      {topics.length > 0 && <p className="starfield-network-copy">同一主题标签</p>}
-      <div className="starfield-network-types">
-        {topics.map(([topic, count]) => (
-          <button
-            aria-pressed={selectedTopics.has(topic)}
-            key={topic}
-            type="button"
-            onClick={() => toggleTopic(topic)}
-          >
-            <span>{topic}</span>
-            <small>{count}</small>
-          </button>
-        ))}
+
+      <div className="starfield-network-types" role="tabpanel">
+        {activeSection === 'types'
+          ? relationshipTypes.map(([relationshipType, item]) => (
+            <button aria-pressed={selectedRelationshipTypes.has(relationshipType)} key={relationshipType} type="button" onClick={() => toggleRelationshipType(relationshipType)}>
+              <span>{item.label}</span>
+              <small>{item.count}</small>
+            </button>
+          ))
+          : topics.map(([topic, count]) => (
+            <button aria-pressed={selectedTopics.has(topic)} key={topic} type="button" onClick={() => toggleTopic(topic)}>
+              <span>{topic}</span>
+              <small>{count}</small>
+            </button>
+          ))}
       </div>
     </aside>
   );
@@ -555,7 +679,7 @@ function GalaxyViewport({
   activePassageId: string;
   data: GalaxySceneData;
   focusRequest: FocusRequest | null;
-  onPickPassage: (id: string) => void;
+  onPickPassage: (id: string, panelTab?: FocusPanelTab) => void;
   relationshipNetwork: RelationshipNetworkFilter;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -575,7 +699,7 @@ function GalaxyViewport({
   const currentFocusRef = useRef(new THREE.Vector3());
   const cameraFlightRef = useRef<CameraFlight | null>(null);
   const cameraLockRef = useRef<{ targetId: string; offset: THREE.Vector3 } | null>(null);
-  const focusPassageRef = useRef<(id: string, shouldLock?: boolean) => void>(() => undefined);
+  const focusPassageRef = useRef<(id: string, shouldLock?: boolean, panelTab?: FocusPanelTab) => void>(() => undefined);
   const hoveredIdRef = useRef('');
   const activePassageIdRef = useRef(activePassageId);
   const lockedPassageIdRef = useRef('');
@@ -622,7 +746,7 @@ function GalaxyViewport({
       return;
     }
     lastFocusRequestNonceRef.current = focusRequest.nonce;
-    focusPassageRef.current(focusRequest.id, true);
+    focusPassageRef.current(focusRequest.id, true, focusRequest.panelTab);
   }, [focusRequest]);
 
   useEffect(() => {
@@ -781,8 +905,8 @@ function GalaxyViewport({
       };
     };
 
-    focusPassageRef.current = (id: string, shouldLock = true) => {
-      onPickPassage(id);
+    focusPassageRef.current = (id: string, shouldLock = true, panelTab: FocusPanelTab = 'overview') => {
+      onPickPassage(id, panelTab);
       startCameraFlightToPassage(id, shouldLock);
     };
 

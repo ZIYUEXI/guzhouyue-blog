@@ -19,7 +19,8 @@ def main() -> None:
 
         from fastapi.testclient import TestClient
 
-        from .app import app
+        from . import app as app_module
+        app = app_module.app
         from .config import config
         from .seed import seed
         from .seed_test_articles import seed_test_articles
@@ -101,7 +102,20 @@ def main() -> None:
         check("admin write without csrf is rejected", csrf_missing.status_code in {401, 403}, csrf_missing.text)
 
         settings = client.put("/api/admin/settings", json={"stylePreset": "cyber", "ownerName": "测试站长", "ownerAvatarUrl": "/avatar.png"}, headers=write_headers)
-        homepage = client.put("/api/admin/homepage", json={"siteName": "兼容测试站", "siteTagline": "旧契约"}, headers=write_headers)
+        original_start_public_deploy_task = app_module.start_public_deploy_task
+        app_module.start_public_deploy_task = lambda: {
+            "id": "deploy_compat_homepage",
+            "status": "pending",
+            "createdAt": "2026-06-15T00:00:00.000Z",
+            "updatedAt": "2026-06-15T00:00:00.000Z",
+            "logs": [],
+            "result": None,
+            "error": "",
+        }
+        try:
+            homepage = client.put("/api/admin/homepage", json={"siteName": "兼容测试站", "siteTagline": "旧契约"}, headers=write_headers)
+        finally:
+            app_module.start_public_deploy_task = original_start_public_deploy_task
         note_sections_payload = admin_content.json().get("noteSections", [])
         note_sections_before = len(note_sections_payload)
         note_sections = client.put("/api/admin/note-sections", json=note_sections_payload, headers=write_headers)
@@ -146,7 +160,7 @@ def main() -> None:
             starfield_passages.status_code == 200
             and bool(starfield_passage_job_id)
             and starfield_passage_initial_job is not None
-            and starfield_passage_initial_job.get("status") in {"pending", "running", "succeeded"}
+            and starfield_passage_initial_job.get("status") in {"pending", "running", "succeeded", "succeeded_with_fallback"}
             and starfield_passage_initial_job.get("progressTotal", 0) >= 1
             and bool(starfield_passage_initial_job.get("currentStep"))
         )
@@ -155,12 +169,12 @@ def main() -> None:
             starfield_passages = client.get(f"/api/admin/starfield/versions/{starfield_version_id}", headers=write_headers)
             starfield_passage_jobs = starfield_passages.json().get("jobs", [])
             starfield_passage_final_job = next((job for job in starfield_passage_jobs if job.get("id") == starfield_passage_job_id), None)
-            if starfield_passage_final_job and starfield_passage_final_job.get("status") in {"succeeded", "failed"}:
+            if starfield_passage_final_job and starfield_passage_final_job.get("status") in {"succeeded", "succeeded_with_fallback", "failed"}:
                 break
             time.sleep(0.05)
         starfield_passage_progress_recorded = (
             starfield_passage_final_job is not None
-            and starfield_passage_final_job.get("status") == "succeeded"
+            and starfield_passage_final_job.get("status") == "succeeded_with_fallback"
             and starfield_passage_final_job.get("progressCurrent") == starfield_passage_final_job.get("progressTotal")
             and bool(starfield_passage_final_job.get("currentStep"))
         )
@@ -203,7 +217,7 @@ def main() -> None:
             starfield_relationships.status_code == 200
             and bool(starfield_relationship_job_id)
             and starfield_relationship_initial_job is not None
-            and starfield_relationship_initial_job.get("status") in {"pending", "running", "succeeded"}
+            and starfield_relationship_initial_job.get("status") in {"pending", "running", "succeeded", "succeeded_with_fallback"}
             and starfield_relationship_initial_job.get("progressTotal", 0) >= 1
             and bool(starfield_relationship_initial_job.get("currentStep"))
         )
@@ -212,12 +226,12 @@ def main() -> None:
             starfield_relationships = client.get(f"/api/admin/starfield/versions/{starfield_version_id}", headers=write_headers)
             starfield_relationship_jobs = starfield_relationships.json().get("jobs", [])
             starfield_relationship_final_job = next((job for job in starfield_relationship_jobs if job.get("id") == starfield_relationship_job_id), None)
-            if starfield_relationship_final_job and starfield_relationship_final_job.get("status") in {"succeeded", "failed"}:
+            if starfield_relationship_final_job and starfield_relationship_final_job.get("status") in {"succeeded", "succeeded_with_fallback", "failed"}:
                 break
             time.sleep(0.05)
         starfield_relationship_progress_recorded = (
             starfield_relationship_final_job is not None
-            and starfield_relationship_final_job.get("status") == "succeeded"
+            and starfield_relationship_final_job.get("status") == "succeeded_with_fallback"
             and starfield_relationship_final_job.get("progressCurrent") == starfield_relationship_final_job.get("progressTotal")
             and bool(starfield_relationship_final_job.get("currentStep"))
         )
@@ -299,7 +313,21 @@ def main() -> None:
             if first_relationship.get("id")
             else None
         )
-        starfield_publish = client.post(f"/api/admin/starfield/versions/{starfield_version_id}/publish", headers=write_headers)
+        original_start_public_deploy_task = app_module.start_public_deploy_task
+        app_module.start_public_deploy_task = lambda: {
+            "id": "deploy_compat_starfield",
+            "status": "pending",
+            "createdAt": "2026-06-15T00:00:00.000Z",
+            "updatedAt": "2026-06-15T00:00:00.000Z",
+            "logs": [],
+            "result": None,
+            "error": "",
+        }
+        try:
+            starfield_publish = client.post(f"/api/admin/starfield/versions/{starfield_version_id}/publish", headers=write_headers)
+        finally:
+            app_module.start_public_deploy_task = original_start_public_deploy_task
+        starfield_publish_started_public_deploy = starfield_publish.json().get("publicDeployTask", {}).get("id") == "deploy_compat_starfield"
         public_starfield_after_publish = client.get("/api/starfield")
         public_starfield_relationships = public_starfield_after_publish.json().get("relationships", [])
         public_starfield_deep_paths = public_starfield_after_publish.json().get("deepPaths", [])
@@ -344,7 +372,7 @@ def main() -> None:
             incremental_relationship_final = client.get(f"/api/admin/starfield/versions/{incremental_version_id}", headers=write_headers)
             incremental_relationship_jobs = incremental_relationship_final.json().get("jobs", [])
             incremental_relationship_final_job = next((job for job in incremental_relationship_jobs if job.get("id") == incremental_relationship_job_id), None)
-            if incremental_relationship_final_job and incremental_relationship_final_job.get("status") in {"succeeded", "failed"}:
+            if incremental_relationship_final_job and incremental_relationship_final_job.get("status") in {"succeeded", "succeeded_with_fallback", "failed"}:
                 break
             time.sleep(0.05)
         incremental_reconfirmed_relationships = [
@@ -391,7 +419,13 @@ def main() -> None:
         draft_missing = client.get("/api/admin/drafts/compat")
 
         check("settings save preserves response shape", settings.status_code == 200 and settings.json().get("stylePreset") == "cyber", settings.text)
-        check("homepage save returns homepage", homepage.status_code == 200 and homepage.json().get("siteName") == "兼容测试站", homepage.text)
+        check(
+            "homepage save starts public deploy",
+            homepage.status_code == 200
+            and homepage.json().get("siteName") == "兼容测试站"
+            and homepage.json().get("publicDeployTask", {}).get("id") == "deploy_compat_homepage",
+            homepage.text,
+        )
         check("note sections roundtrip", note_sections.status_code == 200 and len(note_sections.json().get("items", [])) == note_sections_before, note_sections.text)
         check(
             "note section delete persists even when articles referenced it",
@@ -430,6 +464,7 @@ def main() -> None:
         check("admin tasks expose generic task sources", admin_tasks.status_code == 200 and admin_tasks_expose_general_source, admin_tasks.text)
         check("admin starfield relationship acceptance is optional and safe", starfield_accept_relationship is None or starfield_accept_relationship.status_code == 200, starfield_accept_relationship.text if starfield_accept_relationship else "")
         check("admin starfield version can be published", starfield_publish.status_code == 200 and starfield_publish.json().get("version", {}).get("isActive") is True, starfield_publish.text)
+        check("admin starfield publish starts public deploy", starfield_publish_started_public_deploy, starfield_publish.text)
         check("public starfield exposes accepted passages only", public_starfield_after_publish.status_code == 200 and len(public_starfield_after_publish.json().get("passages", [])) >= 1, public_starfield_after_publish.text)
         check("public starfield exposes reader relationship shape only", public_starfield_after_publish.status_code == 200 and len(public_starfield_relationships) >= 1 and public_starfield_relationship_shape_ok, public_starfield_after_publish.text)
         check("public starfield exposes reader deep path shape only", public_starfield_after_publish.status_code == 200 and public_starfield_deep_paths_shape_ok, public_starfield_after_publish.text)
@@ -439,7 +474,7 @@ def main() -> None:
         check(
             "admin starfield incremental relationship rebuild reconfirms parent relationships",
             incremental_relationship_final_job is not None
-            and incremental_relationship_final_job.get("status") == "succeeded"
+            and incremental_relationship_final_job.get("status") == "succeeded_with_fallback"
             and bool(incremental_reconfirmed_relationships)
             and incremental_reconfirmed_keeps_parent_rationale,
             incremental_relationship_final.text,
@@ -468,10 +503,14 @@ def main() -> None:
         deleted = client.delete("/api/admin/articles/compat-created-article", headers=write_headers)
         trash = client.get("/api/admin/trash/articles")
         restored = client.post("/api/admin/trash/articles/compat-created-article/restore", headers=write_headers)
+        deleted_again = client.delete("/api/admin/articles/compat-created-article", headers=write_headers)
+        emptied = client.delete("/api/admin/trash/articles", headers=write_headers)
+        trash_after_empty = client.get("/api/admin/trash/articles")
 
         check("article create/update/publish is compatible", created.status_code == 201 and updated.status_code == 200 and published.status_code == 200 and public_created.status_code == 200, {"created": created.text, "updated": updated.text, "published": published.text, "public": public_created.text})
         check("unpublish hides public article", unpublished.status_code == 200 and public_unpublished.status_code == 404, public_unpublished.text)
         check("delete/trash/restore roundtrip", deleted.status_code == 200 and trash.status_code == 200 and any(item.get("slug") == "compat-created-article" for item in trash.json().get("items", [])) and restored.status_code == 200, {"trash": trash.text, "restored": restored.text})
+        check("empty trash permanently deletes deleted articles", deleted_again.status_code == 200 and emptied.status_code == 200 and emptied.json().get("deletedCount", 0) >= 1 and trash_after_empty.status_code == 200 and not any(item.get("slug") == "compat-created-article" for item in trash_after_empty.json().get("items", [])), {"empty": emptied.text, "trash": trash_after_empty.text})
 
         command_parse = client.post("/api/admin/commands/parse", json={"input": 'article:set-title article_test-markdown-kitchen-sink --title="兼容标题"'}, headers=write_headers)
         command_dry = client.post("/api/admin/commands/run", json={"input": "article:list-ids", "dryRun": True}, headers=write_headers)

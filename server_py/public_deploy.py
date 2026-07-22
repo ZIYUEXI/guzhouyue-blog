@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -67,11 +68,7 @@ def publish_public_snapshot(log: Callable[[str], None] | None = None) -> dict[st
     export_public_snapshot()
     _log(log, "公开快照导出完成。")
 
-    public_root = ROOT_DIR / "public"
-    snapshot_data = public_root / "data"
-    snapshot_gallery = public_root / "uploads" / "gallery"
-    if not snapshot_data.exists():
-        raise PublicDeployError(f"Export did not create snapshot data: {snapshot_data}")
+    static_dist = _build_public_frontend(log)
 
     with tempfile.TemporaryDirectory(prefix="guzhouyue-public-deploy-") as temp_dir:
         git_env = _git_env(Path(temp_dir))
@@ -81,14 +78,10 @@ def publish_public_snapshot(log: Callable[[str], None] | None = None) -> dict[st
         _run(["git", "fetch", "--progress", "origin", deploy_branch], cwd=worktree, env=git_env, log=log)
         _run(["git", "reset", "--hard", f"origin/{deploy_branch}"], cwd=worktree, env=git_env, log=log)
 
-        _log(log, "复制 data/ 快照。")
-        _copy_tree(snapshot_data, worktree / "data")
-        if snapshot_gallery.exists():
-            _log(log, "复制 uploads/gallery/ 上传图片。")
-            _copy_tree(snapshot_gallery, worktree / "uploads" / "gallery")
+        _replace_public_site_assets(static_dist, worktree, log)
 
-        _run(["git", "add", "--all", "data", "uploads/gallery"], cwd=worktree, env=git_env, log=log)
-        changed = _run(["git", "status", "--short", "--", "data", "uploads/gallery"], cwd=worktree, capture=True, env=git_env, log=log).stdout.strip()
+        _run(["git", "add", "--all"], cwd=worktree, env=git_env, log=log)
+        changed = _run(["git", "status", "--short"], cwd=worktree, capture=True, env=git_env, log=log).stdout.strip()
         if not changed:
             commit = _run(["git", "rev-parse", "--short", "HEAD"], cwd=worktree, capture=True, env=git_env, log=log).stdout.strip()
             return {
@@ -115,6 +108,80 @@ def publish_public_snapshot(log: Callable[[str], None] | None = None) -> dict[st
     }
 
 
+def _build_public_frontend(log: Callable[[str], None] | None) -> Path:
+    _log(log, "开始构建 Cloudflare Pages 静态前端。")
+    build_env = {
+        **os.environ,
+        "VITE_PUBLIC_DATA_SOURCE": "static",
+        "VITE_ADMIN_ORIGIN": os.environ.get("VITE_ADMIN_ORIGIN", "https://admin.ziyuexi.top"),
+    }
+    _run(["npm", "run", "build"], cwd=ROOT_DIR, env=build_env, log=log)
+    static_dist = ROOT_DIR / "dist"
+    if not (static_dist / "index.html").exists():
+        raise PublicDeployError(f"Static frontend build did not create index.html: {static_dist}")
+    _log(log, "静态前端构建完成。")
+    return static_dist
+
+
+def _replace_public_site_assets(static_dist: Path, worktree: Path, log: Callable[[str], None] | None) -> None:
+    _log(log, "替换 Cloudflare Pages 静态资源和 Functions。")
+    for entry in worktree.iterdir():
+        if entry.name == ".git":
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+    for entry in static_dist.iterdir():
+        target = worktree / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, target)
+        else:
+            shutil.copy2(entry, target)
+
+    functions_source = ROOT_DIR / "functions"
+    if functions_source.exists():
+        shutil.copytree(functions_source, worktree / "functions")
+    _write_cloudflare_build_shim(worktree)
+
+
+def _write_cloudflare_build_shim(worktree: Path) -> None:
+    scripts_dir = worktree / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (worktree / "package.json").write_text(
+        json.dumps({"private": True, "type": "module", "scripts": {"build": "node scripts/cloudflare-pages-build.mjs"}}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "cloudflare-pages-build.mjs").write_text(
+        "\n".join(
+            [
+                "import { cpSync, mkdirSync, readdirSync, rmSync } from 'node:fs';",
+                "import { join } from 'node:path';",
+                "",
+                "const root = process.cwd();",
+                "const output = join(root, 'dist');",
+                "const excluded = new Set(['.git', 'dist', 'functions', 'node_modules', 'package.json', 'package-lock.json', 'scripts']);",
+                "",
+                "rmSync(output, { recursive: true, force: true });",
+                "mkdirSync(output, { recursive: true });",
+                "",
+                "for (const entry of readdirSync(root, { withFileTypes: true })) {",
+                "  if (!excluded.has(entry.name)) cpSync(join(root, entry.name), join(output, entry.name), { recursive: true });",
+                "}",
+                "",
+                "console.log('Prepared prebuilt static files in dist/ for Cloudflare Pages.');",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (worktree / "README.md").write_text(
+        "# Guzhouyue Blog Public Deploy\n\nGenerated by the Tencent backend public deployment task.\n",
+        encoding="utf-8",
+    )
+
+
 def _prepare_worktree(deploy_repo: str, deploy_branch: str, git_env: dict[str, str] | None, log: Callable[[str], None] | None) -> Path:
     configured_worktree = os.environ.get("PUBLIC_DEPLOY_WORKTREE")
     if configured_worktree:
@@ -131,13 +198,6 @@ def _prepare_worktree(deploy_repo: str, deploy_branch: str, git_env: dict[str, s
     _log(log, f"准备临时部署仓库：{deploy_repo} ({deploy_branch})")
     _run(["git", "clone", "--progress", "--depth", "1", "--branch", deploy_branch, "--single-branch", deploy_repo, str(worktree)], env=git_env, log=log)
     return worktree
-
-
-def _copy_tree(source: Path, target: Path) -> None:
-    if target.exists():
-        shutil.rmtree(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target)
 
 
 def _git_env(temp_dir: Path) -> dict[str, str] | None:

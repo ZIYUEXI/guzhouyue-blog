@@ -2,6 +2,7 @@ import {
   Bot,
   Bell,
   CalendarDays,
+  ChevronDown,
   ChevronRight,
   Code2,
   Columns2,
@@ -27,6 +28,8 @@ import {
   Save,
   Image as ImageIcon,
   Orbit,
+  PanelRightClose,
+  PanelRightOpen,
   SquareTerminal,
   Sun,
   Table2,
@@ -90,6 +93,7 @@ import {
   createAdminArticle,
   deleteAdminArticle,
   deleteAdminTag,
+  emptyAdminTrash,
   fetchAdminContent,
   fetchAdminComments,
   fetchAdminDraft,
@@ -869,6 +873,52 @@ const adminPanelIds = new Set<AdminPanelId>([
   'appearance',
 ]);
 
+type AdminNavGroupId = 'content' | 'starfield' | 'system';
+
+type AdminNavItem = {
+  panel: AdminPanelId;
+  label: string;
+  Icon: typeof FileText;
+  meta: string;
+};
+
+function getAdminNavGroup(panel: AdminPanelId): AdminNavGroupId | null {
+  if (['tags', 'notes', 'series', 'gallery', 'archive', 'trash'].includes(panel)) {
+    return 'content';
+  }
+  if (['starfield', 'starfield-generate', 'starfield-review', 'tasks'].includes(panel)) {
+    return 'starfield';
+  }
+  if (['commands', 'llm', 'homepage', 'appearance'].includes(panel)) {
+    return 'system';
+  }
+  return null;
+}
+
+function AdminNavItems({
+  activePanel,
+  items,
+  onSelect,
+}: {
+  activePanel: AdminPanelId;
+  items: AdminNavItem[];
+  onSelect: (panel: AdminPanelId) => void;
+}) {
+  return (
+    <div className="admin-nav-items">
+      {items.map(({ panel, label, Icon, meta }) => (
+        <button aria-pressed={activePanel === panel} key={panel} onClick={() => onSelect(panel)} type="button">
+          <Icon size={18} />
+          <span>
+            <strong>{label}</strong>
+            <small>{meta}</small>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function navigateAdmin(path: string) {
   window.history.pushState({}, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
@@ -949,6 +999,8 @@ function AdminPage({
   const [privateMemoItems, setPrivateMemoItems] = useState<ApiPrivateMemoItem[]>([]);
   const [privateMemoNotice, setPrivateMemoNotice] = useState('');
   const [trashNotice, setTrashNotice] = useState('');
+  const [expandedNavGroup, setExpandedNavGroup] = useState<'content' | 'starfield' | 'system' | null>(() => getAdminNavGroup(getAdminPanelFromUrl()));
+  const [homepageSaveStatus, setHomepageSaveStatus] = useState<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
   const archiveGroups = buildArchive(content.posts);
   const editPostSlug = getAdminEditPostSlug(window.location.pathname);
   const editingPost = editPostSlug ? getPostBySlug(content.posts, editPostSlug) : undefined;
@@ -958,6 +1010,9 @@ function AdminPage({
   const adminPostsPage = getAdminPostsPageFromUrl();
   const composerReturnPath = getSafeAdminReturnPath(window.location.search);
   const noteSectionsSaveTimerRef = useRef<number | null>(null);
+  const homepageSaveTimerRef = useRef<number | null>(null);
+  const pendingHomepageSaveRef = useRef<HomepageCopy | null>(null);
+  const homepageSaveInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!isPostComposerRoute) {
@@ -1051,6 +1106,9 @@ function AdminPage({
     return () => {
       if (noteSectionsSaveTimerRef.current !== null) {
         window.clearTimeout(noteSectionsSaveTimerRef.current);
+      }
+      if (homepageSaveTimerRef.current !== null) {
+        window.clearTimeout(homepageSaveTimerRef.current);
       }
     };
   }, []);
@@ -1179,6 +1237,13 @@ function AdminPage({
     }
 
     return { success: restoredPosts.length, failed: restoringSlugs.size - restoredPosts.length };
+  }
+
+  async function emptyTrash() {
+    setTrashNotice('');
+    const result = await emptyAdminTrash();
+    setDeletedPosts([]);
+    return result.deletedCount;
   }
 
   async function createPost(post: Post) {
@@ -1698,7 +1763,48 @@ function AdminPage({
 
   function updateHomepage(homepage: HomepageCopy) {
     onContentChange({ ...content, homepage });
-    void saveAdminHomepage(homepage).catch(() => undefined);
+    pendingHomepageSaveRef.current = homepage;
+    setHomepageSaveStatus('pending');
+
+    if (homepageSaveTimerRef.current !== null) {
+      window.clearTimeout(homepageSaveTimerRef.current);
+    }
+
+    homepageSaveTimerRef.current = window.setTimeout(() => {
+      homepageSaveTimerRef.current = null;
+      void flushHomepageSave();
+    }, 450);
+  }
+
+  async function flushHomepageSave() {
+    if (homepageSaveInFlightRef.current) {
+      return;
+    }
+
+    const homepage = pendingHomepageSaveRef.current;
+    if (!homepage) {
+      return;
+    }
+
+    pendingHomepageSaveRef.current = null;
+    homepageSaveInFlightRef.current = true;
+    setHomepageSaveStatus('saving');
+
+    try {
+      await saveAdminHomepage(homepage);
+      setHomepageSaveStatus(pendingHomepageSaveRef.current ? 'pending' : 'saved');
+    } catch {
+      setHomepageSaveStatus('error');
+    } finally {
+      homepageSaveInFlightRef.current = false;
+      if (pendingHomepageSaveRef.current) {
+        if (homepageSaveTimerRef.current !== null) {
+          window.clearTimeout(homepageSaveTimerRef.current);
+          homepageSaveTimerRef.current = null;
+        }
+        void flushHomepageSave();
+      }
+    }
   }
 
   function restoreDefaults() {
@@ -1708,6 +1814,10 @@ function AdminPage({
 
   function selectAdminPanel(panel: AdminPanelId) {
     setActivePanel(panel);
+    const navGroup = getAdminNavGroup(panel);
+    if (navGroup) {
+      setExpandedNavGroup(navGroup);
+    }
     navigateAdmin(panel === 'overview' ? '/admin' : `/admin/posts?panel=${panel}`);
   }
 
@@ -1803,38 +1913,66 @@ function AdminPage({
 
             <section className="admin-workspace">
               <aside className="admin-sidebar" aria-label="管理菜单">
+                <span className="admin-nav-section-label">工作台</span>
+                <AdminNavItems
+                  activePanel={activePanel}
+                  items={[
+                    { panel: 'overview', label: '总览', Icon: Columns2, meta: `${content.posts.length} 篇内容` },
+                    { panel: 'posts', label: '文章管理', Icon: FileText, meta: `${content.posts.length} 篇` },
+                    { panel: 'comments', label: '评论审核', Icon: MessageCircle, meta: '待处理' },
+                    { panel: 'private-memos', label: '私人备忘', Icon: Bell, meta: `${privateMemoItems.filter((item) => item.status === 'open').length} 条未完成` },
+                  ]}
+                  onSelect={selectAdminPanel}
+                />
                 {[
-                  { panel: 'overview', label: '总览', Icon: Columns2, meta: `${content.posts.length} 篇内容` },
-                  { panel: 'posts', label: '文章管理', Icon: FileText, meta: `${content.posts.length} 篇` },
-                  { panel: 'tags', label: '标签管理', Icon: Tags, meta: `${adminTags.length} 个` },
-                  { panel: 'trash', label: '回收站', Icon: Trash2, meta: `${deletedPosts.length} 篇` },
-                  { panel: 'comments', label: '评论审核', Icon: MessageCircle, meta: '待处理' },
-                  { panel: 'private-memos', label: '私人备忘', Icon: Bell, meta: `${privateMemoItems.filter((item) => item.status === 'open').length} 条未完成` },
-                  { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
-                  { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
-                  { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
-                  { panel: 'starfield-generate', label: '星图生成', Icon: Orbit, meta: 'Passage' },
-                  { panel: 'starfield-review', label: '星图审批', Icon: GitBranch, meta: '文段关系' },
-                  { panel: 'tasks', label: '任务管理', Icon: List, meta: '后台任务' },
-                  { panel: 'archive', label: '归档管理', Icon: CalendarDays, meta: `${archiveGroups.length} 个月` },
-                  { panel: 'commands', label: '快速指令', Icon: SquareTerminal, meta: '指令通道' },
-                  { panel: 'llm', label: 'LLM 配置', Icon: Bot, meta: 'deepseek-v4-pro' },
-                  { panel: 'homepage', label: '主页词汇', Icon: Settings, meta: '首页内容' },
-                  { panel: 'appearance', label: '外观设置', Icon: Sun, meta: colorScheme === 'light' ? '亮色' : '暗色' },
-                ].map(({ panel, label, Icon, meta }) => (
-                  <button
-                    aria-pressed={activePanel === panel}
-                    key={panel}
-                    onClick={() => selectAdminPanel(panel as AdminPanelId)}
-                    type="button"
-                  >
-                    <Icon size={18} />
-                    <span>
-                      <strong>{label}</strong>
-                      <small>{meta}</small>
-                    </span>
-                  </button>
-                ))}
+                  {
+                    id: 'content' as const,
+                    label: '内容管理',
+                    items: [
+                      { panel: 'tags', label: '标签管理', Icon: Tags, meta: `${adminTags.length} 个` },
+                      { panel: 'notes', label: '札记分类', Icon: Feather, meta: `${content.noteSections.length} 类` },
+                      { panel: 'series', label: '专题管理', Icon: ListOrdered, meta: `${content.featuredSeries.length} 个` },
+                      { panel: 'gallery', label: '图库管理', Icon: ImageIcon, meta: `${content.galleryAlbums.length} 个相册` },
+                      { panel: 'archive', label: '归档管理', Icon: CalendarDays, meta: `${archiveGroups.length} 个月` },
+                      { panel: 'trash', label: '回收站', Icon: Trash2, meta: `${deletedPosts.length} 篇` },
+                    ],
+                  },
+                  {
+                    id: 'starfield' as const,
+                    label: '星图',
+                    items: [
+                      { panel: 'starfield-generate', label: '星图生成', Icon: Orbit, meta: 'Passage' },
+                      { panel: 'starfield-review', label: '星图审批', Icon: GitBranch, meta: '文段关系' },
+                      { panel: 'tasks', label: '任务管理', Icon: List, meta: '后台任务' },
+                    ],
+                  },
+                  {
+                    id: 'system' as const,
+                    label: '系统设置',
+                    items: [
+                      { panel: 'commands', label: '快速指令', Icon: SquareTerminal, meta: '指令通道' },
+                      { panel: 'llm', label: 'LLM 配置', Icon: Bot, meta: 'deepseek-v4-pro' },
+                      { panel: 'homepage', label: '主页词汇', Icon: Settings, meta: '首页内容' },
+                      { panel: 'appearance', label: '外观设置', Icon: Sun, meta: colorScheme === 'light' ? '亮色' : '暗色' },
+                    ],
+                  },
+                ].map((group) => {
+                  const expanded = expandedNavGroup === group.id || group.items.some((item) => item.panel === activePanel);
+                  return (
+                    <section className="admin-nav-group" key={group.id}>
+                      <button
+                        aria-expanded={expanded}
+                        className="admin-nav-group-toggle"
+                        onClick={() => setExpandedNavGroup(expanded ? null : group.id)}
+                        type="button"
+                      >
+                        <span>{group.label}</span>
+                        <ChevronDown size={16} />
+                      </button>
+                      {expanded && <AdminNavItems activePanel={activePanel} items={group.items as AdminNavItem[]} onSelect={selectAdminPanel} />}
+                    </section>
+                  );
+                })}
               </aside>
 
               <div className="admin-content">
@@ -1875,6 +2013,7 @@ function AdminPage({
                 {activePanel === 'trash' && (
                   <AdminTrashPanel
                     notice={trashNotice}
+                    onEmptyTrash={emptyTrash}
                     onRestorePosts={restorePosts}
                     posts={deletedPosts}
                   />
@@ -1946,7 +2085,11 @@ function AdminPage({
                 {activePanel === 'llm' && <AdminLlmConfigPanel />}
 
                 {activePanel === 'homepage' && (
-                  <AdminHomepagePanel homepage={content.homepage} onHomepageChange={updateHomepage} />
+                  <AdminHomepagePanel
+                    homepage={content.homepage}
+                    onHomepageChange={updateHomepage}
+                    saveStatus={homepageSaveStatus}
+                  />
                 )}
 
                 {activePanel === 'appearance' && (
@@ -1981,10 +2124,12 @@ function AdminPage({
 
 function AdminTrashPanel({
   notice,
+  onEmptyTrash,
   onRestorePosts,
   posts,
 }: {
   notice: string;
+  onEmptyTrash: () => Promise<number>;
   onRestorePosts: (slugs: string[]) => Promise<BatchResult>;
   posts: Post[];
 }) {
@@ -2040,6 +2185,29 @@ function AdminTrashPanel({
     }
   }
 
+  async function runEmptyTrash() {
+    if (posts.length === 0 || batchBusy) {
+      return;
+    }
+
+    const confirmed = window.confirm(`确定永久删除回收站内的 ${posts.length} 篇文章吗？此操作不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setBatchBusy(true);
+    setBatchNotice('');
+    try {
+      const deletedCount = await onEmptyTrash();
+      setSelectedSlugs([]);
+      setBatchNotice(`已永久删除 ${deletedCount} 篇文章。`);
+    } catch {
+      setBatchNotice('清空失败，请确认后台服务正在运行并且登录没有过期。');
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   return (
     <section className="admin-panel" aria-label="回收站">
       <PanelHeader title="回收站" />
@@ -2063,6 +2231,9 @@ function AdminTrashPanel({
               onClick={() => void runRestore(selectedSlugs)}
             >
               批量恢复
+            </button>
+            <button className="danger-action" disabled={batchBusy} type="button" onClick={() => void runEmptyTrash()}>
+              清空回收站
             </button>
           </div>
         )}
@@ -2389,6 +2560,7 @@ function AdminPostComposer({
   const [formulaValue, setFormulaValue] = useState('E = mc^2');
   const [formulaMode, setFormulaMode] = useState<FormulaMode>('block');
   const [focusMode, setFocusMode] = useState(false);
+  const [splitPreviewVisible, setSplitPreviewVisible] = useState(true);
   const [activeHeadingId, setActiveHeadingId] = useState('');
   const [draggingHeadingId, setDraggingHeadingId] = useState('');
   const [isComposerImageDragging, setIsComposerImageDragging] = useState(false);
@@ -2399,6 +2571,8 @@ function AdminPostComposer({
   const [aiAgentNotice, setAiAgentNotice] = useState('');
   const [aiAgentSuggestion, setAiAgentSuggestion] = useState<ApiArticleMetadataSuggestion | null>(null);
   const markdownInputRef = useRef<HTMLTextAreaElement>(null);
+  const splitEditorGutterRef = useRef<HTMLOListElement>(null);
+  const splitPreviewRef = useRef<HTMLElement>(null);
   const mdxEditorRef = useRef<RichMarkdownEditorHandle>(null);
   const skipNextWysiwygSyncRef = useRef(false);
   const paperRef = useRef<HTMLElement>(null);
@@ -2425,6 +2599,7 @@ function AdminPostComposer({
   const bodyCharacterCount = bodyMarkdown.replace(/\s/g, '').length;
   const paragraphCount = bodyMarkdown.trim() ? bodyMarkdown.trim().split(/\n{2,}/).length : 0;
   const headingCount = (bodyMarkdown.match(/^#{1,6}\s+/gm) ?? []).length;
+  const splitLineCount = useMemo(() => Math.max(1, bodyMarkdown.split(/\r?\n/).length), [bodyMarkdown]);
   const titleStatus = title.trim() || '未命名文章';
   const outlineItems = useMemo(() => getMarkdownOutline(bodyMarkdown), [bodyMarkdown]);
   const existingTags = useMemo(() => collectExistingTags(posts), [posts]);
@@ -2602,6 +2777,28 @@ function AdminPostComposer({
       updateDraftField({ composerMode: resolvedMode });
       return resolvedMode;
     });
+  }
+
+  function syncSplitScroll(source: 'editor' | 'preview', sourceElement: HTMLElement) {
+    const editor = markdownInputRef.current;
+    const preview = splitPreviewRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const sourceMaxScroll = Math.max(0, sourceElement.scrollHeight - sourceElement.clientHeight);
+    const progress = sourceMaxScroll === 0 ? 0 : sourceElement.scrollTop / sourceMaxScroll;
+    const editorMaxScroll = Math.max(0, editor.scrollHeight - editor.clientHeight);
+    const previewMaxScroll = preview ? Math.max(0, preview.scrollHeight - preview.clientHeight) : 0;
+
+    if (source === 'editor') {
+      splitEditorGutterRef.current?.scrollTo({ top: editor.scrollTop });
+      preview?.scrollTo({ top: progress * previewMaxScroll });
+      return;
+    }
+
+    editor.scrollTo({ top: progress * editorMaxScroll });
+    splitEditorGutterRef.current?.scrollTo({ top: progress * editorMaxScroll });
   }
 
   function updateMetaField<K extends keyof ComposerDraftData>(
@@ -3827,18 +4024,69 @@ function AdminPostComposer({
             )}
 
             {composerMode === 'split' && (
-              <div className="typora-split">
-                <textarea
-                  className="typora-editor"
-                  ref={markdownInputRef}
-                  value={bodyMarkdown}
-                  onChange={(event) => updateBodyMarkdown(event.target.value)}
-                  onKeyDown={handleMarkdownKeyDown}
-                  spellCheck={false}
-                />
-                <article className="typora-preview" aria-label="文章阅读预览">
-                  <MarkdownBody markdown={normalizeMarkdown(bodyMarkdown)} />
-                </article>
+              <div className={`typora-split${splitPreviewVisible ? '' : ' is-preview-hidden'}`}>
+                <section className="typora-split-pane typora-split-editor-pane" aria-label="Markdown 编辑器">
+                  <header className="typora-split-pane-header">
+                    <span>Markdown</span>
+                    <div className="typora-split-pane-actions">
+                      <small>{splitLineCount} 行</small>
+                      {!splitPreviewVisible && (
+                        <button
+                          className="typora-icon-action"
+                          type="button"
+                          onClick={() => setSplitPreviewVisible(true)}
+                          title="显示预览"
+                          aria-label="显示预览"
+                        >
+                          <PanelRightOpen size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </header>
+                  <div className="typora-code-editor">
+                    <ol className="typora-editor-line-numbers" aria-hidden="true" ref={splitEditorGutterRef}>
+                      {Array.from({ length: splitLineCount }, (_, index) => (
+                        <li key={index}>{index + 1}</li>
+                      ))}
+                    </ol>
+                    <textarea
+                      className="typora-editor"
+                      ref={markdownInputRef}
+                      value={bodyMarkdown}
+                      onChange={(event) => updateBodyMarkdown(event.target.value)}
+                      onKeyDown={handleMarkdownKeyDown}
+                      onScroll={(event) => syncSplitScroll('editor', event.currentTarget)}
+                      spellCheck={false}
+                    />
+                  </div>
+                </section>
+                {splitPreviewVisible && (
+                  <article
+                    className="typora-split-pane typora-preview"
+                    aria-label="文章阅读预览"
+                    onScroll={(event) => syncSplitScroll('preview', event.currentTarget)}
+                    ref={splitPreviewRef}
+                  >
+                    <header className="typora-split-pane-header">
+                      <span>预览</span>
+                      <div className="typora-split-pane-actions">
+                        <small>实时渲染</small>
+                        <button
+                          className="typora-icon-action"
+                          type="button"
+                          onClick={() => setSplitPreviewVisible(false)}
+                          title="隐藏预览"
+                          aria-label="隐藏预览"
+                        >
+                          <PanelRightClose size={16} />
+                        </button>
+                      </div>
+                    </header>
+                    <div className="typora-preview-content">
+                      <MarkdownBody markdown={normalizeMarkdown(bodyMarkdown)} />
+                    </div>
+                  </article>
+                )}
               </div>
             )}
           </main>
@@ -5119,6 +5367,7 @@ function AdminArchivePanel({
   const [activeStatus, setActiveStatus] = useState<'all' | PostStatus>('all');
   const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState(() => posts[0] ? getPostArchiveDateValue(posts[0]) || '' : '');
+  const [pendingEntryDates, setPendingEntryDates] = useState<Record<string, string>>({});
   const [batchNotice, setBatchNotice] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
   const monthOptions = useMemo(() => archiveGroups.map((group) => group.month), [archiveGroups]);
@@ -5149,6 +5398,18 @@ function AdminArchivePanel({
       setTargetDate(posts[0] ? getPostArchiveDateValue(posts[0]) || '' : '');
     }
   }, [posts, targetDate]);
+
+  useEffect(() => {
+    setPendingEntryDates((currentDates) => {
+      const nextDates = Object.fromEntries(
+        Object.entries(currentDates).filter(([slug, dateValue]) => {
+          const post = posts.find((item) => item.slug === slug);
+          return post && dateValue !== getPostArchiveDateValue(post);
+        }),
+      );
+      return Object.keys(nextDates).length === Object.keys(currentDates).length ? currentDates : nextDates;
+    });
+  }, [posts]);
 
   function togglePost(slug: string) {
     setSelectedSlugs((slugs) => (slugs.includes(slug) ? slugs.filter((item) => item !== slug) : [...slugs, slug]));
@@ -5310,6 +5571,8 @@ function AdminArchivePanel({
               <div className="admin-archive-entries">
                 {group.entries.map((post) => {
                   const postDate = getPostArchiveDateValue(post);
+                  const pendingDate = pendingEntryDates[post.slug] ?? postDate;
+                  const hasPendingDateChange = Boolean(pendingDate && pendingDate !== postDate);
 
                   return (
                     <article className="admin-archive-entry" key={post.slug}>
@@ -5336,16 +5599,21 @@ function AdminArchivePanel({
                           aria-label={`调整${post.title}的归档日期`}
                           disabled={batchBusy}
                           type="date"
-                          value={postDate}
-                          onChange={(event) => {
-                            const nextDate = event.target.value;
-                            if (nextDate && nextDate !== postDate) {
-                              void runBatch(`迁移「${post.title}」`, [post.slug], (slugs) =>
-                                onMovePostsToArchiveDate(slugs, nextDate),
-                              );
-                            }
-                          }}
+                          value={pendingDate}
+                          onChange={(event) => setPendingEntryDates((dates) => ({ ...dates, [post.slug]: event.target.value }))}
                         />
+                        <button
+                          className="secondary-action"
+                          disabled={!hasPendingDateChange || batchBusy}
+                          type="button"
+                          onClick={() =>
+                            runBatch(`迁移「${post.title}」`, [post.slug], (slugs) =>
+                              onMovePostsToArchiveDate(slugs, pendingDate),
+                            )
+                          }
+                        >
+                          迁移日期
+                        </button>
                         {getPostStatus(post) === 'published' ? (
                           <a className="secondary-action" href={`/posts/${post.slug}`}>
                             预览
@@ -5408,9 +5676,11 @@ function AdminArchivePanel({
 function AdminHomepagePanel({
   homepage,
   onHomepageChange,
+  saveStatus,
 }: {
   homepage: HomepageCopy;
   onHomepageChange: (homepage: HomepageCopy) => void;
+  saveStatus: 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 }) {
   type HomepageTextKey = Exclude<keyof HomepageCopy, 'seasonAuto'>;
   const fields: Array<[HomepageTextKey, string, 'input' | 'textarea']> = [
@@ -5435,6 +5705,14 @@ function AdminHomepagePanel({
   return (
     <section className="admin-panel" aria-label="主页词汇定制">
       <PanelHeader title="主页词汇" />
+      {saveStatus !== 'idle' && (
+        <p className={`homepage-save-status is-${saveStatus}`} role={saveStatus === 'error' ? 'alert' : 'status'}>
+          {saveStatus === 'pending' && '等待保存主页词汇...'}
+          {saveStatus === 'saving' && '正在保存主页词汇...'}
+          {saveStatus === 'saved' && '主页词汇已保存。'}
+          {saveStatus === 'error' && '主页词汇保存失败，请刷新页面后重试。'}
+        </p>
+      )}
       <div className="admin-form homepage-form">
         <div className="season-settings">
           <label className="inline-toggle">

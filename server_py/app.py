@@ -645,7 +645,9 @@ async def admin_bulk_update_starfield_deep_paths(version_id: str, payload: dict[
 @app.post("/api/admin/starfield/versions/{version_id}/publish")
 async def admin_publish_starfield_version(version_id: str, _token: str = Depends(require_admin)):
     try:
-        return publish_starfield_version(version_id)
+        payload = publish_starfield_version(version_id)
+        payload["publicDeployTask"] = start_public_deploy_task()
+        return payload
     except ValueError as error_value:
         raise starfield_error(error_value) from error_value
 
@@ -960,7 +962,9 @@ async def admin_save_homepage(payload: dict[str, Any], _token: str = Depends(req
             """,
             (json.dumps(body, ensure_ascii=False), now),
         )
-    return get_homepage()
+    homepage = get_homepage()
+    homepage["publicDeployTask"] = start_public_deploy_task()
+    return homepage
 
 
 @app.post("/api/admin/articles", status_code=201)
@@ -1010,6 +1014,14 @@ async def admin_merge_tags(payload: dict[str, Any], _token: str = Depends(requir
 @app.get("/api/admin/trash/articles")
 async def admin_deleted_articles(_token: str = Depends(require_admin)):
     return {"items": list_deleted_articles()}
+
+
+@app.delete("/api/admin/trash/articles")
+async def admin_empty_trash(_token: str = Depends(require_admin)):
+    with get_db() as conn:
+        deleted_count = conn.execute("SELECT COUNT(*) FROM articles WHERE deleted_at IS NOT NULL").fetchone()[0]
+        conn.execute("DELETE FROM articles WHERE deleted_at IS NOT NULL")
+    return {"deletedCount": deleted_count}
 
 
 @app.post("/api/admin/trash/articles/{id_or_slug}/restore")

@@ -42,6 +42,7 @@ RELATIONSHIP_LABELS = {
 PASSAGE_STATUS = {"suggested", "accepted", "hidden"}
 RELATIONSHIP_STATUS = {"suggested", "accepted", "hidden"}
 DEEP_PATH_STATUS = {"suggested", "accepted", "hidden"}
+GENERATION_JOB_STATUS = {"pending", "running", "succeeded", "succeeded_with_fallback", "failed"}
 RELATIONSHIP_CHANGE_STATES = {"inherited", "reconfirmed", "new", "changed", "removed"}
 STALE_JOB_SECONDS = 30 * 60
 DEEP_PATH_SOURCE_BATCH_SIZE = 6
@@ -554,10 +555,19 @@ async def _execute_passage_generation(version_id: str, job_id: str, rows: list[A
         conn.execute(
             """
             UPDATE starfield_generation_jobs
-            SET status = 'succeeded', progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
+            SET status = ?, progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
             WHERE id = ?
             """,
-            (len(rows), len(rows), f"Passage 生成完成，共创建 {created} 个候选。", _fallback_message(fallback_errors), now_iso(), now_iso(), job_id),
+            (
+                _generation_success_status(fallback_errors),
+                len(rows),
+                len(rows),
+                f"Passage 生成完成，共创建 {created} 个候选。",
+                _fallback_message(fallback_errors),
+                now_iso(),
+                now_iso(),
+                job_id,
+            ),
         )
 
 
@@ -976,10 +986,11 @@ async def _execute_relationship_generation(version_id: str, job_id: str, passage
         conn.execute(
             """
             UPDATE starfield_generation_jobs
-            SET status = 'succeeded', progress_current = 5, progress_total = 5, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
+            SET status = ?, progress_current = 5, progress_total = 5, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
             WHERE id = ?
             """,
             (
+                _generation_success_status(fallback_errors),
                 (
                     f"关系生成完成，共写入 {created} 条关系。"
                     if not incremental_parent_id
@@ -1126,10 +1137,11 @@ async def _execute_deep_relationship_generation(version_id: str, job_id: str, pa
         conn.execute(
             """
             UPDATE starfield_generation_jobs
-            SET status = 'succeeded', progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
+            SET status = ?, progress_current = ?, progress_total = ?, current_step = ?, error_message = ?, updated_at = ?, completed_at = ?
             WHERE id = ?
             """,
             (
+                _generation_success_status(batch_errors),
                 progress_total,
                 progress_total,
                 f"深度关系挖掘完成，覆盖 {len(rows)} 个 Passage，共创建 {created_paths} 条深层路径、{created_relationships} 条相邻候选关系。",
@@ -1885,6 +1897,10 @@ def _heading_exists(markdown: str, title: str) -> bool:
         return False
     escaped = re.escape(title.strip())
     return bool(re.search(rf"^#{{1,4}}\s+{escaped}\s*$", markdown, flags=re.M))
+
+
+def _generation_success_status(errors: list[str]) -> str:
+    return "succeeded_with_fallback" if errors else "succeeded"
 
 
 def _fallback_message(errors: list[str]) -> str:

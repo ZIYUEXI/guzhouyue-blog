@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Orbit } from 'lucide-react';
 import { AuthorAvatar, PostCover, PostListItem, SectionHeading } from '../components';
 import { ArticleComments } from '../ArticleComments';
 import { fetchPublicStarfield } from '../apiClient';
@@ -66,6 +67,7 @@ export function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl
   const { previousPost, nextPost } = getAdjacentPosts(posts, slug);
   const readingMinutes = calculateReadingMinutes(markdown);
   const relatedPosts = posts.filter((item) => item.slug !== post.slug && item.category === post.category).slice(0, 3);
+  const starfieldHref = `/starfield?article=${encodeURIComponent(post.slug)}${passageAnchor ? `&anchor=${encodeURIComponent(passageAnchor)}` : ''}`;
 
   return (
     <article className="article-page">
@@ -95,6 +97,10 @@ export function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl
               ))}
             </div>
           )}
+          <a className="secondary-action article-starfield-link" href={starfieldHref}>
+            <Orbit size={17} />
+            在星图查看本文关系
+          </a>
         </div>
       </header>
 
