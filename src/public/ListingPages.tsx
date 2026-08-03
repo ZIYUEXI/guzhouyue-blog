@@ -18,13 +18,17 @@ export function AllPostsPage({
   const allPostsPerPage = 5;
   const categories = Array.from(new Set(posts.map((post) => post.category))).filter(Boolean);
   const tags = Array.from(new Set(posts.flatMap((post) => post.tags))).filter(Boolean);
+  const visibleTags = tags.slice(0, 16);
+  if (tag && tags.includes(tag) && !visibleTags.includes(tag)) {
+    visibleTags[visibleTags.length - 1] = tag;
+  }
   const visiblePosts = posts.filter((post) => {
     const categoryMatches = category ? post.category === category : true;
     const tagMatches = tag ? post.tags.includes(tag) : true;
     return categoryMatches && tagMatches;
   });
-  const pageCount = Math.max(1, Math.ceil(visiblePosts.length / allPostsPerPage));
-  const normalizedPage = Math.min(Math.max(currentPage, 1), pageCount);
+  const pageCount = Math.ceil(visiblePosts.length / allPostsPerPage);
+  const normalizedPage = pageCount > 0 ? Math.min(Math.max(currentPage, 1), pageCount) : 1;
   const startIndex = (normalizedPage - 1) * allPostsPerPage;
   const pagedPosts = visiblePosts.slice(startIndex, startIndex + allPostsPerPage);
   const pageTitle = category && tag ? `${category} · ${tag}` : category ? `${category}文章` : tag ? `标签：${tag}` : '全部文章';
@@ -41,45 +45,63 @@ export function AllPostsPage({
   };
 
   return (
-    <section className="content-section listing-page">
-      <SectionHeading eyebrow="All Posts" title={pageTitle} />
+    <section className="content-section listing-page posts-listing-page">
+      <SectionHeading eyebrow="文章索引" title={pageTitle} />
       <div className="listing-intro">
-        <p>
-          按发布时间逐页浏览{category ? `“${category}”分类下` : '所有'}{tag ? `、带有“${tag}”标签的` : ''}博客内容。当前第 {normalizedPage}{' '}
-          页，共 {pageCount} 页。
-        </p>
-        {(category || tag) && (
-          <a className="section-link" href="/posts/page/1">
-            清除筛选
-            <X size={16} />
-          </a>
-        )}
+        <p>{visiblePosts.length > 0
+          ? `共 ${visiblePosts.length} 篇文章，按发布时间排列。第 ${normalizedPage} / ${pageCount} 页。`
+          : '当前筛选下共 0 篇文章。'}</p>
       </div>
 
       <div className="post-filter-bar" aria-label="文章筛选">
-        <div className="post-filter-group" role="group" aria-label="分类筛选">
-          <a aria-current={!category && !tag ? 'page' : undefined} href="/posts/page/1">全部</a>
-          {categories.map((categoryName) => (
-            <a
-              aria-current={category === categoryName ? 'page' : undefined}
-              href={filterHref(categoryName, tag)}
-              key={categoryName}
-            >
-              {categoryName}
+        {(category || tag) && (
+          <div className="post-filter-summary" aria-label="当前筛选">
+            <span>当前筛选</span>
+            <div className="post-filter-selection">
+              {category && <strong>分类 · {category}</strong>}
+              {tag && <strong>标签 · #{tag}</strong>}
+            </div>
+            <a className="section-link" href="/posts/page/1">
+              清除全部
+              <X size={16} />
             </a>
-          ))}
+          </div>
+        )}
+        <div className="post-filter-group" role="group" aria-label="分类筛选">
+          <div className="post-filter-label">
+            <strong>分类</strong>
+            <span>文章栏目</span>
+          </div>
+          <div className="post-filter-options">
+            <a aria-current={!category ? 'page' : undefined} href={filterHref(null, tag)}>全部分类</a>
+            {categories.map((categoryName) => (
+              <a
+                aria-current={category === categoryName ? 'page' : undefined}
+                href={filterHref(categoryName, tag)}
+                key={categoryName}
+              >
+                {categoryName}
+              </a>
+            ))}
+          </div>
         </div>
         {tags.length > 0 && (
           <div className="post-filter-group tag-filter-group" role="group" aria-label="标签筛选">
-            {tags.slice(0, 16).map((tagName) => (
-            <a
-              aria-current={tag === tagName ? 'page' : undefined}
-              href={filterHref(category, tagName)}
-              key={tagName}
-            >
-                {tagName}
-              </a>
-            ))}
+            <div className="post-filter-label">
+              <strong>标签</strong>
+              <span>内容关键词</span>
+            </div>
+            <div className="post-filter-options">
+              {visibleTags.map((tagName) => (
+                <a
+                  aria-current={tag === tagName ? 'page' : undefined}
+                  href={filterHref(category, tagName)}
+                  key={tagName}
+                >
+                  #{tagName}
+                </a>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -94,7 +116,9 @@ export function AllPostsPage({
         <p className="empty-state">没有匹配的文章，可以清除筛选后重新浏览。</p>
       )}
 
-      <Pagination category={category} currentPage={normalizedPage} pageCount={pageCount} tag={tag} />
+      {visiblePosts.length > 0 && (
+        <Pagination category={category} currentPage={normalizedPage} pageCount={pageCount} tag={tag} />
+      )}
     </section>
   );
 }

@@ -23,7 +23,7 @@ export function Pagination({
   };
 
   return (
-    <nav className="pagination" aria-label="文章分页">
+    <nav className="pagination pagination-compact" aria-label="文章分页">
       <a aria-disabled={currentPage === 1} href={pageHref(Math.max(1, currentPage - 1))}>
         上一页
       </a>
