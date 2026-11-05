@@ -72,3 +72,13 @@ quick_check: ok
 截图与验证原始输出保留在隔离工作区的 `output/qa/`、`output/live-public-check.log`、`output/deploy-switch.log` 和 `output/publish-production.log`。本地测试进程及 SSH 验证隧道已结束，临时明文验证凭据已删除；正式回滚备份保留。
 
 2026-11-05 17:17（UTC+8）收尾复核：优化源码仍未提交，尚未合并回原项目工作区；腾讯云 `/opt/guzhouyue-perf-stage-20261105`（约 149 MB，含 qa.sqlite）和 `/opt/guzhouyue-perf-backup-20261105.sqlite`（约 8.7 MB）仍存在，临时环境清理尚未完成。正式服务 active、内网健康检查成功；本机公网 manifest 请求出现 8 秒连接超时，常用网络下的 LCP/INP 与真实手机验收仍待补充。
+
+
+## 中断后收尾复核
+
+- 已将上线源码归档为 `7e03a74`（`codex/blog-performance`），并通过线上基线作三方合并同步至 `D:/Project/guzhouyue-blog`；保留原暂存区及赛博主题、开发预览等既有改动。主工作区仍含用户原有未提交内容，因此未将其一并提交或重新部署。
+- 合并前逐文件备份位于主工作区 `output/performance-integration-20261105/before/`，合并报告同目录 `report.json`。仅 HomePage 属性区需手工合并，同时保留 stylePreset 与 heroSources。
+- 两处构建与主题审计、12 项搜索回归、2 项快照/图片隔离测试均通过；上线静态产物预算复核为 79,870 B gzip 启动 JS、24,925 B 摘要（该本地产物为原 82 篇快照，不能当成线上最新文章数量）。
+- 腾讯云临时 stage 目录及额外数据库副本已删除并检查不存在，正式 `/opt/guzhouyue-perf-rollback-20261105` 保留，未操作生产数据库。
+- Chrome 390×844 真实视口覆盖首页及菜单到文章列表导航：无横向溢出，首页选择 768w WebP 背景并成功加载；已恢复浏览器原视口。属于桌面浏览器响应式检查，未连接实体手机。
+- 本次浏览器只读执行环境未暴露 Performance API（performance 为 undefined），无法采集 LCP/INP；PageSpeed 公共接口亦在 8 秒连接阶段超时。没有伪造冷/热启动或公网前后性能数值。正式指标与实体手机验证仍是外部验收缺口，不能算作已通过。

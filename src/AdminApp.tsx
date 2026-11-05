@@ -6490,5 +6490,3 @@ function AdminAppearancePanel({
 }
 
 export default App;
-
-
