@@ -27,7 +27,24 @@ function copyProxyHeaders(headers: Headers) {
 }
 
 function isAllowedPublicApiRequest(request: Request, pathname: string) {
+  // 外部工具仅能访问草稿专用路由；Bearer 密钥由腾讯云服务端校验。
+  const agentBase = '/api/agent/v1';
+  if (request.method === 'GET' && [
+    `${agentBase}/capabilities`, `${agentBase}/articles`, `${agentBase}/gallery`,
+  ].includes(pathname)) return true;
+  if (request.method === 'POST' && [
+    `${agentBase}/articles`, `${agentBase}/images`,
+  ].includes(pathname)) return true;
+  if (['GET', 'PATCH'].includes(request.method) && /^\/api\/agent\/v1\/articles\/[^/]+$/.test(pathname)) return true;
+  if (request.method === 'POST' && /^\/api\/agent\/v1\/articles\/[^/]+\/copy$/.test(pathname)) return true;
+  if (request.method === 'PATCH' && /^\/api\/agent\/v1\/images\/[^/]+$/.test(pathname)) return true;
+  if (request.method === 'GET' && /^\/api\/agent\/v1\/images\/[^/]+\/file$/.test(pathname)) return true;
+
   if (request.method === 'GET' && pathname === '/api/health') {
+    return true;
+  }
+
+  if (request.method === 'GET' && /^\/api\/articles\/[^/]+\/download$/.test(pathname)) {
     return true;
   }
 
@@ -62,6 +79,8 @@ export const onRequest: PagesFunction<PagesEnv> = async ({ request, env }) => {
   });
 
   const responseHeaders = copyProxyHeaders(response.headers);
+  // 公开接口不建立后台会话，禁止把上游 Cloudflare Access Cookie 发给读者。
+  responseHeaders.delete('set-cookie');
   responseHeaders.delete('content-encoding');
   responseHeaders.delete('content-length');
 

@@ -64,6 +64,12 @@ def publish_public_snapshot(log: Callable[[str], None] | None = None) -> dict[st
     git_author_name = os.environ.get("PUBLIC_DEPLOY_GIT_NAME", "Guzhouyue Deploy Bot")
     git_author_email = os.environ.get("PUBLIC_DEPLOY_GIT_EMAIL", "deploy@guzhouyue.local")
 
+    # Verify connectivity before exporting data and building the public site, so
+    # GitHub network or authentication errors fail immediately.
+    with tempfile.TemporaryDirectory(prefix="guzhouyue-public-deploy-preflight-") as temp_dir:
+        git_env = _git_env(Path(temp_dir))
+        _verify_deploy_remote(deploy_repo, deploy_branch, git_env, log)
+
     _log(log, "开始导出公开快照。")
     export_public_snapshot()
     _log(log, "公开快照导出完成。")
@@ -79,6 +85,7 @@ def publish_public_snapshot(log: Callable[[str], None] | None = None) -> dict[st
         _run(["git", "reset", "--hard", f"origin/{deploy_branch}"], cwd=worktree, env=git_env, log=log)
 
         _replace_public_site_assets(static_dist, worktree, log)
+        shutil.rmtree(static_dist, ignore_errors=True)
 
         _run(["git", "add", "--all"], cwd=worktree, env=git_env, log=log)
         changed = _run(["git", "status", "--short"], cwd=worktree, capture=True, env=git_env, log=log).stdout.strip()
@@ -115,8 +122,14 @@ def _build_public_frontend(log: Callable[[str], None] | None) -> Path:
         "VITE_PUBLIC_DATA_SOURCE": "static",
         "VITE_ADMIN_ORIGIN": os.environ.get("VITE_ADMIN_ORIGIN", "https://admin.ziyuexi.top"),
     }
-    _run(["npm", "run", "build"], cwd=ROOT_DIR, env=build_env, log=log)
-    static_dist = ROOT_DIR / "dist"
+    # Build outside the live admin tree. The API runs as www-data while release
+    # uploads may be owned by ubuntu/root, so Vite must not clean the served dist.
+    static_dist = Path(tempfile.mkdtemp(prefix="guzhouyue-public-build-"))
+    try:
+        _run(["npm", "run", "build", "--", "--outDir", str(static_dist)], cwd=ROOT_DIR, env=build_env, log=log)
+    except Exception:
+        shutil.rmtree(static_dist, ignore_errors=True)
+        raise
     if not (static_dist / "index.html").exists():
         raise PublicDeployError(f"Static frontend build did not create index.html: {static_dist}")
     _log(log, "静态前端构建完成。")
@@ -198,6 +211,21 @@ def _prepare_worktree(deploy_repo: str, deploy_branch: str, git_env: dict[str, s
     _log(log, f"准备临时部署仓库：{deploy_repo} ({deploy_branch})")
     _run(["git", "clone", "--progress", "--depth", "1", "--branch", deploy_branch, "--single-branch", deploy_repo, str(worktree)], env=git_env, log=log)
     return worktree
+
+
+def _verify_deploy_remote(
+    deploy_repo: str,
+    deploy_branch: str,
+    git_env: dict[str, str] | None,
+    log: Callable[[str], None] | None,
+) -> None:
+    _log(log, "Checking GitHub deploy repository connectivity and credentials.")
+    _run(
+        ["git", "ls-remote", "--exit-code", deploy_repo, f"refs/heads/{deploy_branch}"],
+        capture=True,
+        env=git_env,
+        log=log,
+    )
 
 
 def _git_env(temp_dir: Path) -> dict[str, str] | None:

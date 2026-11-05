@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Orbit } from 'lucide-react';
+import { Download, Orbit } from 'lucide-react';
 import { AuthorAvatar, PostCover, PostListItem, SectionHeading } from '../components';
 import { ArticleComments } from '../ArticleComments';
 import { fetchPublicStarfield } from '../apiClient';
@@ -97,10 +97,21 @@ export function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl
               ))}
             </div>
           )}
-          <a className="secondary-action article-starfield-link" href={starfieldHref}>
-            <Orbit size={17} />
-            在星图查看本文关系
-          </a>
+          <div className="article-hero-actions">
+            <a
+              className="secondary-action"
+              download
+              href={`/api/articles/${encodeURIComponent(post.slug)}/download`}
+              title="下载文章 Markdown 和文内本地图片"
+            >
+              <Download size={17} />
+              下载文章与图片
+            </a>
+            <a className="secondary-action article-starfield-link" href={starfieldHref}>
+              <Orbit size={17} />
+              在星图查看本文关系
+            </a>
+          </div>
         </div>
       </header>
 

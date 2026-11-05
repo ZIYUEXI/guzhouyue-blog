@@ -68,7 +68,7 @@ TEST_ARTICLES = [
         "publishedAt": "2026.05.21 09:50",
         "tone": "water",
         "tags": ["测试", "图片", "媒体", "SearchNeedleImage"],
-        "bodyMarkdown": "这篇文章用于检查图片展示，唯一搜索词：SearchNeedleImage。\n\n![孤舟月首屏图](/images/guzhouyue-hero.png)",
+        "bodyMarkdown": "这篇文章用于检查图片展示，唯一搜索词：SearchNeedleImage。\n\n![孤舟月首屏图](/images/guzhouyue-hero.png)\n\n![图库测试图](/api/uploads/gallery/compat-download.png)",
     },
     {
         "slug": "test-title-tags-search-edge-cases",

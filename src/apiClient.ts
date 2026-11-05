@@ -435,6 +435,7 @@ export type ApiAdminCommandAiResult = {
 };
 
 export type ApiComposerDraft = {
+  authorName?: string;
   title: string;
   slug: string;
   category: string;
@@ -506,7 +507,12 @@ async function requestPublicJson<T>(apiPath: string, snapshotPath: string): Prom
   }
 }
 
-async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+function publicApiPath(path: string): string {
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}v=${Date.now()}`;
+}
+
+export async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const headers = new Headers(isFormData ? { Accept: 'application/json' } : jsonHeaders);
   const csrfHeader = csrfHeaderForRequest(init.method);
@@ -517,6 +523,7 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
   const response = await fetch(path, {
     credentials: 'include',
     ...init,
+    cache: 'no-store',
     headers,
   });
 
@@ -532,16 +539,16 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
 }
 
 export async function fetchPublicSite() {
-  return requestPublicJson<ApiSitePayload>('/api/site', '/data/site.json');
+  return requestPublicJson<ApiSitePayload>(publicApiPath('/api/site'), '/data/site.json');
 }
 
 export async function fetchPublicArticles() {
-  const payload = await requestPublicJson<ApiArticlesPayload | unknown[]>('/api/articles?pageSize=1000', '/data/articles.json');
+  const payload = await requestPublicJson<ApiArticlesPayload | unknown[]>(publicApiPath('/api/articles?pageSize=1000'), '/data/articles.json');
   return Array.isArray(payload) ? payload : payload.items ?? [];
 }
 
 export async function fetchPublicGallery() {
-  const payload = await requestPublicJson<unknown[] | { items?: unknown[] }>('/api/gallery', '/data/gallery.json');
+  const payload = await requestPublicJson<unknown[] | { items?: unknown[] }>(publicApiPath('/api/gallery'), '/data/gallery.json');
   return Array.isArray(payload) ? payload : payload.items ?? [];
 }
 
@@ -1648,6 +1655,7 @@ function normalizeComposerDraftResponse(value: unknown): ApiComposerDraft {
   const savedAt = asText(record.savedAt) || asText(draft.savedAt) || new Date().toISOString();
 
   return {
+    authorName: typeof draft.authorName === 'string' ? draft.authorName : undefined,
     title: asText(draft.title),
     slug: asText(draft.slug),
     category: asText(draft.category),

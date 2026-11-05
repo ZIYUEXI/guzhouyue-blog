@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .almanac import get_today_almanac
+from .agent_images import published_agent_files
 from .config import ROOT_DIR, config
 from .content import (
     SYSTEM_GALLERY_ALBUM_ID,
@@ -107,8 +108,12 @@ def copy_gallery_uploads() -> int:
         return 0
 
     copied = 0
+    approved_agent_files = published_agent_files()
     for source in config.gallery_upload_dir.iterdir():
         if not source.is_file():
+            continue
+        # 草稿工具上传的配图必须随文章审核发布，不能提前进入公开快照。
+        if source.name.startswith("agent-") and source.name not in approved_agent_files:
             continue
         shutil.copy2(source, PUBLIC_GALLERY_DIR / source.name)
         copied += 1

@@ -9,7 +9,7 @@
     "siteName": "孤舟月",
     "siteTagline": "一叶孤舟，照见人间月色",
     "heroTitle": "孤舟月",
-    "heroSubtitle": "写给长夜、山河与代码的私人札记。",
+    "heroSubtitle": "曾借人间三千年，还予星河一粒尘",
     "primaryCta": "读最新文章",
     "secondaryCta": "查看归档",
     "seasonAuto": true,
@@ -27,9 +27,9 @@
     "archiveTitle": "旧日可寻",
     "aboutEyebrow": "About",
     "aboutTitle": "关于孤舟月",
-    "aboutBody": "这里先是一处前端完整的静态博客入口，后续可以接入文章 API、Markdown 渲染、RSS、归档检索和后台编辑。现在的重点，是让站点先拥有清晰的气质、结构和交互。",
+    "aboutBody": "夫天地者，逆旅也；光阴者，过客也。余以“孤舟月”名此站，盖取“孤舟蓑笠翁，独钓寒江雪”之寂寥，兼怀“海上生明月，天涯共此时”之旷达。",
     "footerSlogan": "孤舟泊处，月色自来。",
-    "updatedAt": "2026-06-15T01:52:21.714Z"
+    "updatedAt": "2026-07-21T07:37:12.658Z"
   },
   "noteSections": [
     {
@@ -40,7 +40,7 @@
       "description": "Web 安全、网络协议与攻防记录",
       "sortOrder": 0,
       "createdAt": "2026-06-08T05:36:36.170Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     },
     {
       "id": "section_游戏开发",
@@ -50,7 +50,7 @@
       "description": "Unity、UE、Pygame 与玩法系统笔记",
       "sortOrder": 1,
       "createdAt": "2026-06-08T05:36:36.170Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     },
     {
       "id": "section_人工智能",
@@ -60,7 +60,7 @@
       "description": "模型、智能体和数据建模学习",
       "sortOrder": 2,
       "createdAt": "2026-06-08T05:36:36.170Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     },
     {
       "id": "section_生活备考",
@@ -70,7 +70,7 @@
       "description": "考试错题和日常整理",
       "sortOrder": 3,
       "createdAt": "2026-06-08T05:36:36.170Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     },
     {
       "id": "section_数据库",
@@ -80,7 +80,7 @@
       "description": "数据库系统与项目文档",
       "sortOrder": 4,
       "createdAt": "2026-06-08T05:36:36.170Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     },
     {
       "id": "section_技术笔记",
@@ -90,17 +90,17 @@
       "description": "记录前端、后端、工程化与系统设计实践。",
       "sortOrder": 5,
       "createdAt": "2026-06-08T05:36:36.170Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     },
     {
       "id": "section_mqoutwsr_9c800ght",
-      "name": "工业设计",
-      "category": "工业设计",
+      "name": "交叉学科",
+      "category": "交叉学科",
       "slug": "工业设计",
       "description": "记录一些结构力学等工业设计知识",
       "sortOrder": 6,
       "createdAt": "2026-06-22T06:48:43.095Z",
-      "updatedAt": "2026-06-29T04:23:30.661Z"
+      "updatedAt": "2026-07-01T08:20:08.634Z"
     }
   ],
   "featuredSeries": [
@@ -117,31 +117,35 @@
     }
   ],
   "almanac": {
-    "date": "2026-07-22",
-    "weekDay": "星期三",
+    "date": "2026-11-05",
+    "weekDay": "星期四",
     "lunarYear": "二零二六",
-    "lunarMonth": "六月大",
-    "lunarDay": "初九",
+    "lunarMonth": "九月大",
+    "lunarDay": "廿七",
     "zodiac": "马",
     "solarTerm": "",
-    "nextSolarTerm": "大暑",
-    "nextSolarTermDate": "2026-07-23",
-    "dayGanzhi": "丁酉",
-    "monthGanzhi": "乙未",
+    "nextSolarTerm": "立冬",
+    "nextSolarTermDate": "2026-11-07",
+    "dayGanzhi": "癸未",
+    "monthGanzhi": "戊戌",
     "yearGanzhi": "丙午",
-    "zodiacClash": "鸡日冲兔",
+    "zodiacClash": "羊日冲牛",
     "levelName": "从忌不从宜",
     "goodThings": [
-      "沐浴",
-      "扫舍宇"
+      "祭祀",
+      "捕捉",
+      "畋猎",
+      "雪冤",
+      "覃恩",
+      "恤孤茕"
     ],
     "badThings": [
-      "祭祀",
       "出行",
       "结婚姻",
       "宴会",
       "嫁娶",
-      "安床"
+      "安床",
+      "剃头"
     ],
     "source": "cnlunar"
   }

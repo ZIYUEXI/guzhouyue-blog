@@ -37,7 +37,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, startTransition, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Dispatch,
   DragEvent as ReactDragEvent,
@@ -48,6 +48,7 @@ import type {
 import { AdminCommandPanel } from './AdminCommandPanel';
 import { AdminDashboardPanel } from './AdminDashboardPanel';
 import { AdminPrivateMemoPanel, PrivateMemoReminderToast } from './AdminPrivateMemoPanel';
+import { AdminAgentKeysPanel } from './AdminAgentKeysPanel';
 import { AdminPostsPanel } from './AdminPostsPanel';
 import { AdminStarfieldPanel } from './AdminStarfieldPanel';
 import { AdminTagsPanel } from './AdminTagsPanel';
@@ -230,6 +231,18 @@ const adminSeriesPerPage = 1;
 const composerImageAlbumSlug = 'article-images';
 const composerImageAlbumTitle = '文章配图';
 const imageUploadConcurrency = 3;
+const splitPreviewDelayMs = 250;
+
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [delayMs, value]);
+
+  return debouncedValue;
+}
 
 function makeClientId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -300,7 +313,6 @@ function App() {
   const [dataSourceNotice, setDataSourceNotice] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const pathname = window.location.pathname;
   const searchParams = new URLSearchParams(window.location.search);
   const category = searchParams.get('category');
@@ -321,6 +333,31 @@ function App() {
 
     window.addEventListener('popstate', handleLocationChange);
     return () => window.removeEventListener('popstate', handleLocationChange);
+  }, []);
+
+  useEffect(() => {
+    function handleAdminLinkClick(event: MouseEvent) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      const target = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (!(target instanceof HTMLAnchorElement) || target.target === '_blank' || target.hasAttribute('download')) {
+        return;
+      }
+
+      const url = new URL(target.href, window.location.href);
+      if (url.origin !== window.location.origin || !isAdminPath(url.pathname)) {
+        return;
+      }
+
+      event.preventDefault();
+      window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+
+    document.addEventListener('click', handleAdminLinkClick);
+    return () => document.removeEventListener('click', handleAdminLinkClick);
   }, []);
 
   useEffect(() => {
@@ -362,6 +399,7 @@ function App() {
     async function loadSiteData() {
       try {
         if (isAdminRoute) {
+          setAdminAuthStatus('checking');
           setAdminContentStatus('loading');
           await fetchAdminMe();
           if (cancelled) {
@@ -457,17 +495,6 @@ function App() {
   }
 
   const publicPosts = useMemo(() => getPublishedPosts(content.posts), [content.posts]);
-  const filteredPosts = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    if (!keyword) {
-      return publicPosts;
-    }
-
-    return publicPosts.filter((post) => {
-      const searchableText = `${post.title}${post.excerpt}${post.category}${post.tags.join('')}${getPostMarkdown(post)}`;
-      return searchableText.toLowerCase().includes(keyword);
-    });
-  }, [publicPosts, query]);
   const activeSystemGalleryImages = useMemo(() => getSystemGalleryImageUrls(content.galleryAlbums), [content.galleryAlbums]);
   const heroImage = activeSystemGalleryImages[settings.stylePreset] ?? stylePresetAssets[settings.stylePreset].heroImage;
   const ownerAvatarUrl = getActiveOwnerAvatarUrl(settings.ownerAvatarUrl, activeSystemGalleryImages);
@@ -478,6 +505,16 @@ function App() {
   }
 
   if (isAdminRoute) {
+    if (adminAuthStatus === 'checking') {
+      return (
+        <AdminAuthCheckingPage
+          homepage={content.homepage}
+          colorScheme={colorScheme}
+          onThemeToggle={() => updateColorScheme(colorScheme === 'light' ? 'dark' : 'light')}
+        />
+      );
+    }
+
     if (adminAuthStatus !== 'authenticated') {
       return (
         <AdminLoginPage
@@ -569,9 +606,7 @@ function App() {
       {searchOpen && (
         <SearchCommand
           quickLinks={buildSearchQuickLinks(publicPosts)}
-          query={query}
-          results={filteredPosts}
-          onQueryChange={setQuery}
+          posts={publicPosts}
           onClose={() => setSearchOpen(false)}
         />
       )}
@@ -590,6 +625,37 @@ function ExternalAdminRedirectPage({ url }: { url: string }) {
         </a>
       </div>
     </section>
+  );
+}
+
+function AdminAuthCheckingPage({
+  colorScheme,
+  homepage,
+  onThemeToggle,
+}: {
+  colorScheme: ColorScheme;
+  homepage: HomepageCopy;
+  onThemeToggle: () => void;
+}) {
+  return (
+    <div className="site-shell admin-shell">
+      <header className="site-header admin-header">
+        <a className="brand" href="/" aria-label={`返回${homepage.siteName}首页`}>
+          <span>{homepage.siteName}</span>
+          <small>{homepage.siteTagline}</small>
+        </a>
+        <div className="header-actions">
+          <button className="icon-button" type="button" onClick={onThemeToggle} aria-label="切换明暗模式">
+            {colorScheme === 'light' ? <Moon size={19} /> : <Sun size={19} />}
+          </button>
+        </div>
+      </header>
+      <main className="admin-login-main">
+        <section className="admin-login-panel" aria-live="polite" aria-label="正在打开管理台">
+          <SectionHeading eyebrow="Admin" title="正在打开管理台" />
+        </section>
+      </main>
+    </div>
   );
 }
 
@@ -698,6 +764,7 @@ type FormulaMode = 'block' | 'inline';
 type DraftStatus = 'clean' | 'dirty' | 'saving' | 'draft-saved' | 'local-draft-saved' | 'published';
 
 type ComposerDraft = {
+  authorName?: string;
   title: string;
   slug: string;
   category: string;
@@ -715,7 +782,7 @@ type ComposerDraft = {
   savedAt: string;
 };
 
-type ComposerDraftData = Omit<ComposerDraft, 'savedAt'>;
+type ComposerDraftData = Omit<ComposerDraft, 'savedAt' | 'authorName'> & { authorName: string };
 
 const composerAutosaveIntervalMs = 15_000;
 
@@ -737,6 +804,7 @@ function readComposerDraft(key: string): ComposerDraft | null {
 
     return {
       title: parsedDraft.title || '',
+      authorName: typeof parsedDraft.authorName === 'string' ? parsedDraft.authorName : undefined,
       slug: parsedDraft.slug || '',
       category: parsedDraft.category || '',
       date: parsedDraft.date || '',
@@ -773,6 +841,7 @@ function clearComposerDraft(key: string) {
 
 function createComposerSnapshot(data: ComposerDraftData) {
   return JSON.stringify({
+    authorName: data.authorName,
     bodyMarkdown: data.bodyMarkdown,
     category: data.category,
     composerMode: data.composerMode,
@@ -839,6 +908,7 @@ type AdminPanelId =
   | 'tags'
   | 'comments'
   | 'private-memos'
+  | 'agent-keys'
   | 'notes'
   | 'series'
   | 'gallery'
@@ -859,6 +929,7 @@ const adminPanelIds = new Set<AdminPanelId>([
   'tags',
   'comments',
   'private-memos',
+  'agent-keys',
   'notes',
   'series',
   'gallery',
@@ -1246,22 +1317,21 @@ function AdminPage({
     return result.deletedCount;
   }
 
-  async function createPost(post: Post) {
+  async function createPost(post: Post): Promise<Post | null> {
     let savedPost: Post = { ...post, syncStatus: 'synced' };
     try {
       savedPost = { ...(normalizeApiPost(await createAdminArticle(post)) ?? post), syncStatus: 'synced' };
     } catch {
       const localPost: Post = { ...post, syncStatus: 'local-only' };
       onContentChange({ ...content, posts: [localPost, ...content.posts] });
-      return false;
+      return null;
     }
 
     onContentChange({ ...content, posts: [savedPost, ...content.posts] });
-    navigateAdmin(composerReturnPath);
-    return true;
+    return savedPost;
   }
 
-  async function updatePost(originalSlug: string, post: Post) {
+  async function updatePost(originalSlug: string, post: Post): Promise<Post | null> {
     let savedPost: Post = { ...post, syncStatus: 'synced' };
     try {
       savedPost = { ...(normalizeApiPost(await updateAdminArticle(originalSlug, post)) ?? post), syncStatus: 'synced' };
@@ -1269,7 +1339,7 @@ function AdminPage({
       const localPost: Post = { ...post, syncStatus: 'local-only' };
       const nextLocalPosts = content.posts.map((currentPost) => (currentPost.slug === originalSlug ? localPost : currentPost));
       onContentChange({ ...content, posts: nextLocalPosts });
-      return false;
+      return null;
     }
 
     const nextPosts = content.posts.map((currentPost) => (currentPost.slug === originalSlug ? savedPost : currentPost));
@@ -1278,8 +1348,7 @@ function AdminPage({
       postSlugs: series.postSlugs.map((postSlug) => (postSlug === originalSlug ? savedPost.slug : postSlug)),
     }));
     onContentChange({ ...content, posts: nextPosts, featuredSeries: nextFeaturedSeries });
-    navigateAdmin(composerReturnPath);
-    return true;
+    return savedPost;
   }
 
   async function syncPost(slug: string): Promise<BatchResult> {
@@ -1921,6 +1990,7 @@ function AdminPage({
                     { panel: 'posts', label: '文章管理', Icon: FileText, meta: `${content.posts.length} 篇` },
                     { panel: 'comments', label: '评论审核', Icon: MessageCircle, meta: '待处理' },
                     { panel: 'private-memos', label: '私人备忘', Icon: Bell, meta: `${privateMemoItems.filter((item) => item.status === 'open').length} 条未完成` },
+                    { panel: 'agent-keys', label: '工具密钥', Icon: FileText, meta: '草稿接口' },
                   ]}
                   onSelect={selectAdminPanel}
                 />
@@ -2020,6 +2090,7 @@ function AdminPage({
                 )}
 
                 {activePanel === 'comments' && <AdminCommentsPanel />}
+                {activePanel === 'agent-keys' && <AdminAgentKeysPanel />}
 
                 {activePanel === 'private-memos' && (
                   <AdminPrivateMemoPanel
@@ -2514,9 +2585,9 @@ function AdminPostComposer({
   editingPost?: Post;
   galleryAlbums: GalleryAlbum[];
   noteSections: NoteSection[];
-  onCreatePost: (post: Post) => Promise<boolean>;
+  onCreatePost: (post: Post) => Promise<Post | null>;
   onThemeToggle: () => void;
-  onUpdatePost: (originalSlug: string, post: Post) => Promise<boolean>;
+  onUpdatePost: (originalSlug: string, post: Post) => Promise<Post | null>;
   onUploadImages: (files: File[]) => Promise<GalleryImage[]>;
   posts: Post[];
   returnPath: string;
@@ -2540,7 +2611,9 @@ function AdminPostComposer({
   const [seoTitle, setSeoTitle] = useState(editingPost?.seoTitle ?? '');
   const [seoDescription, setSeoDescription] = useState(editingPost?.seoDescription ?? '');
   const [coverImage, setCoverImage] = useState(editingPost?.coverImage ?? '');
-  const authorName = normalizeOwnerName(settings.ownerName);
+  // 保留外部工具的署名；空输入在预览和保存时使用当前站长名称。
+  const [authorNameInput, setAuthorNameInput] = useState(editingPost?.authorName ?? '');
+  const authorName = authorNameInput.trim() || normalizeOwnerName(settings.ownerName);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<ComposerMode>('wysiwyg');
@@ -2575,11 +2648,19 @@ function AdminPostComposer({
   const splitPreviewRef = useRef<HTMLElement>(null);
   const mdxEditorRef = useRef<RichMarkdownEditorHandle>(null);
   const skipNextWysiwygSyncRef = useRef(false);
+  const bodyMarkdownRef = useRef(bodyMarkdown);
+  const pendingWysiwygMarkdownRef = useRef<string | null>(null);
+  const shortcutHandlerRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  const outlineItemsRef = useRef<OutlineItem[]>([]);
+  const draftStatusRef = useRef<DraftStatus>('clean');
+  const saveDraftSnapshotRef = useRef<() => void>(() => undefined);
   const paperRef = useRef<HTMLElement>(null);
   const autosaveTimeoutRef = useRef<number | null>(null);
+  const savePostInFlightRef = useRef(false);
   const savedSnapshotRef = useRef('');
   const hydratedPostSnapshotRef = useRef('');
   const latestDraftRef = useRef<ComposerDraftData>({
+    authorName: authorNameInput,
     bodyMarkdown,
     category,
     composerMode,
@@ -2596,12 +2677,15 @@ function AdminPostComposer({
     tone,
   });
   const isEditing = Boolean(editingPost);
-  const bodyCharacterCount = bodyMarkdown.replace(/\s/g, '').length;
-  const paragraphCount = bodyMarkdown.trim() ? bodyMarkdown.trim().split(/\n{2,}/).length : 0;
-  const headingCount = (bodyMarkdown.match(/^#{1,6}\s+/gm) ?? []).length;
-  const splitLineCount = useMemo(() => Math.max(1, bodyMarkdown.split(/\r?\n/).length), [bodyMarkdown]);
+  const previewBodyMarkdown = useDebouncedValue(bodyMarkdown, splitPreviewDelayMs);
+  const deferredBodyMarkdown = useDeferredValue(previewBodyMarkdown);
+  const bodyCharacterCount = deferredBodyMarkdown.replace(/\s/g, '').length;
+  const paragraphCount = deferredBodyMarkdown.trim() ? deferredBodyMarkdown.trim().split(/\n{2,}/).length : 0;
+  const headingCount = (deferredBodyMarkdown.match(/^#{1,6}\s+/gm) ?? []).length;
+  const splitLineCount = useMemo(() => Math.max(1, deferredBodyMarkdown.split(/\r?\n/).length), [deferredBodyMarkdown]);
   const titleStatus = title.trim() || '未命名文章';
-  const outlineItems = useMemo(() => getMarkdownOutline(bodyMarkdown), [bodyMarkdown]);
+  const outlineItems = useMemo(() => getMarkdownOutline(deferredBodyMarkdown), [deferredBodyMarkdown]);
+  outlineItemsRef.current = outlineItems;
   const existingTags = useMemo(() => collectExistingTags(posts), [posts]);
   const suggestedTags = existingTags.filter((tag) => !tags.includes(tag));
   const galleryImages = useMemo(
@@ -2666,13 +2750,17 @@ function AdminPostComposer({
     }
   }, [coverImage, previewCoverImageId, visibleCoverImages]);
 
-  function openFormulaDialog(nextMode: FormulaMode = 'block') {
+  const openFormulaDialog = useCallback((nextMode: FormulaMode = 'block') => {
     setFormulaMode(nextMode);
     setShowFormulaDialog(true);
-  }
+  }, []);
+
+  const openBlockFormulaDialog = useCallback(() => openFormulaDialog('block'), [openFormulaDialog]);
+  const openGalleryPicker = useCallback(() => setShowGalleryPicker(true), []);
 
   const currentDraftData = useMemo<ComposerDraftData>(
     () => ({
+      authorName: authorNameInput,
       bodyMarkdown,
       category,
       composerMode,
@@ -2688,7 +2776,7 @@ function AdminPostComposer({
       title,
       tone,
     }),
-    [bodyMarkdown, category, composerMode, coverImage, date, excerpt, postStatus, publishedAt, seoDescription, seoTitle, slug, tags, title, tone],
+    [authorNameInput, bodyMarkdown, category, composerMode, coverImage, date, excerpt, postStatus, publishedAt, seoDescription, seoTitle, slug, tags, title, tone],
   );
   const currentSnapshot = useMemo(() => createComposerSnapshot(currentDraftData), [currentDraftData]);
 
@@ -2710,6 +2798,7 @@ function AdminPostComposer({
     setDraftStatus('saving');
 
     const nextDraft: ComposerDraft = {
+      authorName: data.authorName,
       bodyMarkdown: data.bodyMarkdown,
       category: data.category,
       composerMode: data.composerMode,
@@ -2743,13 +2832,18 @@ function AdminPostComposer({
     setDraftStatus(savedSnapshot === createComposerSnapshot(latestDraftRef.current) ? nextDraftStatus : 'dirty');
   }
 
-  function updateDraftField(nextData: Partial<ComposerDraftData>) {
+  draftStatusRef.current = draftStatus;
+  saveDraftSnapshotRef.current = () => {
+    void saveDraftSnapshot();
+  };
+
+  const updateDraftField = useCallback((nextData: Partial<ComposerDraftData>) => {
     latestDraftRef.current = {
       ...latestDraftRef.current,
       ...nextData,
     };
     setDraftStatus('dirty');
-  }
+  }, []);
 
   function updateTitle(nextTitle: string) {
     const nextSlug = slugTouched ? slug : nextTitle.trim() ? slugifyPostTitle(nextTitle) : '';
@@ -2761,17 +2855,51 @@ function AdminPostComposer({
     updateDraftField({ slug: nextSlug, title: nextTitle });
   }
 
-  function updateBodyMarkdown(nextMarkdown: string) {
+  const flushPendingWysiwygSync = useCallback(() => {
+    const pendingMarkdown = pendingWysiwygMarkdownRef.current;
+    if (pendingMarkdown === null) {
+      return;
+    }
+
+    const normalizedMarkdown = normalizeLooseCodeFences(pendingMarkdown);
+    pendingWysiwygMarkdownRef.current = null;
+    bodyMarkdownRef.current = normalizedMarkdown;
+    latestDraftRef.current = {
+      ...latestDraftRef.current,
+      bodyMarkdown: normalizedMarkdown,
+    };
+    skipNextWysiwygSyncRef.current = true;
+    startTransition(() => setBodyMarkdown(normalizedMarkdown));
+  }, []);
+
+  const flushRichMarkdownForAction = useCallback(() => {
+    mdxEditorRef.current?.getMarkdown();
+    flushPendingWysiwygSync();
+  }, [flushPendingWysiwygSync]);
+
+  const updateBodyMarkdown = useCallback((nextMarkdown: string) => {
+    bodyMarkdownRef.current = nextMarkdown;
     setBodyMarkdown(nextMarkdown);
     updateDraftField({ bodyMarkdown: nextMarkdown });
-  }
+  }, [updateDraftField]);
 
-  function updateBodyMarkdownFromWysiwyg(nextMarkdown: string) {
-    skipNextWysiwygSyncRef.current = true;
-    updateBodyMarkdown(nextMarkdown);
-  }
+  const handleWysiwygChange = useCallback(
+    (nextMarkdown: string, initialNormalize: boolean) => {
+      if (initialNormalize) {
+        return;
+      }
+
+      bodyMarkdownRef.current = nextMarkdown;
+      pendingWysiwygMarkdownRef.current = nextMarkdown;
+      updateDraftField({ bodyMarkdown: nextMarkdown });
+      flushPendingWysiwygSync();
+    },
+    [flushPendingWysiwygSync, updateDraftField],
+  );
 
   function updateComposerMode(nextMode: SetStateAction<ComposerMode>) {
+    flushRichMarkdownForAction();
+    skipNextWysiwygSyncRef.current = false;
     setComposerMode((currentMode) => {
       const resolvedMode = typeof nextMode === 'function' ? nextMode(currentMode) : nextMode;
       updateDraftField({ composerMode: resolvedMode });
@@ -2823,15 +2951,21 @@ function AdminPostComposer({
     setShowCoverPicker(true);
   }
 
-  async function savePost() {
+  async function savePost(navigation: 'stay' | 'return' = 'stay') {
+    if (savePostInFlightRef.current) {
+      return false;
+    }
+
     const trimmedTitle = title.trim();
-    const normalizedBodyMarkdown = normalizeMarkdown(bodyMarkdown);
+    flushRichMarkdownForAction();
+    const normalizedBodyMarkdown = normalizeMarkdown(bodyMarkdownRef.current);
 
     if (!trimmedTitle) {
       return false;
     }
 
     clearAutosaveTimeout();
+    savePostInFlightRef.current = true;
 
     const nextPost: Post = {
       slug: createUniqueSlug(posts, slug || trimmedTitle, editingPost?.slug),
@@ -2851,31 +2985,37 @@ function AdminPostComposer({
       coverImage: coverImage.trim(),
     };
 
-    if (editingPost) {
-      const saved = await onUpdatePost(editingPost.slug, nextPost);
-      if (!saved) {
+    try {
+      const savedPost = editingPost
+        ? await onUpdatePost(editingPost.slug, nextPost)
+        : await onCreatePost(nextPost);
+      if (!savedPost) {
         setPublishNotice('服务器保存失败。内容已保留为本地未同步草稿，尚未同步到服务器或公开发布。请确认后台服务后重试保存。');
         setDraftStatus('local-draft-saved');
-        await saveDraftSnapshot(currentDraftData);
+        await saveDraftSnapshot();
         return false;
       }
-    } else {
-      const saved = await onCreatePost(nextPost);
-      if (!saved) {
-        setPublishNotice('服务器保存失败。内容已保留为本地未同步草稿，尚未同步到服务器或公开发布。请确认后台服务后重试保存。');
-        setDraftStatus('local-draft-saved');
-        await saveDraftSnapshot(currentDraftData);
-        return false;
-      }
-    }
 
-    setPublishNotice('');
-    clearAutosaveTimeout();
-    clearComposerDraft(draftKey);
-    void clearAdminDraft(draftKey).catch(() => undefined);
-    savedSnapshotRef.current = currentSnapshot;
-    setDraftStatus('published');
-    return true;
+      setPublishNotice('');
+      clearAutosaveTimeout();
+      clearComposerDraft(draftKey);
+      void clearAdminDraft(draftKey).catch(() => undefined);
+      savedSnapshotRef.current = createComposerSnapshot({
+        ...latestDraftRef.current,
+        slug: savedPost.slug,
+      });
+      setDraftStatus('published');
+
+      if (navigation === 'return') {
+        navigateAdmin(returnPath);
+      } else if (!editingPost || savedPost.slug !== editingPost.slug) {
+        const editPath = `/admin/posts/${encodeURIComponent(savedPost.slug)}/edit?returnTo=${encodeURIComponent(returnPath)}`;
+        navigateAdmin(editPath);
+      }
+      return true;
+    } finally {
+      savePostInFlightRef.current = false;
+    }
   }
 
   async function generateArticleMetadataSuggestion() {
@@ -2932,7 +3072,7 @@ function AdminPostComposer({
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void savePost();
+    void savePost('return');
   }
 
   function insertMarkdown(snippet: string, selectionOffset = 0) {
@@ -3196,6 +3336,7 @@ function AdminPostComposer({
 
   function restoreDraft(draft: ComposerDraft) {
     const restoredData: ComposerDraftData = {
+      authorName: draft.authorName ?? editingPost?.authorName ?? '',
       bodyMarkdown: draft.bodyMarkdown,
       category: draft.category || defaultCategory,
       composerMode: draft.composerMode,
@@ -3214,7 +3355,10 @@ function AdminPostComposer({
 
     latestDraftRef.current = restoredData;
     savedSnapshotRef.current = createComposerSnapshot(restoredData);
+    pendingWysiwygMarkdownRef.current = null;
+    bodyMarkdownRef.current = draft.bodyMarkdown;
     setTitle(draft.title);
+    setAuthorNameInput(restoredData.authorName);
     setSlug(draft.slug);
     setCategory(draft.category || defaultCategory);
     setDate(draft.date || formatToday());
@@ -3278,7 +3422,7 @@ function AdminPostComposer({
     const isLetterKey = (letter: string) => key === letter || event.code === `Key${letter.toUpperCase()}`;
     if (key === 's') {
       event.preventDefault();
-      void savePost();
+      void savePost('stay');
       return true;
     }
 
@@ -3349,8 +3493,13 @@ function AdminPostComposer({
     return false;
   }
 
+  shortcutHandlerRef.current = (event) => {
+    applyShortcut(event);
+  };
+
   function handleMarkdownKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (applyShortcut(event)) {
+      event.stopPropagation();
       return;
     }
 
@@ -3473,7 +3622,10 @@ function AdminPostComposer({
   }
 
   useEffect(() => {
-    latestDraftRef.current = currentDraftData;
+    latestDraftRef.current = {
+      ...currentDraftData,
+      bodyMarkdown: pendingWysiwygMarkdownRef.current ?? currentDraftData.bodyMarkdown,
+    };
   }, [currentDraftData]);
 
   useEffect(() => {
@@ -3487,6 +3639,7 @@ function AdminPostComposer({
 
     const nextBodyMarkdown = getPostMarkdown(editingPost);
     const nextData: ComposerDraftData = {
+      authorName: editingPost.authorName ?? '',
       bodyMarkdown: nextBodyMarkdown,
       category: editingPost.category || defaultCategory,
       composerMode,
@@ -3514,6 +3667,7 @@ function AdminPostComposer({
     latestDraftRef.current = nextData;
     savedSnapshotRef.current = nextPostSnapshot;
     setTitle(nextData.title);
+    setAuthorNameInput(nextData.authorName);
     setSlug(nextData.slug);
     setSlugTouched(true);
     setCategory(nextData.category);
@@ -3523,6 +3677,7 @@ function AdminPostComposer({
     setTone(nextData.tone);
     setExcerpt(nextData.excerpt);
     setTags(nextData.tags);
+    bodyMarkdownRef.current = nextBodyMarkdown;
     setBodyMarkdown(nextBodyMarkdown);
     setSeoTitle(nextData.seoTitle);
     setSeoDescription(nextData.seoDescription);
@@ -3579,25 +3734,7 @@ function AdminPostComposer({
     }, composerAutosaveIntervalMs);
 
     return undefined;
-  }, [
-    bodyMarkdown,
-    category,
-    composerMode,
-    coverImage,
-    currentSnapshot,
-    date,
-    draftKey,
-    draftStatus,
-    excerpt,
-    postStatus,
-    publishedAt,
-    seoDescription,
-    seoTitle,
-    slug,
-    tags,
-    title,
-    tone,
-  ]);
+  }, [currentSnapshot, draftStatus]);
 
   useEffect(() => {
     const textarea = markdownInputRef.current;
@@ -3616,19 +3753,28 @@ function AdminPostComposer({
   useEffect(() => () => clearAutosaveTimeout(), []);
 
   useEffect(() => {
+    function hasUnsavedChanges() {
+      return (
+        createComposerSnapshot(latestDraftRef.current) !== savedSnapshotRef.current &&
+        draftStatusRef.current !== 'published'
+      );
+    }
+
     function warnBeforeLeave(event: BeforeUnloadEvent) {
-      if (currentSnapshot === savedSnapshotRef.current || draftStatus === 'published') {
+      flushRichMarkdownForAction();
+      if (!hasUnsavedChanges()) {
         return;
       }
 
-      void saveDraftSnapshot();
+      saveDraftSnapshotRef.current();
       event.preventDefault();
       event.returnValue = '';
     }
 
     function saveBeforePageHide() {
-      if (currentSnapshot !== savedSnapshotRef.current && draftStatus !== 'published') {
-        void saveDraftSnapshot();
+      flushRichMarkdownForAction();
+      if (hasUnsavedChanges()) {
+        saveDraftSnapshotRef.current();
       }
     }
 
@@ -3646,34 +3792,16 @@ function AdminPostComposer({
       window.removeEventListener('pagehide', saveBeforePageHide);
       document.removeEventListener('visibilitychange', saveWhenHidden);
     };
-  }, [
-    bodyMarkdown,
-    category,
-    composerMode,
-    coverImage,
-    currentSnapshot,
-    date,
-    draftKey,
-    draftStatus,
-    excerpt,
-    postStatus,
-    publishedAt,
-    seoDescription,
-    seoTitle,
-    slug,
-    tags,
-    title,
-    tone,
-  ]);
+  }, [flushRichMarkdownForAction]);
 
   useEffect(() => {
     function handleWindowKeyDown(event: KeyboardEvent) {
-      applyShortcut(event);
+      shortcutHandlerRef.current(event);
     }
 
     window.addEventListener('keydown', handleWindowKeyDown);
     return () => window.removeEventListener('keydown', handleWindowKeyDown);
-  }, [applyShortcut]);
+  }, []);
 
   useEffect(() => {
     if (composerMode !== 'wysiwyg') {
@@ -3695,19 +3823,20 @@ function AdminPostComposer({
 
   useEffect(() => {
     function handleScroll() {
-      if (outlineItems.length === 0) {
+      const currentOutlineItems = outlineItemsRef.current;
+      if (currentOutlineItems.length === 0) {
         return;
       }
 
       const approximateLine = Math.floor(window.scrollY / 30);
       const activeItem =
-        [...outlineItems].reverse().find((item) => item.lineIndex <= approximateLine) || outlineItems[0];
+        [...currentOutlineItems].reverse().find((item) => item.lineIndex <= approximateLine) || currentOutlineItems[0];
       setActiveHeadingId(activeItem.id);
     }
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [outlineItems]);
+  }, []);
 
   return (
     <section
@@ -3817,9 +3946,9 @@ function AdminPostComposer({
             <a className="secondary-action" href={returnPath}>
               取消
             </a>
-            <button className="primary-action" type="submit" title="保存（Cmd/Ctrl + S）">
+            <button className="primary-action" type="submit" title="保存并返回文章列表">
               <Save size={17} />
-              {isEditing ? '保存修改' : '保存文章'}
+              {isEditing ? '保存并返回' : '创建并返回'}
             </button>
           </div>
         </header>
@@ -3998,14 +4127,9 @@ function AdminPostComposer({
               <Suspense fallback={<div className="typora-editor-loading">正在加载富文本编辑器...</div>}>
                 <RichMarkdownEditor
                   markdown={bodyMarkdown}
-                  onChange={(nextMarkdown, initialNormalize) => {
-                    if (!initialNormalize) {
-                      const normalizedMarkdown = normalizeLooseCodeFences(nextMarkdown);
-                      updateBodyMarkdownFromWysiwyg(normalizedMarkdown);
-                    }
-                  }}
-                  onInsertFormula={() => openFormulaDialog('block')}
-                  onInsertGalleryImage={() => setShowGalleryPicker(true)}
+                  onChange={handleWysiwygChange}
+                  onInsertFormula={openBlockFormulaDialog}
+                  onInsertGalleryImage={openGalleryPicker}
                   ref={mdxEditorRef}
                 />
               </Suspense>
@@ -4083,7 +4207,7 @@ function AdminPostComposer({
                       </div>
                     </header>
                     <div className="typora-preview-content">
-                      <MarkdownBody markdown={normalizeMarkdown(bodyMarkdown)} />
+                      <MarkdownBody markdown={normalizeMarkdown(deferredBodyMarkdown)} />
                     </div>
                   </article>
                 )}
@@ -4197,7 +4321,12 @@ function AdminPostComposer({
               </label>
               <label>
                 作者
-                <input readOnly value={authorName} />
+                <input
+                  value={authorNameInput}
+                  maxLength={40}
+                  placeholder={`留空默认：${normalizeOwnerName(settings.ownerName)}`}
+                  onChange={(event) => updateMetaField('authorName', event.target.value, setAuthorNameInput)}
+                />
               </label>
               <label>
                 日期

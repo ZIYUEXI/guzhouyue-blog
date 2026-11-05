@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { JSX as ReactJSX } from 'react';
 import {
   BlockTypeSelect,
@@ -84,6 +84,7 @@ type FormulaEditorProps = {
 
 export type RichMarkdownEditorHandle = {
   focus: () => void;
+  getMarkdown: () => string;
   insertMarkdown: (markdown: string) => void;
   setMarkdown: (markdown: string) => void;
 };
@@ -311,6 +312,8 @@ const codeBlockLanguages: CodeBlockLanguage[] = [
   { name: 'JSON', alias: ['json'], extensions: ['json'] },
   { name: 'JSX', alias: ['jsx'], extensions: ['jsx'] },
   { name: 'Markdown', alias: ['markdown', 'md'], extensions: ['md', 'markdown'] },
+  // Mermaid 图表作为 Markdown 代码围栏保存，编辑器中保留语言标识。
+  { name: 'Mermaid', alias: ['mermaid'], extensions: ['mmd', 'mermaid'] },
   { name: 'Python', alias: ['python', 'py'], extensions: ['py'] },
   { name: 'Rust', alias: ['rust', 'rs'], extensions: ['rs'] },
   { name: 'TypeScript', alias: ['ts', 'typescript'], extensions: ['ts'] },
@@ -419,7 +422,7 @@ function NativeCodeBlockToolbar() {
   );
 }
 
-export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkdownEditorProps>(
+const RichMarkdownEditorComponent = forwardRef<RichMarkdownEditorHandle, RichMarkdownEditorProps>(
   function RichMarkdownEditor({ markdown, onChange, onInsertFormula, onInsertGalleryImage }, ref) {
     const editorRef = useRef<MDXEditorMethods>(null);
     const [parseError, setParseError] = useState('');
@@ -493,6 +496,9 @@ export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkd
       focus() {
         editorRef.current?.focus();
       },
+      getMarkdown() {
+        return editorRef.current?.getMarkdown() ?? '';
+      },
       insertMarkdown(markdownValue: string) {
         editorRef.current?.insertMarkdown(markdownValue);
       },
@@ -525,6 +531,7 @@ export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkd
             className="typora-rich-editor"
             contentEditableClassName="typora-rich-content"
             markdown={markdown}
+            markdownSerializationDelay={180}
             onChange={(nextMarkdown, initialNormalize) => {
               setParseError('');
               onChange(nextMarkdown, initialNormalize);
@@ -539,4 +546,13 @@ export const RichMarkdownEditor = forwardRef<RichMarkdownEditorHandle, RichMarkd
       </>
     );
   },
+);
+
+export const RichMarkdownEditor = memo(
+  RichMarkdownEditorComponent,
+  // External document changes use the imperative setMarkdown handle; editor-originated changes stay inside MDXEditor.
+  (previous, next) =>
+    previous.onChange === next.onChange &&
+    previous.onInsertFormula === next.onInsertFormula &&
+    previous.onInsertGalleryImage === next.onInsertGalleryImage,
 );

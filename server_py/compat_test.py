@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import re
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,8 @@ def main() -> None:
         from .seed import seed
         from .seed_test_articles import seed_test_articles
 
+        config.gallery_upload_dir.mkdir(parents=True, exist_ok=True)
+        (config.gallery_upload_dir / "compat-download.png").write_bytes(b"\x89PNG\r\n\x1a\n" + (b"\x00" * 32))
         seed()
         seed_test_articles()
 
@@ -45,6 +49,13 @@ def main() -> None:
         category = client.get("/api/articles?category=功能测试&page=1&pageSize=20")
         tag = client.get("/api/articles?tag=SearchNeedleAlpha&page=1&pageSize=20")
         missing_article = client.get("/api/articles/not-found-slug")
+        article_download = client.get("/api/articles/test-image-and-media/download")
+        download_entries: list[str] = []
+        downloaded_markdown = ""
+        if article_download.status_code == 200:
+            with zipfile.ZipFile(io.BytesIO(article_download.content)) as download_archive:
+                download_entries = download_archive.namelist()
+                downloaded_markdown = download_archive.read("article.md").decode("utf-8")
         comments = client.get("/api/articles/test-markdown-kitchen-sink/comments")
         invalid_comment = client.post("/api/articles/test-markdown-kitchen-sink/comments", json={"authorName": "", "content": ""})
         pending_comment = client.post("/api/articles/test-markdown-kitchen-sink/comments", json={"authorName": "新读者", "content": "新评论"}, headers={})
@@ -66,6 +77,17 @@ def main() -> None:
         check("category filter returns matching category", category.status_code == 200 and all(item.get("category") == "功能测试" for item in category.json().get("items", [])), category.text)
         check("tag filter returns matching tag", tag.status_code == 200 and tag.json().get("total", 0) >= 1, tag.text)
         check("missing article is 404 JSON error", missing_article.status_code == 404 and "error" in missing_article.json(), missing_article.text)
+        check(
+            "article download includes rewritten Markdown and local images",
+            article_download.status_code == 200
+            and article_download.headers.get("content-type", "").startswith("application/zip")
+            and "article.md" in download_entries
+            and "images/guzhouyue-hero.png" in download_entries
+            and "images/compat-download.png" in download_entries
+            and "(/images/guzhouyue-hero.png)" not in downloaded_markdown
+            and "(images/guzhouyue-hero.png)" in downloaded_markdown,
+            {"status": article_download.status_code, "entries": download_entries, "markdown": downloaded_markdown},
+        )
         check("comments only returns approved comments", comments.status_code == 200 and len(comments.json().get("items", [])) >= 1, comments.text)
         check("invalid public comment is rejected", invalid_comment.status_code == 400, invalid_comment.text)
         check("valid public comment is pending", pending_comment.status_code == 201 and pending_comment.json().get("status") == "pending", pending_comment.text)

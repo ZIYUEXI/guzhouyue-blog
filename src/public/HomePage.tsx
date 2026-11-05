@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   DragEvent as ReactDragEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
-} from 'react';
-import { CalendarDays, ChevronRight } from 'lucide-react';
-import { AuthorAvatar, PostCover, SectionHeading } from '../components';
+} from "react";
+import { CalendarDays, ChevronRight } from "lucide-react";
+import { AuthorAvatar, PostCover, SectionHeading } from "../components";
 import {
   defaultSiteContent,
   type AlmanacInfo,
@@ -13,16 +13,29 @@ import {
   type HomepageCopy,
   type NoteSection,
   type SiteContent,
-} from '../contentStore';
-import { buildArchive, getPublishedPosts } from '../lib/postUtils';
-import type { Post } from '../posts';
-import { createSeasonNote } from '../seasonNote';
+} from "../contentStore";
+import { buildArchive, getPublishedPosts } from "../lib/postUtils";
+import type { Post } from "../posts";
+import { createSeasonNote } from "../seasonNote";
+import { HomeWaterRipples } from "./HomeWaterRipples";
 
 const homepageArchivePreviewLimit = 4;
 const homepageArchiveEntriesPerMonthLimit = 6;
 
-export function HomePage({ content, heroImage }: { content: SiteContent; heroImage: string }) {
-  return <HeroMoonScene almanac={content.almanac} heroImage={heroImage} homepage={content.homepage} />;
+export function HomePage({
+  content,
+  heroImage,
+}: {
+  content: SiteContent;
+  heroImage: string;
+}) {
+  return (
+    <HeroMoonScene
+      almanac={content.almanac}
+      heroImage={heroImage}
+      homepage={content.homepage}
+    />
+  );
 }
 
 export function HomeContent({
@@ -36,11 +49,25 @@ export function HomeContent({
 }) {
   return (
     <>
+      <HomeWaterRipples />
       <LatestPosts homepage={content.homepage} posts={content.posts} />
-      <TopicRiver homepage={content.homepage} noteSections={content.noteSections} />
-      <FeaturedEssay homepage={content.homepage} posts={content.posts} seriesList={content.featuredSeries} />
+      <TopicRiver
+        homepage={content.homepage}
+        noteSections={content.noteSections}
+      />
+      <FeaturedEssay
+        homepage={content.homepage}
+        posts={content.posts}
+        seriesList={content.featuredSeries}
+      />
       <ArchivePreview homepage={content.homepage} posts={content.posts} />
-      <AboutBlock homepage={content.homepage} noteSections={content.noteSections} ownerAvatarUrl={ownerAvatarUrl} ownerName={ownerName} posts={content.posts} />
+      <AboutBlock
+        homepage={content.homepage}
+        noteSections={content.noteSections}
+        ownerAvatarUrl={ownerAvatarUrl}
+        ownerName={ownerName}
+        posts={content.posts}
+      />
     </>
   );
 }
@@ -54,7 +81,13 @@ function HeroMoonScene({
   heroImage: string;
   homepage: HomepageCopy;
 }) {
-  const seasonNote = useMemo(() => (homepage.seasonAuto ? createSeasonNoteFromAlmanac(almanac) ?? createSeasonNote() : null), [almanac, homepage.seasonAuto]);
+  const seasonNote = useMemo(
+    () =>
+      homepage.seasonAuto
+        ? (createSeasonNoteFromAlmanac(almanac) ?? createSeasonNote())
+        : null,
+    [almanac, homepage.seasonAuto],
+  );
   const seasonTitle = seasonNote?.title ?? homepage.seasonTitle;
   const seasonText = seasonNote?.text ?? homepage.seasonText;
 
@@ -100,25 +133,43 @@ function createSeasonNoteFromAlmanac(almanac?: AlmanacInfo | null) {
     return null;
   }
 
-  const termLabel = almanac.solarTerm || (almanac.nextSolarTerm ? `${almanac.nextSolarTerm}前` : '');
-  const titleParts = ['今日', almanac.lunarMonth && almanac.lunarDay ? `${almanac.lunarMonth}${almanac.lunarDay}` : '', termLabel].filter(Boolean);
-  const goodThings = almanac.goodThings.filter((thing) => thing !== '诸事不忌').slice(0, 3);
-  const badThings = almanac.badThings.filter((thing) => thing !== '诸事不忌').slice(0, 2);
+  const termLabel =
+    almanac.solarTerm ||
+    (almanac.nextSolarTerm ? `${almanac.nextSolarTerm}前` : "");
+  const titleParts = [
+    "今日",
+    almanac.lunarMonth && almanac.lunarDay
+      ? `${almanac.lunarMonth}${almanac.lunarDay}`
+      : "",
+    termLabel,
+  ].filter(Boolean);
+  const goodThings = almanac.goodThings
+    .filter((thing) => thing !== "诸事不忌")
+    .slice(0, 3);
+  const badThings = almanac.badThings
+    .filter((thing) => thing !== "诸事不忌")
+    .slice(0, 2);
   const textParts = [
-    goodThings.length > 0 ? `宜：${goodThings.join('、')}` : '',
-    badThings.length > 0 ? `忌：${badThings.join('、')}` : '',
+    goodThings.length > 0 ? `宜：${goodThings.join("、")}` : "",
+    badThings.length > 0 ? `忌：${badThings.join("、")}` : "",
   ].filter(Boolean);
 
   return {
-    title: titleParts.join(' · '),
-    text: textParts.join('；') || almanac.zodiacClash || almanac.weekDay,
+    title: titleParts.join(" · "),
+    text: textParts.join("；") || almanac.zodiacClash || almanac.weekDay,
   };
 }
 
-function LatestPosts({ homepage, posts }: { homepage: HomepageCopy; posts: Post[] }) {
+function LatestPosts({
+  homepage,
+  posts,
+}: {
+  homepage: HomepageCopy;
+  posts: Post[];
+}) {
   const [lead, ...rest] = posts;
   const recentPosts = rest.slice(0, 3);
-  const featuredTitleDensity = getFeaturedTitleDensity(lead?.title ?? '');
+  const featuredTitleDensity = getFeaturedTitleDensity(lead?.title ?? "");
 
   if (!lead) {
     return null;
@@ -137,11 +188,20 @@ function LatestPosts({ homepage, posts }: { homepage: HomepageCopy; posts: Post[
         title={homepage.latestTitle}
       />
       <div className="post-grid">
-        <a className={`featured-card tone-${lead.tone}`} href={`/posts/${lead.slug}`}>
-          <PostCover className="featured-card-cover" coverImage={lead.coverImage} loading="lazy" />
+        <a
+          className={`featured-card tone-${lead.tone}`}
+          href={`/posts/${lead.slug}`}
+        >
+          <PostCover
+            className="featured-card-cover"
+            coverImage={lead.coverImage}
+            loading="lazy"
+          />
           <div className="featured-card-body">
             <span>{lead.category}</span>
-            <h3 className={`featured-title-${featuredTitleDensity}`}>{lead.title}</h3>
+            <h3 className={`featured-title-${featuredTitleDensity}`}>
+              {lead.title}
+            </h3>
             <p>{lead.excerpt}</p>
             <footer>
               <small>{lead.date}</small>
@@ -164,28 +224,34 @@ function getFeaturedTitleDensity(title: string) {
   const titleLength = Array.from(normalizedTitle).length;
   const longestSegmentLength = Math.max(
     0,
-    ...normalizedTitle.split(/[\s，。！？、：；,.!?:;()[\]{}"'“”‘’《》<>/\\|-]+/).map((segment) => Array.from(segment).length),
+    ...normalizedTitle
+      .split(/[\s，。！？、：；,.!?:;()[\]{}"'“”‘’《》<>/\\|-]+/)
+      .map((segment) => Array.from(segment).length),
   );
 
   if (titleLength > 72 || longestSegmentLength > 34) {
-    return 'ultra';
+    return "ultra";
   }
 
   if (titleLength > 52 || longestSegmentLength > 24) {
-    return 'dense';
+    return "dense";
   }
 
   if (titleLength > 34) {
-    return 'compact';
+    return "compact";
   }
 
-  return 'normal';
+  return "normal";
 }
 
 function PostCard({ post }: { post: Post }) {
   return (
     <a className={`post-card tone-${post.tone}`} href={`/posts/${post.slug}`}>
-      <PostCover className="post-card-cover" coverImage={post.coverImage} loading="lazy" />
+      <PostCover
+        className="post-card-cover"
+        coverImage={post.coverImage}
+        loading="lazy"
+      />
       <div className="post-card-body">
         <div className="post-card-meta">
           <span>{post.category}</span>
@@ -199,10 +265,19 @@ function PostCard({ post }: { post: Post }) {
   );
 }
 
-function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSections: NoteSection[] }) {
+function TopicRiver({
+  homepage,
+  noteSections,
+}: {
+  homepage: HomepageCopy;
+  noteSections: NoteSection[];
+}) {
   const riverRef = useRef<HTMLDivElement>(null);
   const scrollPositionRef = useRef(0);
+  const scrollCycleRef = useRef(0);
+  const canScrollRef = useRef(false);
   const pauseUntilRef = useRef(0);
+  const riverVisibleRef = useRef(false);
   const prefersReducedMotionRef = useRef(false);
   const dragStateRef = useRef({
     dragged: false,
@@ -212,25 +287,40 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
     startY: 0,
   });
   const displaySections = useMemo(() => {
-    const sectionPriority = new Map(defaultSiteContent.noteSections.map((section, index) => [section.category, index]));
-    return noteSections.filter((section) => section.category !== '功能测试').sort((first, second) => {
-      const firstPriority = sectionPriority.get(first.category) ?? 100 + noteSections.indexOf(first);
-      const secondPriority = sectionPriority.get(second.category) ?? 100 + noteSections.indexOf(second);
-      return firstPriority - secondPriority;
-    });
+    const sectionPriority = new Map(
+      defaultSiteContent.noteSections.map((section, index) => [
+        section.category,
+        index,
+      ]),
+    );
+    return noteSections
+      .filter((section) => section.category !== "功能测试")
+      .sort((first, second) => {
+        const firstPriority =
+          sectionPriority.get(first.category) ??
+          100 + noteSections.indexOf(first);
+        const secondPriority =
+          sectionPriority.get(second.category) ??
+          100 + noteSections.indexOf(second);
+        return firstPriority - secondPriority;
+      });
   }, [noteSections]);
-  const loopedSections = displaySections.length > 1 ? [...displaySections, ...displaySections] : displaySections;
+  const loopedSections =
+    displaySections.length > 1
+      ? [...displaySections, ...displaySections]
+      : displaySections;
 
-  const getScrollCycle = (river: HTMLDivElement) => {
+  const measureScrollCycle = (river: HTMLDivElement) => {
     const styles = window.getComputedStyle(river);
-    const gap = Number.parseFloat(styles.columnGap || styles.gap || '0') || 0;
-    return (river.scrollWidth + gap) / 2;
+    const gap = Number.parseFloat(styles.columnGap || styles.gap || "0") || 0;
+    scrollCycleRef.current = (river.scrollWidth + gap) / 2;
+    canScrollRef.current = river.scrollWidth > river.clientWidth;
   };
 
   const setLoopedScroll = (river: HTMLDivElement, value: number) => {
-    const cycle = getScrollCycle(river);
+    const cycle = scrollCycleRef.current;
 
-    if (!Number.isFinite(cycle) || cycle <= 0 || river.scrollWidth <= river.clientWidth) {
+    if (!Number.isFinite(cycle) || cycle <= 0 || !canScrollRef.current) {
       return;
     }
 
@@ -245,35 +335,84 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
     const river = riverRef.current;
     if (!river) return;
 
-    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const updateMotionPreference = () => {
-      prefersReducedMotionRef.current = reducedMotionQuery.matches;
-    };
-    updateMotionPreference();
-    reducedMotionQuery.addEventListener('change', updateMotionPreference);
-
+    const reducedMotionQuery = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    );
     let animationFrame = 0;
     let previousTime = performance.now();
     const speed = 18;
 
-    const animate = (time: number) => {
+    const syncAnimation = () => {
+      const shouldRun =
+        riverVisibleRef.current &&
+        !prefersReducedMotionRef.current &&
+        document.visibilityState === "visible" &&
+        displaySections.length > 1 &&
+        canScrollRef.current;
+      // 不可见、减少动态或没有可滚动内容时彻底停止帧回调。
+      if (!shouldRun) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+      } else if (!animationFrame) {
+        previousTime = performance.now();
+        animationFrame = window.requestAnimationFrame(animate);
+      }
+    };
+    const updateMotionPreference = () => {
+      prefersReducedMotionRef.current = reducedMotionQuery.matches;
+      syncAnimation();
+    };
+    const updateDimensions = () => {
+      measureScrollCycle(river);
+      syncAnimation();
+    };
+    const visibilityObserver = new IntersectionObserver(
+      ([entry]) => {
+        riverVisibleRef.current = entry.isIntersecting;
+        if (entry.isIntersecting) measureScrollCycle(river);
+        syncAnimation();
+      },
+      { threshold: 0 },
+    );
+    visibilityObserver.observe(river);
+    const resizeObserver = new ResizeObserver(updateDimensions);
+    resizeObserver.observe(river);
+    if (river.firstElementChild)
+      resizeObserver.observe(river.firstElementChild);
+    measureScrollCycle(river);
+    updateMotionPreference();
+    reducedMotionQuery.addEventListener("change", updateMotionPreference);
+    document.addEventListener("visibilitychange", syncAnimation);
+
+    function animate(time: number) {
       const dragState = dragStateRef.current;
       const deltaSeconds = Math.min(time - previousTime, 40) / 1000;
       previousTime = time;
 
-      if (!dragState.isDragging && !prefersReducedMotionRef.current && time >= pauseUntilRef.current) {
-        setLoopedScroll(river, scrollPositionRef.current + speed * deltaSeconds);
+      if (
+        riverVisibleRef.current &&
+        !dragState.isDragging &&
+        !prefersReducedMotionRef.current &&
+        document.visibilityState === "visible" &&
+        time >= pauseUntilRef.current
+      ) {
+        setLoopedScroll(
+          river!,
+          scrollPositionRef.current + speed * deltaSeconds,
+        );
       }
 
       animationFrame = window.requestAnimationFrame(animate);
-    };
+    }
 
-    animationFrame = window.requestAnimationFrame(animate);
     return () => {
-      reducedMotionQuery.removeEventListener('change', updateMotionPreference);
+      reducedMotionQuery.removeEventListener("change", updateMotionPreference);
+      document.removeEventListener("visibilitychange", syncAnimation);
+      visibilityObserver.disconnect();
+      resizeObserver.disconnect();
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [noteSections]);
+  }, [displaySections]);
 
   const pauseAutoScroll = (duration = 900) => {
     pauseUntilRef.current = window.performance.now() + duration;
@@ -305,7 +444,7 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
     const verticalDistance = event.clientY - dragState.startY;
     if (Math.hypot(dragDistance, verticalDistance) > 5) {
       dragState.dragged = true;
-      river.classList.add('is-dragging');
+      river.classList.add("is-dragging");
       if (!river.hasPointerCapture(event.pointerId)) {
         river.setPointerCapture(event.pointerId);
       }
@@ -321,7 +460,7 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
     if (!river || !dragStateRef.current.isDragging) return;
 
     dragStateRef.current.isDragging = false;
-    river.classList.remove('is-dragging');
+    river.classList.remove("is-dragging");
     if (river.hasPointerCapture(event.pointerId)) {
       river.releasePointerCapture(event.pointerId);
     }
@@ -352,7 +491,10 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
 
   return (
     <section className="content-section" id="札记">
-      <SectionHeading eyebrow={homepage.topicsEyebrow} title={homepage.topicsTitle} />
+      <SectionHeading
+        eyebrow={homepage.topicsEyebrow}
+        title={homepage.topicsTitle}
+      />
       <div
         className="topic-river"
         aria-label="文章分类"
@@ -370,18 +512,18 @@ function TopicRiver({ homepage, noteSections }: { homepage: HomepageCopy; noteSe
           const isClone = index >= displaySections.length;
 
           return (
-          <a
-            aria-hidden={isClone || undefined}
-            className="topic-chip"
-            draggable={false}
-            href={`/posts/page/1?category=${encodeURIComponent(section.category)}`}
-            key={`${section.category}-${index}`}
-            onClick={handleChipClick}
-            tabIndex={isClone ? -1 : undefined}
-          >
-            <span>{section.category}</span>
-            <small>{section.description}</small>
-          </a>
+            <a
+              aria-hidden={isClone || undefined}
+              className="topic-chip"
+              draggable={false}
+              href={`/posts/page/1?category=${encodeURIComponent(section.category)}`}
+              key={`${section.category}-${index}`}
+              onClick={handleChipClick}
+              tabIndex={isClone ? -1 : undefined}
+            >
+              <span>{section.category}</span>
+              <small>{section.description}</small>
+            </a>
           );
         })}
       </div>
@@ -413,14 +555,17 @@ function FeaturedEssay({
   return (
     <section className="essay-band">
       <div>
-        <SectionHeading eyebrow={homepage.seriesEyebrow} title={featuredSeries.title} />
+        <SectionHeading
+          eyebrow={homepage.seriesEyebrow}
+          title={featuredSeries.title}
+        />
         <h3>{featuredSeries.lead}</h3>
         <p>{featuredSeries.body}</p>
       </div>
       <div className="chapter-list" aria-label="系列章节">
         {seriesPosts.map((post, index) => (
           <a href={`/posts/${post.slug}`} key={post.slug}>
-            <span>{String(index + 1).padStart(2, '0')}</span>
+            <span>{String(index + 1).padStart(2, "0")}</span>
             {post.title}
           </a>
         ))}
@@ -429,18 +574,32 @@ function FeaturedEssay({
   );
 }
 
-function ArchivePreview({ homepage, posts }: { homepage: HomepageCopy; posts: Post[] }) {
+function ArchivePreview({
+  homepage,
+  posts,
+}: {
+  homepage: HomepageCopy;
+  posts: Post[];
+}) {
   const publishedPosts = useMemo(() => getPublishedPosts(posts), [posts]);
-  const archiveGroups = useMemo(() => buildArchive(publishedPosts), [publishedPosts]);
-  const previewGroups = useMemo(() => archiveGroups.slice(0, homepageArchivePreviewLimit), [archiveGroups]);
+  const archiveGroups = useMemo(
+    () => buildArchive(publishedPosts),
+    [publishedPosts],
+  );
+  const previewGroups = useMemo(
+    () => archiveGroups.slice(0, homepageArchivePreviewLimit),
+    [archiveGroups],
+  );
   const hasOverflowingArchivePreview =
     archiveGroups.length > homepageArchivePreviewLimit ||
-    previewGroups.some((group) => group.entries.length > homepageArchiveEntriesPerMonthLimit);
-  const [openMonth, setOpenMonth] = useState(previewGroups[0]?.month ?? '');
+    previewGroups.some(
+      (group) => group.entries.length > homepageArchiveEntriesPerMonthLimit,
+    );
+  const [openMonth, setOpenMonth] = useState(previewGroups[0]?.month ?? "");
 
   useEffect(() => {
     if (!previewGroups.some((group) => group.month === openMonth)) {
-      setOpenMonth(previewGroups[0]?.month ?? '');
+      setOpenMonth(previewGroups[0]?.month ?? "");
     }
   }, [openMonth, previewGroups]);
 
@@ -459,11 +618,17 @@ function ArchivePreview({ homepage, posts }: { homepage: HomepageCopy; posts: Po
       />
       <div className="timeline">
         {previewGroups.map(({ month, entries }) => {
-          const previewEntries = entries.slice(0, homepageArchiveEntriesPerMonthLimit);
+          const previewEntries = entries.slice(
+            0,
+            homepageArchiveEntriesPerMonthLimit,
+          );
 
           return (
             <div className="timeline-month" key={month}>
-              <button type="button" onClick={() => setOpenMonth(openMonth === month ? '' : month)}>
+              <button
+                type="button"
+                onClick={() => setOpenMonth(openMonth === month ? "" : month)}
+              >
                 <span />
                 {month}
               </button>
@@ -472,7 +637,7 @@ function ArchivePreview({ homepage, posts }: { homepage: HomepageCopy; posts: Po
                   {previewEntries.map((post) => (
                     <li key={post.slug}>
                       <a href={`/posts/${post.slug}`}>
-                        {post.date.slice(5).replace('.', '.')}  {post.title}
+                        {post.date.slice(5).replace(".", ".")} {post.title}
                       </a>
                     </li>
                   ))}
@@ -507,30 +672,47 @@ function AboutBlock({
   posts: Post[];
 }) {
   return (
-    <section className="about-band" id="关于">
-      <div>
-        <SectionHeading eyebrow={homepage.aboutEyebrow} title={homepage.aboutTitle} />
-        <p>{homepage.aboutBody}</p>
+    <section className="about-band" id="关于" aria-label={homepage.aboutTitle}>
+      {/* 将简介与作者名片排成一张纸笺，沿用后台配置的文案与资料。 */}
+      <div className="about-copy">
+        <SectionHeading
+          eyebrow={homepage.aboutEyebrow}
+          title={homepage.aboutTitle}
+        />
+        <p className="about-intro">{homepage.aboutBody}</p>
+        <a className="about-read-link" href="/posts/page/1">
+          翻阅我的文字
+          <ChevronRight size={16} aria-hidden="true" />
+        </a>
       </div>
-      <div className="about-stats" aria-label="站点摘要">
+      <aside className="about-stats" aria-label="作者与站点摘要">
         <div className="about-author">
-          <AuthorAvatar ownerAvatarUrl={ownerAvatarUrl} ownerName={ownerName} size="large" />
-          <div>
-            <span>作者</span>
+          <AuthorAvatar
+            ownerAvatarUrl={ownerAvatarUrl}
+            ownerName={ownerName}
+            size="large"
+          />
+          <div className="about-author-name">
+            <span className="about-author-label">执笔人</span>
             <strong>{ownerName}</strong>
           </div>
-        </div>
-        <div className="about-metrics">
-          <span>
-            <strong>{posts.length}</strong>
-            <small>近日文章</small>
+          <span className="about-seal" aria-hidden="true">
+            记
           </span>
-          <span>
+        </div>
+        <p className="about-author-note">{homepage.siteTagline}</p>
+        {/* 统计已发布文章的总数，避免将累计文章误标为近日文章。 */}
+        <div className="about-metrics" role="group" aria-label="站点统计">
+          <a href="/posts/page/1">
+            <strong>{getPublishedPosts(posts).length}</strong>
+            <small>已发布文章</small>
+          </a>
+          <a href="/notes/page/1">
             <strong>{noteSections.length}</strong>
             <small>内容主题</small>
-          </span>
+          </a>
         </div>
-      </div>
+      </aside>
     </section>
   );
 }

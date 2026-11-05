@@ -8,12 +8,14 @@ import string
 import time
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .db import get_db, json_parse, now_iso
 
 
 SYSTEM_GALLERY_ALBUM_ID = "album-moonlight"
 SYSTEM_GALLERY_ALBUM_SLUG = "system"
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 LLM_PROVIDER_DEFAULTS = {
     "deepseek": {"label": "DeepSeek", "model": "deepseek-v4-pro", "baseUrl": "https://api.deepseek.com"},
@@ -72,6 +74,10 @@ def date_label(iso_date: str | None) -> str:
         date = datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
     except ValueError:
         return iso_date
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=BEIJING_TZ)
+    else:
+        date = date.astimezone(BEIJING_TZ)
     return f"{date.year}.{date.month:02d}.{date.day:02d}"
 
 

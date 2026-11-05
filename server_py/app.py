@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from . import admin_commands
+from .article_download import create_article_archive
 from .ai_agent import AiAgentError, generate_article_metadata, plan_admin_commands, test_llm_connection
 from .almanac import get_today_almanac
 from .config import config
@@ -97,7 +98,10 @@ csrf_tokens: dict[str, str] = {}
 rate_limits: dict[str, dict[str, float]] = {}
 allowed_gallery_mime_types = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
 max_gallery_image_bytes = config.max_gallery_image_bytes
-public_json_cache_control = "public, max-age=300, stale-while-revalidate=86400"
+# The admin domain renders the same public API data after an edit. Keep those
+# dynamic responses out of browser, Cloudflare, and intermediary caches so an
+# article save is visible immediately.
+public_json_cache_control = "no-store"
 
 app = FastAPI()
 
@@ -335,6 +339,22 @@ async def article_detail(slug: str):
         "nextPost": published[index + 1] if index >= 0 and index < len(published) - 1 else None,
         "commentCount": comment_count,
     }
+
+
+@app.get("/api/articles/{slug}/download")
+async def download_article(slug: str, background_tasks: BackgroundTasks):
+    article = get_article_by_slug(slug)
+    if not article:
+        raise error(404, "Article not found")
+    archive_path, _asset_count = create_article_archive(article)
+    background_tasks.add_task(archive_path.unlink, missing_ok=True)
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=f"{slug}.zip",
+        background=background_tasks,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/archive")
@@ -755,7 +775,8 @@ async def admin_delete_gallery_album(id_or_slug: str, _token: str = Depends(requ
     if album["id"] == SYSTEM_GALLERY_ALBUM_ID:
         raise error(400, "System gallery cannot be deleted")
     deleted = delete_gallery_album(id_or_slug)
-    if not deleted:
+    # 空相册成功删除后返回空列表，不能误判为未找到。
+    if deleted is None:
         raise error(404, "Gallery album not found")
     delete_gallery_files(deleted)
     return {"ok": True}
@@ -1229,6 +1250,11 @@ def rss_pub_date(value: Any) -> str:
     except ValueError:
         parsed = datetime.now(timezone.utc)
     return format_datetime(parsed.astimezone(timezone.utc), usegmt=True)
+
+
+# 外部写作接口独立认证；复用后台的图片校验，不开放发布权限。
+from .agent_api import register_agent_api
+register_agent_api(app, require_admin, read_validated_gallery_image)
 
 
 def main() -> None:

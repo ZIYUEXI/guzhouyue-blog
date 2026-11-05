@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Filter, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { AdminCategorySelect } from './components/AdminCategorySelect';
 import type { NoteSection } from './contentStore';
 import type { Post, PostStatus } from './posts';
 import type { BatchResult } from './lib/adminTypes';
@@ -254,20 +255,16 @@ export function AdminPostsPanel({
               <span>分类</span>
               <small>{categoryCounts.get(activeCategory) ?? 0} 篇</small>
             </div>
-            <label className="admin-select-field">
-              <select
-                aria-label="按分类筛选文章"
-                value={activeCategory}
-                onChange={(event) => setActiveCategory(event.target.value)}
-              >
-                {categories.map((categoryName) => (
-                  <option key={categoryName} value={categoryName}>
-                    {categoryName}（{categoryCounts.get(categoryName) ?? 0}）
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={17} />
-            </label>
+            <AdminCategorySelect
+              ariaLabel="按分类筛选文章"
+              onChange={setActiveCategory}
+              options={categories.map((categoryName) => ({
+                value: categoryName,
+                label: categoryName,
+                count: categoryCounts.get(categoryName) ?? 0,
+              }))}
+              value={activeCategory}
+            />
           </div>
           <div className="admin-filter-group admin-filter-group-compact">
             <div className="admin-filter-group-title">
@@ -320,18 +317,14 @@ export function AdminPostsPanel({
           >
             批量归档
           </button>
-          <select
-            aria-label="批量迁移分类"
+          <AdminCategorySelect
+            ariaLabel="批量迁移分类"
+            compact
             disabled={selectedCount === 0 || batchBusy}
+            onChange={setBulkCategory}
+            options={noteSections.map((section) => ({ value: section.category, label: section.category }))}
             value={bulkCategory}
-            onChange={(event) => setBulkCategory(event.target.value)}
-          >
-            {noteSections.map((section) => (
-              <option key={section.id ?? section.category} value={section.category}>
-                {section.category}
-              </option>
-            ))}
-          </select>
+          />
           <button
             className="secondary-action"
             disabled={selectedCount === 0 || !bulkCategory || batchBusy}

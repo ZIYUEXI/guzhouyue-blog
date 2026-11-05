@@ -1,0 +1,162 @@
+/* 分类浮层沿用全站主题变量，明暗模式和风格切换时保持一致。 */
+.admin-category-select {
+  align-items: center;
+  background: color-mix(in srgb, var(--paper) 82%, var(--surface-strong));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 650;
+  gap: 10px;
+  min-height: 46px;
+  min-width: 0;
+  padding: 0 13px;
+  text-align: left;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  width: 100%;
+}
+
+.admin-category-select:not(:disabled):hover,
+.admin-category-select[aria-expanded="true"] {
+  background: var(--paper);
+  border-color: color-mix(in srgb, var(--cinnabar) 55%, var(--line));
+}
+
+.admin-category-select:focus-visible {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 3px;
+}
+
+.admin-category-select[aria-expanded="true"] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cinnabar) 8%, transparent);
+}
+
+.admin-category-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.admin-category-select-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-category-count {
+  background: color-mix(in srgb, var(--muted) 9%, transparent);
+  border-radius: 5px;
+  color: var(--muted);
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.5;
+  min-width: 27px;
+  padding: 2px 7px;
+  text-align: center;
+}
+
+.admin-category-chevron {
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: transform 160ms ease;
+}
+
+.admin-category-select[aria-expanded="true"] .admin-category-chevron {
+  transform: rotate(180deg);
+}
+
+/* 使用不透明底色，避免菜单覆盖文章时出现文字叠透。 */
+.admin-category-menu {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px color-mix(in srgb, var(--ink) 13%, transparent), 0 2px 6px color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 6px;
+  position: fixed;
+  z-index: 1000;
+}
+
+.admin-category-menu-heading {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  justify-content: space-between;
+  line-height: 1.5;
+  margin: 0 6px 5px;
+  padding: 7px 3px 10px;
+}
+
+.admin-category-options {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  position: relative;
+  scrollbar-width: thin;
+}
+
+.admin-category-option {
+  align-items: center;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  font-size: 0.88rem;
+  gap: 9px;
+  min-height: 44px;
+  padding: 9px 10px;
+}
+
+.admin-category-option.is-active {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.admin-category-option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--cinnabar) 10%, transparent);
+  color: var(--cinnabar);
+  font-weight: 650;
+}
+
+.admin-category-option[aria-selected="true"].is-active {
+  background: color-mix(in srgb, var(--cinnabar) 15%, transparent);
+}
+
+.admin-category-option[aria-selected="true"] .admin-category-count {
+  background: color-mix(in srgb, var(--cinnabar) 10%, transparent);
+  color: var(--cinnabar);
+}
+
+.admin-category-check {
+  display: flex;
+  flex: 0 0 15px;
+}
+
+.admin-category-option-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-bulk-toolbar .admin-category-select.is-compact {
+  font-size: 0.86rem;
+  min-height: 38px;
+  width: 160px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-category-select,
+  .admin-category-chevron {
+    transition: none;
+  }
+}

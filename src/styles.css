@@ -565,6 +565,8 @@ img {
 }
 
 .home-content-background {
+  /* 裁切固定水纹层到首页内容区；图层大小始终只覆盖当前屏幕。 */
+  clip-path: inset(0);
   isolation: isolate;
   overflow: hidden;
   position: relative;
@@ -579,7 +581,8 @@ img {
 }
 
 .home-content-background::before {
-  animation: homeBackgroundDrift 18s ease-in-out infinite alternate;
+  /* 大面积渐变漂移会让整页持续重绘；静态层保留氛围，不占用动画帧。 */
+  animation: none;
   background:
     radial-gradient(ellipse at 76% 8%, var(--home-moon-glow), transparent 25rem),
     radial-gradient(ellipse at 24% 34%, color-mix(in srgb, var(--home-ink-wash) 82%, transparent), transparent 30rem),
@@ -590,19 +593,8 @@ img {
 }
 
 .home-content-background::after {
-  animation: homeWaterDrift 34s linear infinite;
-  background-image:
-    radial-gradient(ellipse at 50% 50%, var(--home-paper-speck) 0 1px, transparent 1.4px),
-    repeating-radial-gradient(ellipse at 42% 48%, transparent 0 44px, var(--home-ink-thread) 45px 47px, transparent 48px 82px),
-    repeating-linear-gradient(174deg, transparent 0 52px, color-mix(in srgb, var(--home-ink-thread) 72%, transparent) 53px 54px, transparent 55px 112px);
-  background-position:
-    0 0,
-    0 0,
-    0 0;
-  background-size:
-    19px 19px,
-    620px 220px,
-    460px 180px;
+  /* 纸张颗粒保持静止，只有独立水纹层参与动画。 */
+  background: radial-gradient(ellipse at 50% 50%, var(--home-paper-speck) 0 1px, transparent 1.4px) 0 0 / 19px 19px;
   inset: 0;
   mask-image:
     linear-gradient(180deg, transparent, #000 5rem, #000 calc(100% - 4rem), transparent),
@@ -618,6 +610,48 @@ img {
 .home-content-background > * {
   position: relative;
   z-index: 1;
+}
+
+.home-content-background > .home-water-ripples {
+  inset: 0;
+  mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+  overflow: hidden;
+  pointer-events: none;
+  position: fixed;
+  z-index: 0;
+}
+
+.home-water-ripples::before {
+  /* 固定背景只绘制一次，随后通过合成层平移，避免逐帧修改 background-position。 */
+  animation: homeWaterFloat 16s ease-in-out infinite alternate paused;
+  background-image:
+    repeating-radial-gradient(ellipse at 42% 48%, transparent 0 44px, var(--home-ink-thread) 45px 47px, transparent 48px 82px),
+    repeating-linear-gradient(174deg, transparent 0 52px, color-mix(in srgb, var(--home-ink-thread) 72%, transparent) 53px 54px, transparent 55px 112px);
+  background-size: 620px 220px, 460px 180px;
+  content: "";
+  inset: -40px;
+  opacity: 0.58;
+  position: absolute;
+  transform: translate3d(-32px, -6px, 0);
+}
+
+.home-water-ripples[data-running="true"]::before {
+  animation-play-state: running;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-water-ripples::before {
+    animation: none;
+    transform: none;
+  }
+}
+
+.home-content-background > .content-section,
+.home-content-background > .essay-band,
+.home-content-background > .about-band {
+  /* 首屏以下内容进入视口前不参与布局和绘制。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 720px;
 }
 
 .section-heading {
@@ -4142,115 +4176,225 @@ body:has(.starfield-page) .site-footer {
   font-weight: 800;
 }
 
+/* 关于区使用整张纸笺布局；所有颜色沿用主题变量，兼容明暗与其他预设。 */
 .about-band {
-  align-items: stretch;
+  align-items: center;
+  background:
+    radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--moon) 22%, transparent), transparent 55%),
+    linear-gradient(115deg, color-mix(in srgb, var(--surface-strong) 92%, transparent), color-mix(in srgb, var(--surface) 80%, transparent));
+  border: 1px solid var(--line);
+  border-radius: 4px;
   display: grid;
-  gap: clamp(24px, 5vw, 56px);
-  grid-template-columns: minmax(0, 1fr) minmax(390px, 0.52fr);
+  gap: clamp(32px, 5vw, 64px);
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
+  isolation: isolate;
+  margin: 32px auto 58px;
+  max-width: 1116px;
+  overflow: hidden;
+  padding: clamp(30px, 4.5vw, 54px);
   position: relative;
+  width: calc(100% - 64px);
 }
 
 .about-band::before {
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--cinnabar) 18%, transparent), transparent 34%),
-    color-mix(in srgb, var(--surface) 72%, transparent);
-  border-block: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--cinnabar), color-mix(in srgb, var(--cinnabar) 12%, transparent));
   content: "";
-  inset: clamp(36px, 6vw, 64px) 0;
+  height: 72px;
+  left: -1px;
+  position: absolute;
+  top: 54px;
+  width: 3px;
+}
+
+/* 静态月影只作背景装饰，不遮挡文字与可点击区域。 */
+.about-band::after {
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 9%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 22px color-mix(in srgb, var(--moon) 6%, transparent), 0 0 0 44px color-mix(in srgb, var(--moon) 4%, transparent);
+  content: "";
+  height: 230px;
   pointer-events: none;
   position: absolute;
+  right: -80px;
+  top: -125px;
+  width: 230px;
   z-index: -1;
 }
 
-.about-band > div:first-child {
-  align-self: center;
-  padding-block: clamp(20px, 4vw, 34px);
-}
-
-.about-band .section-heading {
-  grid-template-columns: auto 1fr;
-  margin-bottom: 14px;
-}
-
-.about-band .section-heading h2 {
-  justify-self: start;
-  text-align: left;
-}
-
-.about-band p {
-  color: var(--muted);
-  line-height: 1.9;
-  margin: 0;
-  max-width: 720px;
-}
-
-.about-stats {
-  align-self: center;
-  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  display: grid;
-  gap: 0;
-  grid-template-columns: minmax(0, 1fr) 170px;
-  overflow: hidden;
-}
-
-.about-author {
-  align-items: start;
-  align-content: center;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--moon) 16%, transparent), transparent 62%),
-    color-mix(in srgb, var(--surface-strong) 88%, transparent);
-  display: grid;
-  gap: 12px;
-  min-height: 142px;
-  padding: clamp(22px, 3vw, 30px);
-}
-
-.about-author > div {
-  display: grid;
-  gap: 8px;
+.about-copy {
   min-width: 0;
 }
 
-.about-author span,
-.about-metrics small {
+.about-band .section-heading {
+  align-items: start;
+  gap: 16px;
+  grid-template-columns: 1fr;
+  margin-bottom: 22px;
+}
+
+.about-band .section-heading > span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+}
+
+.about-band .section-heading h2 {
+  font-size: clamp(1.9rem, 3.5vw, 2.65rem);
+  justify-self: start;
+  letter-spacing: 0.06em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.about-intro {
   color: var(--muted);
-  font-size: 0.92rem;
+  font-family: "Noto Serif SC", "Songti SC", SimSun, serif;
+  font-size: 1rem;
+  line-height: 2.05;
+  margin: 0;
+  max-width: 36em;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.about-read-link {
+  align-items: center;
+  color: var(--cinnabar);
+  display: inline-flex;
+  font-size: 0.82rem;
+  gap: 10px;
+  margin-top: 26px;
+  min-height: 36px;
+  padding-block: 4px;
+}
+
+.about-read-link svg {
+  transition: transform 180ms ease;
+}
+
+.about-read-link:hover svg {
+  transform: translateX(3px);
+}
+
+.about-stats {
+  border-left: 1px solid var(--line);
+  min-width: 0;
+  padding: 8px 0 8px clamp(28px, 3.5vw, 44px);
+}
+
+.about-author {
+  align-items: center;
+  display: flex;
+  gap: 18px;
+}
+
+.about-author .author-avatar {
+  border: 3px solid var(--surface-strong);
+  box-shadow: 0 0 0 1px var(--line);
+  width: 76px;
+}
+
+.about-author-name {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.about-author-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
 }
 
 .about-author strong {
   color: var(--ink);
   font-family: "Noto Serif SC", "Songti SC", SimSun, serif;
-  font-size: clamp(1.72rem, 2.4vw, 2.08rem);
-  line-height: 1.12;
+  font-size: clamp(1.5rem, 2.4vw, 1.9rem);
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.about-seal {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--cinnabar) 65%, transparent);
+  border-radius: 3px;
+  color: var(--cinnabar);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: "Noto Serif SC", "Songti SC", SimSun, serif;
+  font-size: 0.8rem;
+  height: 25px;
+  justify-content: center;
+  margin-left: auto;
+  transform: rotate(-8deg);
+  width: 23px;
+}
+
+.about-author-note {
+  color: var(--muted);
+  font-family: "Noto Serif SC", "Songti SC", SimSun, serif;
+  font-size: 0.82rem;
+  line-height: 1.8;
+  margin: 22px 0 24px;
   overflow-wrap: anywhere;
 }
 
 .about-metrics {
-  border-left: 1px solid var(--line);
-  display: grid;
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-}
-
-.about-metrics span {
-  align-content: center;
-  display: grid;
-  gap: 8px;
-  min-height: 71px;
-  padding: 16px clamp(18px, 2.4vw, 24px);
-}
-
-.about-metrics span + span {
   border-top: 1px solid var(--line);
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 20px;
+}
+
+.about-metrics a {
+  display: grid;
+  gap: 9px;
+  justify-items: start;
+  min-width: 0;
+  padding-block: 4px;
+}
+
+.about-metrics a + a {
+  border-left: 1px solid var(--line);
+  padding-left: 20px;
+}
+
+.about-metrics small {
+  color: var(--muted);
+  font-size: 0.73rem;
+  line-height: 1.6;
 }
 
 .about-metrics strong {
   color: var(--ink);
   font-family: "Noto Serif SC", "Songti SC", SimSun, serif;
-  font-size: clamp(1.8rem, 3vw, 2.2rem);
+  font-size: 2rem;
+  font-variant-numeric: lining-nums tabular-nums;
+  font-weight: 500;
   line-height: 1;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  transition: color 180ms ease;
+}
+
+.about-metrics a:hover strong {
+  color: var(--cinnabar);
+}
+
+.about-read-link:focus-visible,
+.about-metrics a:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .about-read-link svg,
+  .about-metrics strong {
+    transition: none;
+  }
 }
 
 .search-layer {
@@ -4401,6 +4545,12 @@ body:has(.starfield-page) .site-footer {
   gap: 18px;
   max-width: 1040px;
   padding-top: 18px;
+}
+
+.article-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .article-author-meta {
@@ -10446,6 +10596,15 @@ body.composer-focus-active .admin-main-composer {
   }
 }
 
+@keyframes homeWaterFloat {
+  from {
+    transform: translate3d(-32px, -6px, 0);
+  }
+  to {
+    transform: translate3d(32px, 6px, 0);
+  }
+}
+
 @keyframes typoraWaterDrift {
   from {
     background-position:
@@ -10464,6 +10623,13 @@ body.composer-focus-active .admin-main-composer {
 }
 
 @media (max-width: 920px) {
+  /* 窄屏将署名与统计移到简介下方，保持分隔线与横向统计的阅读顺序。 */
+  .about-stats {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding: 28px 0 0;
+  }
+
   .site-header {
     grid-template-columns: 1fr auto;
   }
@@ -11517,13 +11683,14 @@ body.composer-focus-active .admin-main-composer {
     justify-content: flex-start;
   }
 
-  .about-stats {
-    grid-template-columns: 1fr;
+  .about-band {
+    margin-block: 20px 36px;
+    padding: 28px 24px;
+    width: calc(100% - 36px);
   }
 
   .about-metrics {
-    border-left: 0;
-    border-top: 1px solid var(--line);
+    gap: 20px;
   }
 
   .list-post,
@@ -11599,3 +11766,69 @@ body.composer-focus-active .admin-main-composer {
   border-color: color-mix(in srgb, var(--qing) 34%, var(--line)) !important;
   color: #ffe1a6 !important;
 }
+
+/* Mermaid 流程图：文章正文中使用 ```mermaid 代码围栏时自适应展示 SVG。 */
+.article-body .mermaid-block {
+  margin: 0 0 1.15em;
+}
+
+.article-body .mermaid-diagram {
+  background: color-mix(in srgb, var(--paper) 78%, var(--qing));
+  border: 1px solid color-mix(in srgb, var(--qing) 32%, var(--line));
+  border-radius: var(--radius);
+  overflow-x: auto;
+  padding: clamp(12px, 2vw, 24px);
+}
+
+.article-body .mermaid-diagram svg {
+  display: block;
+  height: auto;
+  margin: 0 auto;
+  max-width: 100%;
+}
+
+.article-body .mermaid-loading,
+.article-body .mermaid-error {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 0 0 1.15em;
+  padding: 14px 18px;
+}
+
+.article-body .mermaid-loading {
+  background: color-mix(in srgb, var(--qing) 8%, transparent);
+  color: var(--muted);
+}
+
+.article-body .mermaid-error {
+  background: color-mix(in srgb, var(--cinnabar) 8%, transparent);
+  color: var(--muted);
+  display: grid;
+  gap: 8px;
+}
+
+.article-body .mermaid-error strong {
+  color: var(--cinnabar);
+}
+
+.article-body .mermaid-error span {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.article-body .mermaid-error pre {
+  margin: 0;
+  max-height: 320px;
+}
+
+/* 工具密钥面板沿用后台主题，长接口地址在窄屏中自动换行。 */
+.admin-agent-keys { display: grid; gap: 16px; min-width: 0; align-content: start; }
+.admin-agent-keys p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.admin-agent-keys code { overflow-wrap: anywhere; }
+.admin-agent-key-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.admin-agent-key-form label { display: grid; gap: 8px; flex: 1 1 220px; }
+.admin-agent-key-form input, .admin-agent-key-secret textarea { width: 100%; box-sizing: border-box; padding: 12px; font: inherit; color: var(--ink); background: var(--surface-strong); border: 1px solid var(--line); border-radius: 8px; }
+.admin-agent-key-secret { display: grid; gap: 12px; }
+.admin-agent-key-secret textarea { min-height: 85px; resize: vertical; }
+.admin-agent-key-list { list-style: none; padding: 0; display: grid; gap: 12px; }
+.admin-agent-key-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
