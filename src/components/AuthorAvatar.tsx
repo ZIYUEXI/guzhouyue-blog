@@ -13,7 +13,7 @@ export function AuthorAvatar({
 
   return (
     <span className={`author-avatar author-avatar-${size}`} aria-hidden="true">
-      {ownerAvatarUrl ? <img alt="" src={ownerAvatarUrl} /> : <span>{initial}</span>}
+      {ownerAvatarUrl ? <img alt="" src={ownerAvatarUrl} loading="lazy" decoding="async" width={size === 'small' ? 32 : 70} height={size === 'small' ? 32 : 70} /> : <span>{initial}</span>}
     </span>
   );
 }

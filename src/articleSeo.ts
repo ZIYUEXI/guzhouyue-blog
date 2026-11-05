@@ -7,6 +7,16 @@ export function useArticleHead(post: Post | null) {
       return;
     }
 
+    // 公开站复用页面导航，离开文章时恢复原有页头，避免首页保留上一篇的 SEO。
+    const previousTitle = document.title;
+    const selectors = [
+      'meta[name="description"]', 'meta[property="og:type"]', 'meta[property="og:title"]',
+      'meta[property="og:description"]', 'meta[property="og:url"]', 'meta[property="og:image"]',
+      'meta[name="twitter:card"]', 'meta[name="twitter:title"]', 'meta[name="twitter:description"]',
+      'meta[name="twitter:image"]', 'link[rel="canonical"]', '#article-json-ld',
+    ];
+    const originals = selectors.map((selector) => document.head.querySelector(selector)?.cloneNode(true));
+
     const canonicalUrl = `${window.location.origin}/posts/${encodeURIComponent(post.slug)}`;
     const title = post.seoTitle || `${post.title} | 孤舟月`;
     const description = post.seoDescription || post.excerpt;
@@ -27,6 +37,13 @@ export function useArticleHead(post: Post | null) {
     }
     setCanonicalUrl(canonicalUrl);
     setJsonLd(post, canonicalUrl, imageUrl);
+    return () => {
+      document.title = previousTitle;
+      selectors.forEach((selector, index) => {
+        document.head.querySelector(selector)?.remove();
+        if (originals[index]) document.head.appendChild(originals[index]);
+      });
+    };
   }, [post]);
 }
 

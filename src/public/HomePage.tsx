@@ -25,14 +25,17 @@ const homepageArchiveEntriesPerMonthLimit = 6;
 export function HomePage({
   content,
   heroImage,
+  heroSources,
 }: {
   content: SiteContent;
   heroImage: string;
+  heroSources?: import('../lib/publicSnapshot').PublicMedia['hero'];
 }) {
   return (
     <HeroMoonScene
       almanac={content.almanac}
       heroImage={heroImage}
+      heroSources={heroSources}
       homepage={content.homepage}
     />
   );
@@ -75,10 +78,12 @@ export function HomeContent({
 function HeroMoonScene({
   almanac,
   heroImage,
+  heroSources,
   homepage,
 }: {
   almanac?: AlmanacInfo | null;
   heroImage: string;
+  heroSources?: import('../lib/publicSnapshot').PublicMedia['hero'];
   homepage: HomepageCopy;
 }) {
   const seasonNote = useMemo(
@@ -94,7 +99,7 @@ function HeroMoonScene({
   return (
     <section className="hero" id="首页">
       <div className="hero-art" aria-hidden="true">
-        <img src={heroImage} alt="" />
+        <img src={heroImage} srcSet={heroSources?.srcSet} sizes="100vw" width={heroSources?.width} height={heroSources?.height} fetchPriority="high" decoding="async" alt="" />
         <div className="moon-orbit" />
         <div className="water-shimmer" />
       </div>

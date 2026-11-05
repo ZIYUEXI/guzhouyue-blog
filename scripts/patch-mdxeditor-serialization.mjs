@@ -135,11 +135,11 @@ patchFile('plugins/core/index.js', (source) => {
       };
       rootEditor.__mdxeditorFlushMarkdownSerialization = serializeMarkdown;
       const unregister = rootEditor.registerUpdateListener(({ dirtyElements, dirtyLeaves }) => {
-        if (r.getValue(muteChange$) || dirtyElements.size === 0 && dirtyLeaves.size === 0) {
+        if (dirtyElements.size === 0 && dirtyLeaves.size === 0) {
           return;
         }
         hasPendingMarkdownExport = true;
-        const delay = r.getValue(markdownSerializationDelay$);
+        const delay = r.getValue(muteChange$) ? 0 : r.getValue(markdownSerializationDelay$);
         if (delay > 0) {
           if (markdownExportTimeout !== null) {
             clearTimeout(markdownExportTimeout);
@@ -181,8 +181,18 @@ patchFile('plugins/core/index.js', (source) => {
     );
   }
 
-  return nextSource.replace(
+  // 外部恢复/切换文档时立即更新内部 Markdown，但由原库 muteChange 抑制 onChange。
+  // 跳过此导出会让界面显示新内容、getMarkdown 却返回恢复前的旧文档。
+  nextSource = nextSource.replace(
+    'if (r.getValue(muteChange$) || dirtyElements.size === 0 && dirtyLeaves.size === 0)',
+    'if (dirtyElements.size === 0 && dirtyLeaves.size === 0)',
+  );
+  nextSource = nextSource.replace(
     'const delay = params?.markdownSerializationDelay ?? 0;',
     'const delay = r.getValue(markdownSerializationDelay$);',
+  );
+  return nextSource.replace(
+    'const delay = r.getValue(markdownSerializationDelay$);',
+    'const delay = r.getValue(muteChange$) ? 0 : r.getValue(markdownSerializationDelay$);',
   );
 });

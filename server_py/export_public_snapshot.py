@@ -18,6 +18,8 @@ from .content import (
 )
 from .db import get_db, now_iso
 from .starfield import get_public_starfield
+from .public_media import optimize_public_media
+from .public_snapshot import write_versioned_snapshot
 
 
 DATA_DIR = ROOT_DIR / "public" / "data"
@@ -131,6 +133,11 @@ def main() -> None:
     starfield = get_public_starfield()
     comments = export_comments()
 
+    copied = copy_gallery_uploads()
+    site['media'] = optimize_public_media(ROOT_DIR, site, get_gallery_album(SYSTEM_GALLERY_ALBUM_ID, True))
+    payloads = {"site": site, "articles": articles, "gallery": gallery, "starfield": starfield, "comments": comments}
+    manifest = write_versioned_snapshot(DATA_DIR, rewrite_public_urls(payloads), generated_at)
+    # 保留旧格式，已有浏览器页面在发布切换期间仍能继续读取。
     outputs = [
         write_json("site.json", rewrite_public_urls(site)),
         write_json("articles.json", rewrite_public_urls(articles)),
@@ -139,7 +146,7 @@ def main() -> None:
         write_json("comments.json", rewrite_public_urls(comments)),
         write_json("snapshot-meta.json", {"generatedAt": generated_at}),
     ]
-    copied = copy_gallery_uploads()
+    print(f"Snapshot revision: {manifest['revision']}")
 
     print(f"Database: {config.database_path}")
     for output in outputs:

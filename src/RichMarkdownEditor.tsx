@@ -531,7 +531,7 @@ const RichMarkdownEditorComponent = forwardRef<RichMarkdownEditorHandle, RichMar
             className="typora-rich-editor"
             contentEditableClassName="typora-rich-content"
             markdown={markdown}
-            markdownSerializationDelay={180}
+            markdownSerializationDelay={350}
             onChange={(nextMarkdown, initialNormalize) => {
               setParseError('');
               onChange(nextMarkdown, initialNormalize);
@@ -550,7 +550,7 @@ const RichMarkdownEditorComponent = forwardRef<RichMarkdownEditorHandle, RichMar
 
 export const RichMarkdownEditor = memo(
   RichMarkdownEditorComponent,
-  // External document changes use the imperative setMarkdown handle; editor-originated changes stay inside MDXEditor.
+  // 外部文档通过 setMarkdown 更新，输入产生的文档变化留在编辑器内部。
   (previous, next) =>
     previous.onChange === next.onChange &&
     previous.onInsertFormula === next.onInsertFormula &&

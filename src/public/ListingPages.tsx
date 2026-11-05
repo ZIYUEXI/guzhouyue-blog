@@ -2,7 +2,9 @@ import { ChevronRight, X } from 'lucide-react';
 import { Pagination, PostListItem, SectionHeading, SimplePagination } from '../components';
 import type { NoteSection } from '../contentStore';
 import { buildArchive } from '../lib/postUtils';
-import { postsPerPage, type Post } from '../posts';
+import type { Post } from '../posts';
+// 列表分页常量独立定义，避免导入历史示例文章正文。
+const postsPerPage = 2;
 
 export function AllPostsPage({
   category,
@@ -208,4 +210,14 @@ export function AllArchivePage({ currentPage, posts }: { currentPage: number; po
       <SimplePagination basePath="/archive/page" currentPage={normalizedPage} pageCount={pageCount} />
     </section>
   );
+}
+
+// 路由包装器使列表模块可以整体按需加载。
+export default function ListingRoute({ route, posts, noteSections, category, tag }: {
+  route: import('../routing').Route; posts: Post[]; noteSections: NoteSection[]; category: string | null; tag: string | null;
+}) {
+  if (route.name === 'posts') return <AllPostsPage currentPage={route.page} posts={posts} category={category} tag={tag} />;
+  if (route.name === 'notes') return <AllNotesPage currentPage={route.page} posts={posts} noteSections={noteSections} />;
+  if (route.name === 'archive') return <AllArchivePage currentPage={route.page} posts={posts} />;
+  return null;
 }

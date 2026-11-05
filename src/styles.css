@@ -6701,7 +6701,8 @@ body:has(.starfield-page) .site-footer {
     auto,
     680px 240px,
     auto;
-  animation: typoraWaterDrift 42s linear infinite;
+  /* 编辑长文时固定水纹，避免 background-position 动画持续重绘整页。 */
+  animation: none;
 }
 
 .typora-composer {

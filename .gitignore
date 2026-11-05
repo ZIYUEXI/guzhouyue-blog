@@ -5,6 +5,11 @@ node_modules/
 dist/
 output/
 *.tsbuildinfo
+
+# 公开发布时从生产数据生成的哈希对象与缩略图，不作为源码维护。
+/public/data/manifest.json
+/public/data/objects/
+/public/media/
 vite.config.js
 vite.config.d.ts
 

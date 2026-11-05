@@ -1,3 +1,4 @@
+import { isStaticPublic, readSnapshot } from './lib/publicSnapshot';
 import type { SiteContent, HomepageCopy, NoteSection, FeaturedSeries, AlmanacInfo, GalleryAlbum, GalleryImage } from './contentStore';
 import type { Post, PostStatus } from './posts';
 import type { SiteSettings } from './siteSettings';
@@ -465,6 +466,9 @@ const jsonHeaders = {
 const publicDataSource = (import.meta.env.VITE_PUBLIC_DATA_SOURCE ?? 'api') as 'api' | 'static' | 'hybrid';
 
 async function requestStaticJson<T>(path: string): Promise<T> {
+  // 版本化快照复用同一发布清单，避免各模块分别请求旧文件名。
+  const key = path.match(/^\/data\/(site|gallery|starfield|comments)\.json$/)?.[1];
+  if (isStaticPublic && key) return readSnapshot<T>(key);
   const response = await fetch(path, {
     headers: { Accept: 'application/json' },
     cache: 'no-cache',

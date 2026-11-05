@@ -1,3 +1,6 @@
+import { loadArticle } from './publicData';
+import { ApiError } from '../apiClient';
+import { SnapshotNotFoundError } from '../lib/publicSnapshot';
 import { useEffect, useMemo, useState } from 'react';
 import { Download, Orbit } from 'lucide-react';
 import { AuthorAvatar, PostCover, PostListItem, SectionHeading } from '../components';
@@ -5,12 +8,30 @@ import { ArticleComments } from '../ArticleComments';
 import { fetchPublicStarfield } from '../apiClient';
 import { useArticleHead } from '../articleSeo';
 import { calculateReadingMinutes, decodeHashAnchor, getMarkdownOutline } from '../lib/markdownUtils';
-import { getAdjacentPosts, getPostBySlug, getPostMarkdown } from '../lib/postUtils';
+import { getAdjacentPosts, getPostMarkdown } from '../lib/postUtils';
 import { MarkdownBody } from '../MarkdownBody';
 import type { Post } from '../posts';
 
 export function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl: string; posts: Post[]; slug: string }) {
-  const post = getPostBySlug(posts, slug);
+  const [loadedPost, setLoadedPost] = useState<Post | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [notFound, setNotFound] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setLoadError('');
+    setNotFound(false);
+    // 摘要只用于导航，正文在打开当前文章后单独获取。
+    loadArticle(slug).then((item) => { if (active) setLoadedPost(item); })
+      .catch((reason) => {
+        if (active) {
+          setNotFound(reason instanceof SnapshotNotFoundError || reason instanceof ApiError && reason.status === 404);
+          setLoadError(reason.message);
+        }
+      });
+    return () => { active = false; };
+  }, [slug, attempt]);
+  const post = loadedPost?.slug === slug ? loadedPost : null;
   useArticleHead(post ?? null);
   const markdown = post ? getPostMarkdown(post) : '';
   const outlineItems = useMemo(() => getMarkdownOutline(markdown), [markdown]);
@@ -58,10 +79,14 @@ export function PostDetailPage({ ownerAvatarUrl, posts, slug }: { ownerAvatarUrl
     target?.classList.add('is-passage-target');
     const timeout = window.setTimeout(() => target?.classList.remove('is-passage-target'), 2200);
     return () => window.clearTimeout(timeout);
-  }, [passageAnchor, starfieldPassageAnchors]);
+  }, [passageAnchor, starfieldPassageAnchors, post]);
 
+  if (notFound) return <NotFoundPage />;
   if (!post) {
-    return <NotFoundPage />;
+    return <section className="content-section" aria-live="polite">
+      <p>{loadError || '正在加载文章…'}</p>
+      {loadError && <button type="button" onClick={() => setAttempt((value) => value + 1)}>重试</button>}
+    </section>;
   }
 
   const { previousPost, nextPost } = getAdjacentPosts(posts, slug);
